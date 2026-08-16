@@ -150,9 +150,11 @@
         (with-current-buffer buf
           (setq-local macher-agent--parent-callback (lambda (res) (setq callback-data res)))
           (with-macher-agent-mock-fsm ctx
-                                      (funcall tool-fn nil "My final answer"))
+                                      (expect (funcall tool-fn nil "My final answer")
+                                              :to-equal "SUCCESS: Result submitted. STOP NOW."))
           (expect (plist-get callback-data :data) :to-equal "My final answer")
-          (expect macher-agent-task-finished :to-be t))
+          (expect macher-agent-task-finished :to-be t)
+          (expect (funcall tool-fn nil "Second final answer") :to-equal "ERROR: Task has already been submitted."))
         (kill-buffer buf)))
   
   (it "write_buffer_in_workspace registers a virtual edit safely"
