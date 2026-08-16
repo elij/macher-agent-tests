@@ -7,8 +7,97 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'buttercup)
 (require 'macher-agent-zero-mem)
+
+;;;; 0. Baseline Floating-Point PageRank and Retrieval Implementation
+
+(defun macher-agent-zero-mem-pagerank-float (query graph &optional iterations)
+  "Compute Stationary Personalised PageRank for QUERY over GRAPH.
+ITERATIONS defaults to 15.  Return a hash table mapping nodes to
+PageRank scores."
+  (let* ((iters (or iterations 15))
+         (gamma macher-agent-zero-mem-damping-factor)
+         (pi-table (make-hash-table :test 'equal))
+         (reset-vector (make-hash-table :test 'equal))
+         (nodes nil)
+         (adj-list (macher-agent-zero-mem-graph-adj-list graph)))
+
+    ;; 1. Collect all valid nodes
+    (maphash (lambda (node _trans) (push node nodes)) adj-list)
+
+    ;; 2. Establish the normalised Reset Distribution r_q [37]
+    (let* ((alignments (macher-agent-zero-mem-align-query query graph))
+           (align-sum (cl-loop for (_node . val) in alignments sum val)))
+      (if (> align-sum 0.0)
+          ;; Distribute reset probability over aligned query entity nodes
+          (dolist (align alignments)
+            (puthash (car align) (/ (cdr align) align-sum) reset-vector))
+        ;; Fallback: uniform reset distribution over all Document nodes
+        (let* ((doc-count 0)
+               (doc-nodes nil))
+          (dolist (node nodes)
+            (when (eq (car node) :doc)
+              (push node doc-nodes)
+              (setq doc-count (1+ doc-count))))
+          (if (> doc-count 0)
+              (dolist (dn doc-nodes)
+                (puthash dn (/ 1.0 (float doc-count)) reset-vector))
+            ;; Ultimate fallback: absolute uniform over all nodes
+            (let ((uniform-prob (/ 1.0 (float (length nodes)))))
+              (dolist (node nodes) (puthash node uniform-prob reset-vector)))))))
+
+    ;; 3. Initialise pi distribution to match the reset vector
+    (maphash (lambda (node val) (puthash node val pi-table)) reset-vector)
+
+    ;; 4. Iterative Power Method for PageRank: pi = (1-gamma)*r + gamma * P^T * pi [37]
+    (cl-loop repeat iters do
+             (let ((next-pi (make-hash-table :test 'equal)))
+               ;; Add the (1-gamma)*r_q prior to next state
+               (maphash (lambda (node r-val)
+                          (puthash node (* (- 1.0 gamma) r-val) next-pi))
+                        reset-vector)
+               ;; Propagate state over transitions: gamma * P^T * pi
+               (maphash
+                (lambda (u-node u-val)
+                  (let ((transitions (gethash u-node adj-list)))
+                    (dolist (trans transitions)
+                      (let* ((v-node (car trans))
+                             (weight (cdr trans))
+                             (current-v (gethash v-node next-pi 0.0)))
+                        (puthash v-node (+ current-v (* gamma u-val weight)) next-pi)))))
+                pi-table)
+               (setq pi-table next-pi)))
+
+    pi-table))
+
+(cl-defun macher-agent-zero-mem-test-retrieve-float (query graph &key (top-k 5) (iterations 15))
+  "Execute float-based Dual-View Evidence retrieval for QUERY on GRAPH for benchmarking."
+  (let* ((pi-table (macher-agent-zero-mem-pagerank-float query graph iterations))
+         (doc-scores nil)
+         (traces-ht (macher-agent-zero-mem-graph-traces graph)))
+
+    ;; 1. Filter and normalise document scores [41]
+    (maphash
+     (lambda (node score)
+       (when (eq (car node) :doc)
+         (push (cons (cdr node) score) doc-scores)))
+     pi-table)
+
+    (setq doc-scores (sort doc-scores (lambda (a b) (> (cdr a) (cdr b)))))
+
+    ;; 2. Retrieve top-K document nodes [55]
+    (let ((top-ids (cl-loop for (id . _score) in doc-scores
+                            repeat top-k
+                            collect id))
+          (results nil))
+      (dolist (id top-ids)
+        (let ((trace (gethash id traces-ht)))
+          (when trace
+            (push trace results))))
+      (nreverse results))))
+
 
 ;;;; 1. Environment Isolation Utilities
 
@@ -264,8 +353,8 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
                         (let* ((graph (macher-agent-zero-mem-test-make-synthetic-graph 120 6))
                                (query (macher-agent-zero-mem-test-make-synthetic-query 3)))
                           (expect-benchmark-faster
-                           (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 20 :algorithm 'float)
-                           (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 20 :algorithm 'fixed-point)
+                           (macher-agent-zero-mem-test-retrieve-float query graph :top-k 5 :iterations 20)
+                           (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 20)
                            "Dual-View Retrieve Pipeline"))))
 
           (describe "4. Dual-View Evidence Retrieval Keyword Arguments & Operations"
@@ -274,8 +363,8 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
                                (query (macher-agent-zero-mem-test-make-synthetic-query 0))
                                (results-default (macher-agent-zero-mem-retrieve query graph))
                                (results-k3 (macher-agent-zero-mem-retrieve query graph :top-k 3))
-                               (results-float (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 10 :algorithm 'float))
-                               (results-fp (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 10 :algorithm 'fixed-point)))
+                               (results-float (macher-agent-zero-mem-test-retrieve-float query graph :top-k 5 :iterations 10))
+                               (results-fp (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 10)))
                           (expect (length results-default) :to-equal 5)
                           (expect (length results-k3) :to-equal 3)
                           (expect (length results-float) :to-equal 5)
@@ -287,7 +376,7 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
                                (graph (macher-agent-zero-mem-build-graph traces))
                                (query "Websocket Latency")
                                (glob-result (macher-agent-zero-mem-test-naive-glob query test-buf 5))
-                               (graph-results (macher-agent-zero-mem-retrieve query graph :top-k 5 :algorithm 'fixed-point)))
+                               (graph-results (macher-agent-zero-mem-retrieve query graph :top-k 5)))
                           
                           ;; The naive glob searches for the exact string or regex [7] and fails
                           (expect (string-empty-p glob-result) :to-be t)
@@ -315,13 +404,13 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
                           ;; Measure Baseline Float PageRank
                           (macher-agent-zero-mem-test-isolate-environment)
                           (let ((float-metrics (macher-agent-zero-mem-test-measure-execution 
-                                                (lambda () (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 15 :algorithm 'float)))))
+                                                (lambda () (macher-agent-zero-mem-test-retrieve-float query graph :top-k 5 :iterations 15)))))
                             (macher-agent-zero-mem-test-log-metrics "1. Dual-View (Float PPR)" float-metrics))
                           
                           ;; Measure Optimised Fixed-Point PageRank
                           (macher-agent-zero-mem-test-isolate-environment)
                           (let ((fp-metrics (macher-agent-zero-mem-test-measure-execution 
-                                             (lambda () (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 15 :algorithm 'fixed-point)))))
+                                             (lambda () (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 15)))))
                             (macher-agent-zero-mem-test-log-metrics "2. Dual-View (Fixed-Point PPR)" fp-metrics))
                           
                           ;; Measure Naive Regular Expression Glob [7]
