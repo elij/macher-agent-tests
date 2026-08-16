@@ -1,4 +1,4 @@
-;;; macher-agent-test-presets.el --- Preset & Payload Composition Tests -*- lexical-binding: t; -*-
+;;; macher-agent-presets-test.el --- Preset & Payload Composition Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
@@ -268,5 +268,5 @@
                 (expect (plist-get composed :boot-directive) :to-equal "Boot child")
                 (expect (plist-get composed :temperature) :to-equal 0.3))))
 
-(provide 'macher-agent-test-presets)
-;;; macher-agent-test-presets.el ends here
+(provide 'macher-agent-presets-test)
+;;; macher-agent-presets-test.el ends here

@@ -1,4 +1,4 @@
-;;; macher-agent-test-tool-lifecycle.el --- Tool Validation & Lifecycle Hooks Tests -*- lexical-binding: t; -*-
+;;; macher-agent-tool-lifecycle-test.el --- Tool Validation & Lifecycle Hooks Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
@@ -178,5 +178,5 @@
                 (expect (macher-agent--extract-prop ht :baz) :to-equal 789)
                 (expect (macher-agent--extract-prop ht :missing) :to-equal 'macher-missing))))
 
-(provide 'macher-agent-test-tool-lifecycle)
-;;; macher-agent-test-tool-lifecycle.el ends here
+(provide 'macher-agent-tool-lifecycle-test)
+;;; macher-agent-tool-lifecycle-test.el ends here

@@ -1,4 +1,4 @@
-;;; macher-agent-test-sandbox-rsync.el --- Sandbox and Rsync Tests -*- lexical-binding: t; -*-
+;;; macher-agent-sandbox-rsync-test.el --- Sandbox and Rsync Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
@@ -96,5 +96,5 @@
               (let ((rsync-dest-arg (nth 1 (spy-calls-args-for 'macher-agent--build-rsync-cmd 0))))
                 (expect (file-name-absolute-p rsync-dest-arg) :to-be t))))
 
-(provide 'macher-agent-test-sandbox-rsync)
-;;; macher-agent-test-sandbox-rsync.el ends here
+(provide 'macher-agent-sandbox-rsync-test)
+;;; macher-agent-sandbox-rsync-test.el ends here

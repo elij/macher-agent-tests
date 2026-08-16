@@ -100,9 +100,9 @@
                         
                         (cl-letf (((symbol-function 'gptel-send)
                                    (lambda ()
-                                     (let ((cb (bound-and-true-p macher-agent--a2a-callback))
-                                           (task-id (bound-and-true-p macher-agent--current-task-id))
-                                           (bname (buffer-name)))
+                                     (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
+                                            (cb (when task-id (gethash task-id macher-agent--pending-callbacks)))
+                                            (bname (buffer-name)))
                                        (when cb
                                          (with-current-buffer (get-buffer bname)
                                            (setq-local macher-agent--ready-to-reap t))
@@ -135,8 +135,8 @@
                   (macher-agent-add-subagent "agent-france")
                   (cl-letf (((symbol-function 'gptel-send)
                              (lambda ()
-                               (let ((cb (bound-and-true-p macher-agent--a2a-callback))
-                                     (task-id (bound-and-true-p macher-agent--current-task-id)))
+                               (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
+                                      (cb (when task-id (gethash task-id macher-agent--pending-callbacks))))
                                  (when cb
                                    (funcall cb (list :type 'ARTIFACT_UPDATE
                                                      :task-id task-id

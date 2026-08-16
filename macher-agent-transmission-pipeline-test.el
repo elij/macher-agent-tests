@@ -1,4 +1,4 @@
-;;; macher-agent-test-transmission-pipeline.el --- Transmission Pipeline & Formatting Tests -*- lexical-binding: t; -*-
+;;; macher-agent-transmission-pipeline-test.el --- Transmission Pipeline & Formatting Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
@@ -110,5 +110,5 @@
                               :to-have-been-called-with mock-ctx buf fsm))
                   (kill-buffer buf)))))
 
-(provide 'macher-agent-test-transmission-pipeline)
-;;; macher-agent-test-transmission-pipeline.el ends here
+(provide 'macher-agent-transmission-pipeline-test)
+;;; macher-agent-transmission-pipeline-test.el ends here

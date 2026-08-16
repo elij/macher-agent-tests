@@ -194,8 +194,8 @@
                     (progn
                       (cl-letf (((symbol-function 'gptel-send)
                                  (lambda ()
-                                   (let ((cb (bound-and-true-p macher-agent--a2a-callback))
-                                         (task-id (bound-and-true-p macher-agent--current-task-id)))
+                                   (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
+                                          (cb (when task-id (gethash task-id macher-agent--pending-callbacks))))
                                      (when cb
                                        (funcall cb (list :status 'success :data "Done" :task-id task-id)))))))
                         (macher-agent-a2a-dispatch payloads callback))
@@ -216,7 +216,23 @@
                 (expect (length callback-result) :to-equal 1)
                 (expect (plist-get (aref callback-result 0) :status) :to-be 'error)
                 (expect (plist-get (aref callback-result 0) :error)
-                        :to-equal "ERROR: Sub-agent buffer 'non-existent-buffer' not found."))))
+                        :to-equal "ERROR: Sub-agent buffer 'non-existent-buffer' not found.")))
+
+          (it "verifies macher-agent--is-background and macher-agent--is-ephemeral are permanent-local"
+              (expect (get 'macher-agent--is-background 'permanent-local) :to-be t)
+              (expect (get 'macher-agent--is-ephemeral 'permanent-local) :to-be t)
+              (let ((buf1 (generate-new-buffer "core-bg-eph-1"))
+                    (buf2 (generate-new-buffer "core-bg-eph-2")))
+                (unwind-protect
+                    (progn
+                      (with-current-buffer buf1
+                        (setq-local macher-agent--is-background t)
+                        (setq-local macher-agent--is-ephemeral t))
+                      (with-current-buffer buf2
+                        (expect (bound-and-true-p macher-agent--is-background) :to-be nil)
+                        (expect (bound-and-true-p macher-agent--is-ephemeral) :to-be nil)))
+                  (kill-buffer buf1)
+                  (kill-buffer buf2)))))
 
 (describe "7. Prompt Transformer Pipeline and Media Watcher"
           (it "deduplicates tool usage blocks keeping the most recent occurrences"
@@ -566,6 +582,10 @@
           (describe "macher-agent completion and patch triggering"
                     (it "verifies macher-agent--get-buffer-persistent-context is deleted"
                         (expect (fboundp 'macher-agent--get-buffer-persistent-context) :to-be nil))
+
+                    (it "verifies macher-agent--a2a-callback is deleted"
+                        (expect (boundp 'macher-agent--a2a-callback) :to-be nil)
+                        (expect (fboundp 'macher-agent--a2a-callback) :to-be nil))
 
                     (it "processes completed FSM buffer with injected context"
                         (let* ((target-buf (get-buffer-create "test-ert-completed-fsm-buf"))

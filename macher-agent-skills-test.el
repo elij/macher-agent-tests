@@ -97,8 +97,8 @@
         ;; Mock the dispatcher to instantly return a success payload rather than firing the network
         (cl-letf (((symbol-function 'gptel-send)
                    (lambda ()
-                     (let ((cb (bound-and-true-p macher-agent--a2a-callback))
-                           (task-id (bound-and-true-p macher-agent--current-task-id)))
+                     (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
+                            (cb (when task-id (gethash task-id macher-agent--pending-callbacks))))
                        (when cb
                          (funcall cb (list :status 'success :data (format "Output from %s" (buffer-name)))))))))
           (macher-agent-a2a-dispatch

@@ -246,7 +246,7 @@
                     (when (buffer-live-p buf)
                       (kill-buffer buf)))))))
 
-(provide 'macher-agent-test-vfs-sync)
-;;; macher-agent-test-vfs-sync.el ends here
+(provide 'macher-agent-vfs-sync-test)
+;;; macher-agent-vfs-sync-test.el ends here
 
 

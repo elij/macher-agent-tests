@@ -4,7 +4,7 @@
 (require 'gptel)
 (require 'macher-agent-core)
 (require 'macher-agent-vfs)
-(require 'macher-agent-skills)
+(require 'macher-agent-presets)
 (require 'macher-agent-gptel)
 (require 'macher-agent-orchestration)
 (require 'macher-agent-api)

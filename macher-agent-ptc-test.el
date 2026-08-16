@@ -1,4 +1,4 @@
-;;; macher-agent-test-ptc.el --- Programmatic Tool Calling (PTC) Tests -*- lexical-binding: t; -*-
+;;; macher-agent-ptc-test.el --- Programmatic Tool Calling (PTC) Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
@@ -160,5 +160,5 @@
                            "hello")
                   (expect ptc-res :to-equal '((status . "success") (value . "hello")))))))
 
-(provide 'macher-agent-test-ptc)
-;;; macher-agent-test-ptc.el ends here
+(provide 'macher-agent-ptc-test)
+;;; macher-agent-ptc-test.el ends here
