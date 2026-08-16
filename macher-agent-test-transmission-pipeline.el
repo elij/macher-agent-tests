@@ -1,0 +1,114 @@
+;;; macher-agent-test-transmission-pipeline.el --- Transmission Pipeline & Formatting Tests -*- lexical-binding: t; -*-
+
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory file))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   default-directory)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t default-directory))))
+  (add-to-list 'load-path test-dir)
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
+(require 'macher-agent-test-setup)
+
+(describe "Transmission Pipeline and Formatting"
+  (macher-agent-test-setup-before-each)
+
+  (it "truncates context history using model-specific alist limits"
+      (with-temp-buffer
+        (insert "Early user prompt content\n")
+        (let ((resp "Previous response boundary\n"))
+          (put-text-property 0 (length resp) 'gptel 'response resp)
+          (insert resp))
+        (insert "Latest user query content")
+        (let ((macher-agent-max-context-chars '((gpt-4o . 25) (nil . 2000000)))
+              (gptel-model 'gpt-4o))
+          (macher-agent-transformer-snip-context nil nil))
+        (expect (buffer-string) :to-match "Latest user query content")))
+
+  (describe "Refactored Unified Transmission Reducer Pipeline"
+            
+    (it "inits core subagent directive when buffer is a subagent"
+        (let* ((orig-buf (generate-new-buffer "test-subagent-buf"))
+               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
+          (with-current-buffer orig-buf
+            (setq-local macher-agent--is-subagent t))
+          (setq state (macher-agent-pipe--init-core-directives state orig-buf nil nil nil))
+          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
+          (expect (car (macher-agent-transmission-state-directives state)) :to-match "CRITICAL DIRECTIVE:")
+          (kill-buffer orig-buf)))
+
+    (it "appends boot directive on initial request when no gptel response property exists"
+        (let* ((orig-buf (generate-new-buffer "test-initial-request-boot-buf"))
+               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
+          (with-current-buffer orig-buf
+            (setq-local macher-agent--boot-directive "Execute boot setup now."))
+          (setq state (macher-agent-pipe--append-boot-directive state orig-buf nil nil nil))
+          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
+          (expect (car (macher-agent-transmission-state-directives state)) :to-equal "Execute boot setup now.")
+          (kill-buffer orig-buf)))
+
+    (it "does not append boot directive on subsequent request when gptel response property exists"
+        (let* ((orig-buf (generate-new-buffer "test-subsequent-request-boot-buf"))
+               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
+          (with-current-buffer orig-buf
+            (setq-local macher-agent--boot-directive "Execute boot setup now.")
+            (insert "Previous assistant response")
+            (put-text-property (point-min) (point-max) 'gptel 'response))
+          (setq state (macher-agent-pipe--append-boot-directive state orig-buf nil nil nil))
+          (expect (macher-agent-transmission-state-directives state) :to-be nil)
+          (kill-buffer orig-buf)))
+
+    (it "drains thought queue and compiles directives into system prompt"
+        (let* ((orig-buf (generate-new-buffer "test-thought-queue-buf"))
+               (state (make-macher-agent-transmission-state :base-prompt "Base System Prompt"
+                                                            :target-buffer orig-buf)))
+          (with-current-buffer orig-buf
+            (macher-agent-add-pending-instruction "Thought 1"))
+          (setq state (macher-agent-pipe--drain-thought-queue state orig-buf nil nil nil))
+          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
+          (with-current-buffer orig-buf
+            (expect macher-agent--pending-instructions-queue :not :to-be nil))
+          (setq state (macher-agent-pipe--compile-directives state orig-buf nil nil nil))
+          (expect (macher-agent-transmission-state-compiled-prompt state) :to-match "Base System Prompt\n\nUSER OVERRIDE DIRECTIVE:\nThought 1")
+          (kill-buffer orig-buf))))
+
+  (it "processes completed FSM buffer with directly injected context"
+      (let* ((buf (generate-new-buffer "*test-completed-fsm*"))
+             (mock-ctx (macher--make-context :contents nil))
+             (fsm (gptel-make-fsm :info (list :buffer buf)))
+             (called-ctx nil)
+             (called-action nil)
+             (called-fsm nil))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--pending-instructions-queue '("queue-item"))
+              (let ((macher-process-request-function
+                     (lambda (action ctx f)
+                       (setq called-action action
+                             called-ctx ctx
+                             called-fsm f))))
+                (macher-agent--process-completed-fsm-buffer mock-ctx buf fsm)
+                (expect called-action :to-equal 'complete)
+                (expect called-ctx :to-be mock-ctx)
+                (expect called-fsm :to-be fsm)
+                (expect macher-agent--pending-instructions-queue :to-be nil)))
+          (kill-buffer buf))))
+
+  (it "triggers patch on complete by resolving context from FSM"
+      (let* ((buf (generate-new-buffer "*test-trigger-patch*"))
+             (mock-ctx (macher--make-context :contents nil))
+             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
+                                  :state 'DONE)))
+        (unwind-protect
+            (progn
+              (spy-on 'macher-agent--process-completed-fsm-buffer)
+              (macher-agent--trigger-patch-on-complete fsm)
+              (expect 'macher-agent--process-completed-fsm-buffer
+                      :to-have-been-called-with mock-ctx buf fsm))
+          (kill-buffer buf)))))
+
+(provide 'macher-agent-test-transmission-pipeline)
+;;; macher-agent-test-transmission-pipeline.el ends here

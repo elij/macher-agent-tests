@@ -148,203 +148,203 @@
                   (expect (car prompt-seen) :to-equal "Test Prompt Message")
                   (expect (length orig-called-with) :to-equal 2)
                   (expect (car (car orig-called-with)) :to-equal '("*scratch*" "old" . "new"))
-                  (expect (car (cadr orig-called-with)) :to-equal '("/mock/proj/disk-file.el" "old" . "new")))))
+                  (expect (car (cadr orig-called-with)) :to-equal '("/mock/proj/disk-file.el" "old" . "new"))))))
 
-          (describe "5. Sandbox Security and Path Traversal (Jailbreaks)"
+(describe "5. Sandbox Security and Path Traversal (Jailbreaks)"
 
-                    (before-each
-                     (setq sandbox-root "/tmp/macher-sandbox/"))
+          (before-each
+           (setq sandbox-root "/tmp/macher-sandbox/"))
 
-                    (it "REGRESSION: completely neutralises absolute path injections"
-                        (let ((malicious-path "/etc/passwd")
-                              (threw nil))
-                          (condition-case _err
-                              (macher-agent--resolve-safe-path malicious-path sandbox-root)
-                            (error (setq threw t)))
-                          (expect threw :to-be t)))
+          (it "REGRESSION: completely neutralises absolute path injections"
+              (let ((malicious-path "/etc/passwd")
+                    (threw nil))
+                (condition-case _err
+                    (macher-agent--resolve-safe-path malicious-path sandbox-root)
+                  (error (setq threw t)))
+                (expect threw :to-be t)))
 
-                    (it "prevents relative path traversal (Directory Climbing)"
-                        (let ((malicious-path "../../../../etc/passwd")
-                              (threw nil))
-                          (condition-case _err
-                              (macher-agent--resolve-safe-path malicious-path sandbox-root)
-                            (error (setq threw t)))
-                          (expect threw :to-be t)))
+          (it "prevents relative path traversal (Directory Climbing)"
+              (let ((malicious-path "../../../../etc/passwd")
+                    (threw nil))
+                (condition-case _err
+                    (macher-agent--resolve-safe-path malicious-path sandbox-root)
+                  (error (setq threw t)))
+                (expect threw :to-be t)))
 
-                    (it "prevents tilde (~) home directory escapes"
-                        (let ((malicious-path "~/.ssh/id_rsa")
-                              (threw nil))
-                          (condition-case _err
-                              (macher-agent--resolve-safe-path malicious-path sandbox-root)
-                            (error (setq threw t)))
-                          (expect threw :to-be t))))
+          (it "prevents tilde (~) home directory escapes"
+              (let ((malicious-path "~/.ssh/id_rsa")
+                    (threw nil))
+                (condition-case _err
+                    (macher-agent--resolve-safe-path malicious-path sandbox-root)
+                  (error (setq threw t)))
+                (expect threw :to-be t))))
 
-          (describe "6. Agent Orchestration and Sub-agent Delegation"
+(describe "6. Agent Orchestration and Sub-agent Delegation"
 
-                    (it "dispatches point-to-point A2A payloads and invokes completion callback"
-                        (spy-on 'macher-agent-resolve-context :and-return-value nil)
-                        (let* ((callback-result nil)
-                               (sub-buf (get-buffer-create "sub-agent-buf"))
-                               (payloads (list (list :type 'SEND_MESSAGE
-                                                     :task-id "task-001"
-                                                     :message "Do something"
-                                                     :metadata (list :buffer_name "sub-agent-buf" :background t))))
-                               (callback (lambda (res) (setq callback-result res))))
+          (it "dispatches point-to-point A2A payloads and invokes completion callback"
+              (spy-on 'macher-agent-resolve-context :and-return-value nil)
+              (let* ((callback-result nil)
+                     (sub-buf (get-buffer-create "sub-agent-buf"))
+                     (payloads (list (list :type 'SEND_MESSAGE
+                                           :task-id "task-001"
+                                           :message "Do something"
+                                           :metadata (list :buffer_name "sub-agent-buf" :background t))))
+                     (callback (lambda (res) (setq callback-result res))))
+                (unwind-protect
+                    (progn
+                      (cl-letf (((symbol-function 'gptel-send)
+                                 (lambda ()
+                                   (let ((cb (bound-and-true-p macher-agent--a2a-callback))
+                                         (task-id (bound-and-true-p macher-agent--current-task-id)))
+                                     (when cb
+                                       (funcall cb (list :status 'success :data "Done" :task-id task-id)))))))
+                        (macher-agent-a2a-dispatch payloads callback))
+                      (expect (length callback-result) :to-equal 1)
+                      (expect (plist-get (aref callback-result 0) :status) :to-be 'success)
+                      (with-current-buffer sub-buf
+                        (expect (bound-and-true-p macher-agent--ready-to-reap) :to-be nil)))
+                  (kill-buffer sub-buf))))
+
+          (it "returns a controlled error state when dispatching to a missing or invalid sub-agent buffer"
+              (let* ((callback-result nil)
+                     (payloads (list (list :type 'SEND_MESSAGE
+                                           :task-id "task-err-001"
+                                           :message "Do something"
+                                           :metadata (list :buffer_name "non-existent-buffer"))))
+                     (callback (lambda (res) (setq callback-result res))))
+                (macher-agent-a2a-dispatch payloads callback)
+                (expect (length callback-result) :to-equal 1)
+                (expect (plist-get (aref callback-result 0) :status) :to-be 'error)
+                (expect (plist-get (aref callback-result 0) :error)
+                        :to-equal "ERROR: Sub-agent buffer 'non-existent-buffer' not found."))))
+
+(describe "7. Prompt Transformer Pipeline and Media Watcher"
+          (it "deduplicates tool usage blocks keeping the most recent occurrences"
+              (with-temp-buffer
+                (insert "User prompt\n")
+                (let ((str1 "```tool (:name \"read_file\" :args (\"file.el\"))\nargs\n```\n"))
+                  (put-text-property 0 (length str1) 'gptel t str1)
+                  (insert str1))
+                (insert "Intermediate response\n")
+                (let ((str2 "```tool (:name \"read_file\" :args (\"file.el\"))\nargs\n```\n"))
+                  (put-text-property 0 (length str2) 'gptel t str2)
+                  (insert str2))
+                (insert "Latest prompt\n")
+                (let ((macher-agent-max-duplicate-tools 1))
+                  (macher-agent-transformer-deduplicate-tools nil nil))
+                (expect (buffer-string) :to-match "{\"status\": \"omitted\", \"reason\": \"duplicate\"}")))
+
+          (it "deduplicates Org-mode tool usage blocks and preserves distinct signatures"
+              (with-temp-buffer
+                (insert "User prompt\n")
+                (let ((str1 "#+begin_src tool (:name \"cargo_test\" :args nil)\noutput1\n#+end_src\n"))
+                  (put-text-property 0 (length str1) 'gptel-tool t str1)
+                  (insert str1))
+                (insert "Intermediate prompt\n")
+                (let ((str2 "#+begin_src tool (:name \"cargo_test\" :args nil)\noutput2\n#+end_src\n"))
+                  (put-text-property 0 (length str2) 'gptel-tool t str2)
+                  (insert str2))
+                (let ((str3 "#+begin_src tool (:name \"read_file\" :args (\"a.txt\"))\noutput3\n#+end_src\n"))
+                  (put-text-property 0 (length str3) 'gptel-tool t str3)
+                  (insert str3))
+                (let ((macher-agent-max-duplicate-tools 1))
+                  (macher-agent-transformer-deduplicate-tools nil nil))
+                (expect (buffer-string) :to-match "{\"status\": \"omitted\", \"reason\": \"duplicate\"}")
+                (expect (buffer-string) :to-match "output2")
+                (expect (buffer-string) :to-match "output3")))
+
+          (it "snips context history exceeding character limits cleanly at turn boundaries"
+              (with-temp-buffer
+                (insert "Early user prompt content\n")
+                (let ((resp "Previous response boundary\n"))
+                  (put-text-property 0 (length resp) 'gptel 'response resp)
+                  (insert resp))
+                (insert "Latest user query content")
+                (let ((macher-agent-max-context-chars '((nil . 25))))
+                  (macher-agent-transformer-snip-context nil nil))
+                (expect (buffer-string) :to-match "Latest user query content")))
+
+          (it "protects frontmatter header when snipping context history"
+              (with-temp-buffer
+                (insert "---\nkey: value\n---\nEarly user prompt content\n")
+                (let ((resp "Previous response boundary\n"))
+                  (put-text-property 0 (length resp) 'gptel 'response resp)
+                  (insert resp))
+                (insert "Latest user query content")
+                (let ((macher-agent-max-context-chars '((nil . 25))))
+                  (macher-agent-transformer-snip-context nil nil))
+                (expect (buffer-string) :to-match "^---\nkey: value\n---")))
+
+          (it "registers sync prompt transformer and transformers in setup-gptel-buffer"
+              (let ((macher-agent-prompt-transformers '(t1 t2)))
+                (spy-on 'macher-agent-resolve-context :and-return-value t)
+                (with-temp-buffer
+                  (macher-agent-setup-gptel-buffer)
+                  (expect gptel-prompt-transform-functions
+                          :to-equal '(macher-agent--transform-inject-context macher-agent-sync-prompt-transformer t t1 t2)))))
+
+          (it "triggers pending media injection on FSM updates"
+              (let* ((ctx (macher--make-context :workspace nil :contents nil))
+                     (fsm (gptel-make-fsm)))
+                (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
+                (macher-agent--set-context-data ctx :pending-media (list "data"))
+                (spy-on 'macher-agent--perform-pending-media-injection)
+                (macher-agent--inject-media-fsm-advice (lambda (&rest _) nil) fsm 'WAIT)
+                (expect 'macher-agent--perform-pending-media-injection :to-have-been-called-with fsm))))
+
+(describe "8. Buffer Resolution and User Interface Delegation (Phase 4)"
+          (describe "macher-agent--resolve-buffer-name"
+                    (it "resolves buffer objects to buffer name string"
+                        (let ((buf (get-buffer-create "test-resolve-buf-obj")))
+                          (unwind-protect
+                              (expect (macher-agent--resolve-buffer-name buf) :to-equal "test-resolve-buf-obj")
+                            (kill-buffer buf))))
+
+                    (it "resolves string buffer name when buffer exists"
+                        (let ((buf (get-buffer-create "test-resolve-buf-str")))
+                          (unwind-protect
+                              (expect (macher-agent--resolve-buffer-name "test-resolve-buf-str") :to-equal "test-resolve-buf-str")
+                            (kill-buffer buf))))
+
+                    (it "resolves file paths to buffer names via native get-file-buffer"
+                        (let* ((temp-file (make-temp-file "macher-resolve-test"))
+                               (buf (find-file-noselect temp-file)))
                           (unwind-protect
                               (progn
-                                (cl-letf (((symbol-function 'gptel-send)
-                                           (lambda ()
-                                             (let ((cb (bound-and-true-p macher-agent--a2a-callback))
-                                                   (task-id (bound-and-true-p macher-agent--current-task-id)))
-                                               (when cb
-                                                 (funcall cb (list :status 'success :data "Done" :task-id task-id)))))))
-                                  (macher-agent-a2a-dispatch payloads callback))
-                                (expect (length callback-result) :to-equal 1)
-                                (expect (plist-get (aref callback-result 0) :status) :to-be 'success)
-                                (with-current-buffer sub-buf
-                                  (expect (bound-and-true-p macher-agent--ready-to-reap) :to-be nil)))
-                            (kill-buffer sub-buf))))
+                                (expect (macher-agent--resolve-buffer-name temp-file) :to-equal (buffer-name buf))
+                                (expect (macher-agent--resolve-buffer-name (expand-file-name temp-file)) :to-equal (buffer-name buf)))
+                            (when (buffer-live-p buf) (kill-buffer buf))
+                            (when (file-exists-p temp-file) (delete-file temp-file)))))
 
-                    (it "returns a controlled error state when dispatching to a missing or invalid sub-agent buffer"
-                        (let* ((callback-result nil)
-                               (payloads (list (list :type 'SEND_MESSAGE
-                                                     :task-id "task-err-001"
-                                                     :message "Do something"
-                                                     :metadata (list :buffer_name "non-existent-buffer"))))
-                               (callback (lambda (res) (setq callback-result res))))
-                          (macher-agent-a2a-dispatch payloads callback)
-                          (expect (length callback-result) :to-equal 1)
-                          (expect (plist-get (aref callback-result 0) :status) :to-be 'error)
-                          (expect (plist-get (aref callback-result 0) :error)
-                                  :to-equal "ERROR: Sub-agent buffer 'non-existent-buffer' not found."))))
+                    (it "returns original name string when buffer or file buffer is unmapped"
+                        (expect (macher-agent--resolve-buffer-name "/tmp/nonexistent-file-path-xyz.el")
+                                :to-equal "/tmp/nonexistent-file-path-xyz.el")))
 
-          (describe "7. Prompt Transformer Pipeline and Media Watcher"
-                    (it "deduplicates tool usage blocks keeping the most recent occurrences"
-                        (with-temp-buffer
-                          (insert "User prompt\n")
-                          (let ((str1 "```tool (:name \"read_file\" :args (\"file.el\"))\nargs\n```\n"))
-                            (put-text-property 0 (length str1) 'gptel t str1)
-                            (insert str1))
-                          (insert "Intermediate response\n")
-                          (let ((str2 "```tool (:name \"read_file\" :args (\"file.el\"))\nargs\n```\n"))
-                            (put-text-property 0 (length str2) 'gptel t str2)
-                            (insert str2))
-                          (insert "Latest prompt\n")
-                          (let ((macher-agent-max-duplicate-tools 1))
-                            (macher-agent-transformer-deduplicate-tools nil nil))
-                          (expect (buffer-string) :to-match "{\"status\": \"omitted\", \"reason\": \"duplicate\"}")))
+          (describe "macher-agent-ui-show"
+                    (it "invokes macher-agent-display-subagent-fn with target buffer"
+                        (let* ((buf (get-buffer-create "test-ui-show-buf"))
+                               (displayed-buf nil)
+                               (macher-agent-display-subagent-fn (lambda (b) (setq displayed-buf b))))
+                          (unwind-protect
+                              (progn
+                                (macher-agent-ui-show buf)
+                                (expect displayed-buf :to-be buf))
+                            (kill-buffer buf))))
 
-                    (it "deduplicates Org-mode tool usage blocks and preserves distinct signatures"
-                        (with-temp-buffer
-                          (insert "User prompt\n")
-                          (let ((str1 "#+begin_src tool (:name \"cargo_test\" :args nil)\noutput1\n#+end_src\n"))
-                            (put-text-property 0 (length str1) 'gptel-tool t str1)
-                            (insert str1))
-                          (insert "Intermediate prompt\n")
-                          (let ((str2 "#+begin_src tool (:name \"cargo_test\" :args nil)\noutput2\n#+end_src\n"))
-                            (put-text-property 0 (length str2) 'gptel-tool t str2)
-                            (insert str2))
-                          (let ((str3 "#+begin_src tool (:name \"read_file\" :args (\"a.txt\"))\noutput3\n#+end_src\n"))
-                            (put-text-property 0 (length str3) 'gptel-tool t str3)
-                            (insert str3))
-                          (let ((macher-agent-max-duplicate-tools 1))
-                            (macher-agent-transformer-deduplicate-tools nil nil))
-                          (expect (buffer-string) :to-match "{\"status\": \"omitted\", \"reason\": \"duplicate\"}")
-                          (expect (buffer-string) :to-match "output2")
-                          (expect (buffer-string) :to-match "output3")))
-
-                    (it "snips context history exceeding character limits cleanly at turn boundaries"
-                        (with-temp-buffer
-                          (insert "Early user prompt content\n")
-                          (let ((resp "Previous response boundary\n"))
-                            (put-text-property 0 (length resp) 'gptel 'response resp)
-                            (insert resp))
-                          (insert "Latest user query content")
-                          (let ((macher-agent-max-context-chars '((nil . 25))))
-                            (macher-agent-transformer-snip-context nil nil))
-                          (expect (buffer-string) :to-match "Latest user query content")))
-
-                    (it "protects frontmatter header when snipping context history"
-                        (with-temp-buffer
-                          (insert "---\nkey: value\n---\nEarly user prompt content\n")
-                          (let ((resp "Previous response boundary\n"))
-                            (put-text-property 0 (length resp) 'gptel 'response resp)
-                            (insert resp))
-                          (insert "Latest user query content")
-                          (let ((macher-agent-max-context-chars '((nil . 25))))
-                            (macher-agent-transformer-snip-context nil nil))
-                          (expect (buffer-string) :to-match "^---\nkey: value\n---")))
-
-                    (it "registers sync prompt transformer and transformers in setup-gptel-buffer"
-                        (let ((macher-agent-prompt-transformers '(t1 t2)))
-                          (spy-on 'macher-agent-resolve-context :and-return-value t)
+                    (it "defaults target buffer to current-buffer when omitted"
+                        (let* ((displayed-buf nil)
+                               (macher-agent-display-subagent-fn (lambda (b) (setq displayed-buf b))))
                           (with-temp-buffer
-                            (macher-agent-setup-gptel-buffer)
-                            (expect gptel-prompt-transform-functions
-                                    :to-equal '(macher-agent--transform-inject-context macher-agent-sync-prompt-transformer t t1 t2)))))
+                            (let ((cur (current-buffer)))
+                              (macher-agent-ui-show)
+                              (expect displayed-buf :to-be cur)))))
 
-                    (it "triggers pending media injection on FSM updates"
-                        (let* ((ctx (macher--make-context :workspace nil :contents nil))
-                               (fsm (gptel-make-fsm)))
-                          (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
-                          (macher-agent--set-context-data ctx :pending-media (list "data"))
-                          (spy-on 'macher-agent--perform-pending-media-injection)
-                          (macher-agent--inject-media-fsm-advice (lambda (&rest _) nil) fsm 'WAIT)
-                          (expect 'macher-agent--perform-pending-media-injection :to-have-been-called-with fsm))))
+                    (it "handles nil display function gracefully without throwing"
+                        (let ((macher-agent-display-subagent-fn nil))
+                          (expect (macher-agent-ui-show) :to-be nil)))
 
-          (describe "8. Buffer Resolution and User Interface Delegation (Phase 4)"
-                    (describe "macher-agent--resolve-buffer-name"
-                              (it "resolves buffer objects to buffer name string"
-                                  (let ((buf (get-buffer-create "test-resolve-buf-obj")))
-                                    (unwind-protect
-                                        (expect (macher-agent--resolve-buffer-name buf) :to-equal "test-resolve-buf-obj")
-                                      (kill-buffer buf))))
-
-                              (it "resolves string buffer name when buffer exists"
-                                  (let ((buf (get-buffer-create "test-resolve-buf-str")))
-                                    (unwind-protect
-                                        (expect (macher-agent--resolve-buffer-name "test-resolve-buf-str") :to-equal "test-resolve-buf-str")
-                                      (kill-buffer buf))))
-
-                              (it "resolves file paths to buffer names via native get-file-buffer"
-                                  (let* ((temp-file (make-temp-file "macher-resolve-test"))
-                                         (buf (find-file-noselect temp-file)))
-                                    (unwind-protect
-                                        (progn
-                                          (expect (macher-agent--resolve-buffer-name temp-file) :to-equal (buffer-name buf))
-                                          (expect (macher-agent--resolve-buffer-name (expand-file-name temp-file)) :to-equal (buffer-name buf)))
-                                      (when (buffer-live-p buf) (kill-buffer buf))
-                                      (when (file-exists-p temp-file) (delete-file temp-file)))))
-
-                              (it "returns original name string when buffer or file buffer is unmapped"
-                                  (expect (macher-agent--resolve-buffer-name "/tmp/nonexistent-file-path-xyz.el")
-                                          :to-equal "/tmp/nonexistent-file-path-xyz.el")))
-
-                    (describe "macher-agent-ui-show"
-                              (it "invokes macher-agent-display-subagent-fn with target buffer"
-                                  (let* ((buf (get-buffer-create "test-ui-show-buf"))
-                                         (displayed-buf nil)
-                                         (macher-agent-display-subagent-fn (lambda (b) (setq displayed-buf b))))
-                                    (unwind-protect
-                                        (progn
-                                          (macher-agent-ui-show buf)
-                                          (expect displayed-buf :to-be buf))
-                                      (kill-buffer buf))))
-
-                              (it "defaults target buffer to current-buffer when omitted"
-                                  (let* ((displayed-buf nil)
-                                         (macher-agent-display-subagent-fn (lambda (b) (setq displayed-buf b))))
-                                    (with-temp-buffer
-                                      (let ((cur (current-buffer)))
-                                        (macher-agent-ui-show)
-                                        (expect displayed-buf :to-be cur)))))
-
-                              (it "handles nil display function gracefully without throwing"
-                                  (let ((macher-agent-display-subagent-fn nil))
-                                    (expect (macher-agent-ui-show) :to-be nil)))
-
-                              (it "confirms redundant macher-agent--show-ui function is removed"
-                                  (expect (fboundp 'macher-agent--show-ui) :to-be nil)))))
+                    (it "confirms redundant macher-agent--show-ui function is removed"
+                        (expect (fboundp 'macher-agent--show-ui) :to-be nil))))
 
 (describe "9. Context Resolution and Prompt Injection"
           (describe "macher-agent--resolve-context"
@@ -587,7 +587,7 @@
                                   (expect called-ctx :to-be mock-ctx)
                                   (expect called-fsm :to-be fsm)
                                   (expect macher-agent--pending-instructions-queue :to-be nil))))
-                            (kill-buffer target-buf)))
+                          (kill-buffer target-buf)))
 
                     (it "resolves context and forwards on trigger patch on complete"
                         (let* ((target-buf (get-buffer-create "test-ert-trigger-patch-buf"))

@@ -139,20 +139,23 @@
                                     (let ((result (funcall tool-fn nil "scratch")))
                                       (expect result :to-match "SECURITY ERROR.*scratch.*")))))
 
-  (it "submit_task_result triggers parent callback and flags completion"
+  (it "submit_task_result triggers callback from registry and flags completion"
       (let* ((ctx (macher--make-context))
              (buf (generate-new-buffer "worker-buf"))
              (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
+             (task-id "skill-submit-task-1")
              (callback-data nil))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (expect (gptel-tool-description macher-agent-submit-task-result-tool)
                 :to-match "CRITICAL DIRECTIVE: You MUST use the `submit_task_result` tool")
+        (puthash task-id (lambda (res) (setq callback-data res)) macher-agent--pending-callbacks)
         (with-current-buffer buf
-          (setq-local macher-agent--parent-callback (lambda (res) (setq callback-data res)))
+          (macher-agent--push-routing task-id "originator-buf")
           (with-macher-agent-mock-fsm ctx
                                       (expect (funcall tool-fn nil "My final answer")
                                               :to-equal "SUCCESS: Result submitted. STOP NOW."))
-          (expect (plist-get callback-data :data) :to-equal "My final answer")
+          (expect (plist-get callback-data :type) :to-equal 'ARTIFACT_UPDATE)
+          (expect (plist-get (plist-get callback-data :message) :data) :to-equal "My final answer")
           (expect macher-agent-task-finished :to-be t)
           (expect (funcall tool-fn nil "Second final answer") :to-equal "ERROR: Task has already been submitted."))
         (kill-buffer buf)))

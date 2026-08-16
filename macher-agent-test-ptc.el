@@ -1,0 +1,161 @@
+;;; macher-agent-test-ptc.el --- Programmatic Tool Calling (PTC) Tests -*- lexical-binding: t; -*-
+
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory file))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   default-directory)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t default-directory))))
+  (add-to-list 'load-path test-dir)
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
+(require 'macher-agent-test-setup)
+
+(describe "Programmatic Tool Calling (PTC)"
+  (macher-agent-test-setup-before-each)
+
+  (it "executes a PTC script, yielding for subagents and resuming with results"
+      (let* ((macher-agent--active-ptc-primitives '(spawn-subagent delegate-tasks-to-subagents read-file))
+             (ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+             (script "(let* ((a1 (spawn-subagent \"agent-alpha\" nil))
+                             (a2 (spawn-subagent \"agent-beta\" nil))
+                             (tasks (list (list :buffer_name a1 :instructions \"task1\")
+                                          (list :buffer_name a2 :instructions \"task2\"))))
+                        (delegate-tasks-to-subagents tasks))")
+             (spawn-calls nil)
+             (success-result nil)
+             (error-result nil))
+        (spy-on 'macher-agent-add-subagent :and-call-fake
+                (lambda (name _root _presets _context _user-presets)
+                  (push name spawn-calls)
+                  (generate-new-buffer name)))
+        (spy-on 'macher-agent-a2a-dispatch :and-call-fake
+                (lambda (_tasks callback)
+                  (funcall callback
+                           (vector
+                            (list :status 'success :data "result-alpha" :buffer-name "agent-alpha")
+                            (list :status 'success :data "result-beta" :buffer-name "agent-beta")))))
+        (macher-agent-execute-ptc-script
+         script
+         ctx
+         (lambda (val) (setq success-result val))
+         (lambda (err) (setq error-result err)))
+        (expect error-result :to-be nil)
+        (expect (reverse spawn-calls) :to-equal '("agent-alpha" "agent-beta"))
+        (expect success-result :to-equal [(:status success :data "result-alpha" :buffer-name "agent-alpha")
+                                          (:status success :data "result-beta" :buffer-name "agent-beta")])))
+
+  (it "safely evaluates synchronous expressions without leaking iter-end-of-sequence"
+      (let ((val (macher-agent-sandbox-run '(+ 10 20) nil)))
+        (expect val :to-equal 30)))
+
+  (it "yields PTC tool interrupts when evaluated via eval-iter"
+      (let* ((macher-agent--active-ptc-primitives '(spawn-subagent))
+             (iter (macher-agent-sandbox--eval-iter '(spawn-subagent "test" nil) nil))
+             (yield-val (iter-next iter)))
+        (expect (plist-get yield-val :interrupt) :to-equal 'tool-call)
+        (expect (plist-get yield-val :name) :to-equal 'spawn-subagent)))
+
+  (it "injects PTC prompt instructions conditionally based on primitive matches"
+      (let* ((tool (gptel-make-tool
+                    :name "spawn-subagent"
+                    :description "Spawn subagent"
+                    :args '((:name "path" :type "string"))))
+             (gptel-tools (list tool))
+             (macher-agent--active-ptc-primitives '(spawn-subagent))
+             (base-prompt "Initial system prompt.")
+             (injected (macher-agent--inject-ptc-prompt base-prompt)))
+        (expect injected :to-match "^Initial system prompt\\.")
+        (expect injected :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ===")
+        (expect injected :to-match "spawn-subagent -> (defun spawn-subagent (path)")
+        (let ((macher-agent--active-ptc-primitives '(unmatched-primitive)))
+          (expect (macher-agent--inject-ptc-prompt base-prompt) :to-equal base-prompt))))
+
+  (it "extracts raw payload and applies success-fn formatting"
+      (let* ((res "raw payload")
+             (cb-raw-val nil)
+             (cb-formatted-val nil)
+             (cb-raw (macher-agent--build-success-callback
+                      'test-tool nil nil nil
+                      (lambda (res) (setq cb-raw-val (plist-get res :data)))))
+             (cb-fmt (macher-agent--build-success-callback
+                      'test-tool nil
+                      (lambda (p) (format "Formatted: %s" p))
+                      nil
+                      (lambda (res) (setq cb-formatted-val (plist-get res :data))))))
+        (funcall cb-raw res)
+        (expect cb-raw-val :to-equal "raw payload")
+        (funcall cb-fmt res)
+        (expect cb-formatted-val :to-equal "Formatted: raw payload")))
+
+  (it "suppresses patch creation during request processing when patch suppression is active"
+      (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))
+             (context (macher--make-context
+                       :workspace ws
+                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "old" "new"))))
+             (fsm (gptel-make-fsm))
+             (macher-agent--suppress-patch t))
+        (spy-on 'macher--build-patch)
+        (macher-agent-process-request context fsm)
+        (expect 'macher--build-patch :not :to-have-been-called)))
+
+  (it "allows indirect PTC primitive calls via funcall and apply inside sandbox"
+      (let* ((macher-agent--active-ptc-primitives '(spawn-subagent))
+             (iter1 (macher-agent-sandbox--funcall-iter 'spawn-subagent '("agent-alpha")))
+             (yield1 (iter-next iter1)))
+        (expect (plist-get yield1 :interrupt) :to-equal 'tool-call)
+        (expect (plist-get yield1 :name) :to-equal 'spawn-subagent)
+        (expect (plist-get yield1 :args) :to-equal '("agent-alpha"))))
+
+  (it "converts alist arguments passed to PTC primitives to plists on tool call interrupts"
+      (let* ((macher-agent--active-ptc-primitives '(spawn-subagent))
+             (iter1 (macher-agent-sandbox--funcall-iter 'spawn-subagent '((path . "/tmp") (name . "test"))))
+             (yield1 (iter-next iter1))
+             (iter2 (macher-agent-sandbox--funcall-iter 'spawn-subagent '(((path . "/tmp") (name . "test")))))
+             (yield2 (iter-next iter2)))
+        (expect (plist-get yield1 :interrupt) :to-equal 'tool-call)
+        (expect (plist-get yield1 :name) :to-equal 'spawn-subagent)
+        (expect (plist-get yield1 :args) :to-equal '(:path "/tmp" :name "test"))
+        (expect (plist-get yield2 :interrupt) :to-equal 'tool-call)
+        (expect (plist-get yield2 :name) :to-equal 'spawn-subagent)
+        (expect (plist-get yield2 :args) :to-equal '(:path "/tmp" :name "test"))))
+
+  (it "matches PTC primitives bidirectionally and falls back to gptel-tools when active list is nil"
+      (let ((macher-agent--active-ptc-primitives '(spawn-subagent)))
+        (expect (macher-agent--ptc-primitive-p 'spawn_subagent) :to-be t)
+        (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t))
+      (let ((macher-agent--active-ptc-primitives '("spawn_subagent")))
+        (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t))
+      (let* ((macher-agent--active-ptc-primitives nil)
+             (tool (gptel-make-tool :name "spawn_subagent" :description "test" :args nil))
+             (gptel-tools (list tool)))
+        (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t)
+        (expect (macher-agent--ptc-primitive-p 'spawn_subagent) :to-be t)))
+
+  (it "bypasses success-fn formatting and preserves raw command-fn payload during PTC execution"
+      (let* ((mock-tool (macher-agent-make-tool mock-ptc-format-tool
+                            "Test tool"
+                          :category "test"
+                          :args '((:name "val" :type string))
+                          :command-fn (lambda (payload _context _root)
+                                        `((status . "success") (value . ,(plist-get payload :val))))
+                          :success-fn (lambda (res _payload)
+                                        (format "Formatted output: %s" (cdr (assoc 'value res))))))
+             (normal-res nil)
+             (ptc-res nil))
+        ;; Standard execution (outside PTC)
+        (funcall (gptel-tool-function mock-tool)
+                 (lambda (res) (setq normal-res res))
+                 "hello")
+        (expect normal-res :to-equal "Formatted output: hello")
+        ;; PTC execution
+        (let ((macher-agent--active-ptc-execution t))
+          (funcall (gptel-tool-function mock-tool)
+                   (lambda (res) (setq ptc-res res))
+                   "hello")
+          (expect ptc-res :to-equal '((status . "success") (value . "hello")))))))
+
+(provide 'macher-agent-test-ptc)
+;;; macher-agent-test-ptc.el ends here

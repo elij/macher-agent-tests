@@ -79,8 +79,8 @@
                           (expect sender-reply :to-equal (format "ERROR: Target agent buffer '%s' does not exist or is not registered for callbacks." target-buf-name))
                           (kill-buffer sender-buf))))
 
-          (describe "parent stack behavior"
-                    (it "restores the original parent callback after popping peer communication frame"
+          (describe "routing stack behavior"
+                    (it "restores the previous routing frame and transmits ARTIFACT_UPDATE after popping frame"
                         (load (expand-file-name "skills/scripts/submit_task_result.el") nil t)
                         (let* ((root-buf (get-buffer-create "*test-root-parent*"))
                                (child-buf (get-buffer-create "*test-child-agent*"))
@@ -89,19 +89,15 @@
                                (root-received nil)
                                (peer-received nil))
 
-                          ;; 1. Root spawns child with root callback
+                          ;; 1. Root registers task and callback
+                          (puthash "root-task-1" (lambda (res) (setq root-received res)) macher-agent--pending-callbacks)
                           (with-current-buffer child-buf
-                            (macher-agent--push-parent root-buf
-                                                       (lambda (res) (setq root-received res))
-                                                       nil
-                                                       "root-task-1"))
+                            (macher-agent--push-routing "root-task-1" (buffer-name root-buf)))
 
                           ;; 2. Peer communicates with child via A2A callback
+                          (puthash "peer-task-2" (lambda (res) (setq peer-received res)) macher-agent--pending-callbacks)
                           (with-current-buffer child-buf
-                            (macher-agent--push-parent peer-buf
-                                                       nil
-                                                       (lambda (res) (setq peer-received res))
-                                                       "peer-task-2"))
+                            (macher-agent--push-routing "peer-task-2" (buffer-name peer-buf)))
 
                           ;; 3. Child completes peer request -> submit_task_result pops peer frame
                           (with-current-buffer child-buf
@@ -117,8 +113,8 @@
                             (funcall submit-fn (lambda (_) nil) :final_answer "Root final answer"))
 
                           (expect root-received :not :to-be nil)
-                          (expect (plist-get root-received :status) :to-equal 'success)
-                          (expect (plist-get root-received :data) :to-equal "Root final answer")
+                          (expect (plist-get root-received :type) :to-equal 'ARTIFACT_UPDATE)
+                          (expect (plist-get (plist-get root-received :message) :data) :to-equal "Root final answer")
 
                           (kill-buffer root-buf)
                           (kill-buffer child-buf)
