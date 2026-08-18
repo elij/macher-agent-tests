@@ -114,7 +114,7 @@
  (describe
   "4. VFS and Context Resolution: The Hidden Buffer Trap"
   (it "extracts orig-buf context from FSM inside temporary transmission buffer"
-      (let* ((temp-dir (file-name-as-directory (make-temp-file "macher-resilience-ctx-" t)))
+      (let* ((temp-dir (file-name-as-directory (file-truename (make-temp-file "macher-resilience-ctx-" t))))
              (workspace (make-macher-agent-workspace :project-root temp-dir))
              (ctx (macher--make-context :workspace workspace :contents nil))
              (orig-buf (generate-new-buffer "test-resilience-orig-buf"))
@@ -131,7 +131,7 @@
         (delete-directory temp-dir t)))
 
   (it "clears VFS memory after Emacs cache desync is resolved by buffer revert"
-      (let* ((temp-dir (file-name-as-directory (make-temp-file "macher-resilience-desync-" t)))
+      (let* ((temp-dir (file-name-as-directory (file-truename (make-temp-file "macher-resilience-desync-" t))))
              (file-path (expand-file-name "desync-target.txt" temp-dir))
              (initial-text "Initial File Content\n")
              (updated-text "Updated VFS Content\n"))

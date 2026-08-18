@@ -24,7 +24,7 @@
                 (expect (stringp cmd) :to-be t)
                 (expect (string-match-p "git .*ls-files -z -c --recurse-submodules" cmd) :to-be-truthy)
                 (expect (string-match-p "git .*ls-files -z -o --exclude-standard" cmd) :to-be-truthy)
-                (expect (string-match-p "rsync -aLC --delete --from0 --files-from=-" cmd) :to-be-truthy)
+                (expect (string-match-p "rsync -aC --delete --from0 --files-from=-" cmd) :to-be-truthy)
                 (expect 'call-process :to-have-been-called-with "git" nil nil nil "rev-parse" "--is-inside-work-tree")))
 
           (it "throws an error if the directory is not inside a git repository"
@@ -62,7 +62,7 @@
                 (macher-agent--vfs-apply-overlay-stateless (macher-context-contents mock-ctx) workspace-root sandbox-dir)
                 (expect 'write-region :to-have-been-called)
                 (expect (caar write-region-called-with) :to-equal "new content")
-                (expect (cadar write-region-called-with) :to-equal "/tmp/sandbox-12345/src/main.rs")))
+                (expect (file-truename (cadar write-region-called-with)) :to-equal (file-truename "/tmp/sandbox-12345/src/main.rs"))))
 
           (it "does not flush anything if the virtual memory is clean"
               (let* ((mock-ctx (macher--make-context :dirty-p nil :contents nil)))

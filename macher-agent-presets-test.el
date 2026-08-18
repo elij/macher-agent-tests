@@ -89,6 +89,38 @@
                   (expect (length filtered-tools) :to-equal 1)
                   (expect (gptel-tool-name (car filtered-tools)) :to-equal "my_custom_tool"))))
 
+          (it "filters out and deletes search_in_workspace in macher-agent--wrap-macher-tools"
+              (let* ((tool1 (gptel-make-tool :name "read_file" :category "macher" :function #'ignore :description "read" :args nil))
+                     (tool-search (gptel-make-tool :name "search_in_workspace" :category "macher" :function #'ignore :description "search" :args nil))
+                     (tool2 (gptel-make-tool :name "edit_file" :category "macher" :function #'ignore :description "edit" :args nil))
+                     (gptel--known-tools (list (cons "macher" (list (cons "read_file" tool1)
+                                                                    (cons "search_in_workspace" tool-search)
+                                                                    (cons "edit_file" tool2))))))
+                (macher-agent--wrap-macher-tools)
+                (let* ((entry (assoc "macher" gptel--known-tools))
+                       (tools (cdr entry)))
+                  (expect (assoc "search_in_workspace" tools) :to-be nil)
+                  (expect (assoc "read_file" tools) :not :to-be nil)
+                  (expect (assoc "edit_file" tools) :not :to-be nil))))
+
+          (it "ensures search_in_workspace with perception category replaces upstream macher version under presets"
+              (let* ((upstream-search (gptel-make-tool :name "search_in_workspace" :category "macher" :function #'ignore :description "upstream" :args nil))
+                     (agent-search (gptel-make-tool :name "search_in_workspace" :category "perception" :function #'ignore :description "agent" :args nil))
+                     (clear-fn (plist-get (plist-get macher--preset-clear-tools :tools) :function))
+                     (gptel--known-tools (list (cons "macher" (list (cons "search_in_workspace" upstream-search)))
+                                               (cons "perception" (list (cons "search_in_workspace" agent-search))))))
+                ;; wrap filters out upstream search_in_workspace from macher category
+                (macher-agent--wrap-macher-tools)
+                (let* ((macher-entry (assoc "macher" gptel--known-tools))
+                       (perception-entry (assoc "perception" gptel--known-tools)))
+                  (expect (assoc "search_in_workspace" (cdr macher-entry)) :to-be nil)
+                  (expect (assoc "search_in_workspace" (cdr perception-entry)) :not :to-be nil))
+                ;; preset purge removes macher category tools but retains perception category search_in_workspace
+                (let ((filtered (funcall clear-fn (list upstream-search agent-search))))
+                  (expect (length filtered) :to-equal 1)
+                  (expect (gptel-tool-category (car filtered)) :to-equal "perception")
+                  (expect (gptel-tool-name (car filtered)) :to-equal "search_in_workspace"))))
+
           (it "handles exclusive override flag by resetting accumulated base and preceding state"
               (let* ((tool1 (gptel-make-tool :name "tool1" :description "tool1"))
                      (toolA (gptel-make-tool :name "toolA" :description "toolA"))
@@ -122,7 +154,6 @@
                     (item-non-exclusive '(preset my-preset (:exclusive nil)))
                     (item-tool '(tool tool1)))
                 (let ((res (macher-agent-preset-pipe--exclusive state item-exclusive)))
-                  (expect res :to-be state)
                   (expect (plist-get res :system) :to-be nil)
                   (expect (plist-get res :tools) :to-be nil)
                   (expect (plist-get res :ptc-primitives) :to-be nil)
@@ -131,15 +162,20 @@
                 (expect (macher-agent-preset-pipe--exclusive state item-non-exclusive) :to-equal state)
                 (expect (macher-agent-preset-pipe--exclusive state item-tool) :to-equal state)))
 
-          (it "directly mutates state in-place without memory allocation in macher-agent-preset-pipe--exclusive"
+          (it "non-destructively copies state in macher-agent-preset-pipe--exclusive"
               (let* ((state (list :system "prompt" :tools '(tool1) :ptc-primitives '(p1) :boot-directive "boot" :model 'gpt-4))
                      (item '(preset my-preset (:exclusive t)))
                      (res (macher-agent-preset-pipe--exclusive state item)))
-                (expect res :to-be state)
-                (expect (plist-get state :system) :to-be nil)
-                (expect (plist-get state :tools) :to-be nil)
-                (expect (plist-get state :ptc-primitives) :to-be nil)
-                (expect (plist-get state :boot-directive) :to-be nil)
+                (expect res :not :to-be state)
+                (expect (plist-get res :system) :to-be nil)
+                (expect (plist-get res :tools) :to-be nil)
+                (expect (plist-get res :ptc-primitives) :to-be nil)
+                (expect (plist-get res :boot-directive) :to-be nil)
+                (expect (plist-get res :model) :to-equal 'gpt-4)
+                (expect (plist-get state :system) :to-equal "prompt")
+                (expect (plist-get state :tools) :to-equal '(tool1))
+                (expect (plist-get state :ptc-primitives) :to-equal '(p1))
+                (expect (plist-get state :boot-directive) :to-equal "boot")
                 (expect (plist-get state :model) :to-equal 'gpt-4)))
 
           (it "merges system prompt in macher-agent-preset-pipe--system"
@@ -266,7 +302,10 @@
                 (expect (plist-get composed :system) :to-match "Child prompt")
                 (expect (plist-get composed :ptc-primitives) :to-equal '(p1 p2))
                 (expect (plist-get composed :boot-directive) :to-equal "Boot child")
-                (expect (plist-get composed :temperature) :to-equal 0.3))))
+                (expect (plist-get composed :temperature) :to-equal 0.3)))
+
+          (it "verifies macher-agent--get-system-message-name is deleted"
+              (expect (fboundp 'macher-agent--get-system-message-name) :to-be nil)))
 
 (provide 'macher-agent-presets-test)
 ;;; macher-agent-presets-test.el ends here

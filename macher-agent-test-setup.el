@@ -27,6 +27,11 @@
 (defvar macher-agent--active-fsm)
 (defvar gptel--fsm-last)
 
+(when (fboundp 'macher-agent-install)
+  (macher-agent-install))
+(when (fboundp 'macher-agent-context-resolution-install)
+  (macher-agent-context-resolution-install))
+
 (defmacro macher-agent-test-setup-before-each ()
   `(before-each
     (spy-on 'macher-action)

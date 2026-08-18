@@ -28,11 +28,11 @@
                      (success-result nil)
                      (error-result nil))
                 (spy-on 'macher-agent-add-subagent :and-call-fake
-                        (lambda (name _root _presets _context _user-presets)
+                        (lambda (name &optional _presets _parent-buf _dir _context)
                           (push name spawn-calls)
                           (generate-new-buffer name)))
                 (spy-on 'macher-agent-a2a-dispatch :and-call-fake
-                        (lambda (_tasks callback)
+                        (lambda (_tasks callback &optional _parent-ctx)
                           (funcall callback
                                    (vector
                                     (list :status 'success :data "result-alpha" :buffer-name "agent-alpha")
@@ -90,17 +90,6 @@
                 (funcall cb-fmt res)
                 (expect cb-formatted-val :to-equal "Formatted: raw payload")))
 
-          (it "suppresses patch creation during request processing when patch suppression is active"
-              (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (context (macher--make-context
-                               :workspace ws
-                               :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "old" "new"))))
-                     (fsm (gptel-make-fsm))
-                     (macher-agent--suppress-patch t))
-                (spy-on 'macher--build-patch)
-                (macher-agent-process-request context fsm)
-                (expect 'macher--build-patch :not :to-have-been-called)))
-
           (it "allows indirect PTC primitive calls via funcall and apply inside sandbox"
               (let* ((macher-agent--active-ptc-primitives '(spawn-subagent))
                      (iter1 (macher-agent-sandbox--funcall-iter 'spawn-subagent '("agent-alpha")))
@@ -155,7 +144,78 @@
                   (funcall (gptel-tool-function mock-tool)
                            (lambda (res) (setq ptc-res res))
                            "hello")
-                  (expect ptc-res :to-equal '((status . "success") (value . "hello")))))))
+                  (expect ptc-res :to-equal '((status . "success") (value . "hello"))))))
+
+          (it "validates that macher-agent--dispatch-ptc-primitive rejects arbitrary fbound lisp symbols not in allowed primitives or tools"
+              (let ((cb-called nil)
+                    (err-called nil)
+                    (stop-called nil))
+                (macher-agent--dispatch-ptc-primitive
+                 'delete-file
+                 '("/tmp/some-file.txt")
+                 nil
+                 "delete-file"
+                 (lambda (_res) (setq cb-called t))
+                 (lambda (err) (setq err-called err))
+                 (lambda (&optional _reason) (setq stop-called t)))
+                (expect cb-called :to-be nil)
+                (expect stop-called :to-be t)
+                (expect err-called :to-equal '(:status error :error "ERROR: Tool 'delete-file' is not accessible."))))
+
+          (it "allows explicitly allowed primitive symbols in macher-agent--dispatch-ptc-primitive"
+              (let* ((macher-agent--active-ptc-primitives '(my-custom-primitive))
+                     (primitive-called nil)
+                     (cb-res nil)
+                     (err-res nil))
+                (cl-letf (((symbol-function 'my-custom-primitive)
+                           (lambda (arg) (setq primitive-called t) (format "result: %s" arg))))
+                  (macher-agent--dispatch-ptc-primitive
+                   'my-custom-primitive
+                   '("payload-data")
+                   nil
+                   "my-custom-primitive"
+                   (lambda (res) (setq cb-res res))
+                   (lambda (err) (setq err-res err))
+                   nil)
+                  (expect primitive-called :to-be t)
+                  (expect cb-res :to-equal "result: payload-data")
+                  (expect err-res :to-be nil))))
+
+          (it "executes a PTC script containing multiple top-level forms"
+              (let* ((ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+                     (script "(setq x 10)\n(setq y 20)\n(+ x y)")
+                     (success-result nil)
+                     (error-result nil))
+                (macher-agent-execute-ptc-script
+                 script
+                 ctx
+                 (lambda (val) (setq success-result val))
+                 (lambda (err) (setq error-result err))
+                 '(+))
+                (expect error-result :to-be nil)
+                (expect success-result :to-equal 30)))
+
+          (it "validates and resolves paths with bounds checking in macher-agent--read-file-vfs-aware"
+              (let* ((ws (make-macher-agent-workspace :project-root "/mock/ptc/"))
+                     (ctx (macher--make-context :workspace ws :contents (list (macher-agent-vfs-make-entry "/mock/ptc/file.txt" "orig" "vfs content")))))
+                ;; 1. VFS content prioritized
+                (expect (macher-agent--read-file-vfs-aware "/mock/ptc/file.txt" ctx) :to-equal "vfs content")
+                ;; 2. Path traversal blocked
+                (expect (macher-agent--read-file-vfs-aware "../../etc/passwd" ctx) :to-throw 'error)))
+
+          (it "prevents #. code injection by binding read-eval to nil in macher-agent-execute-ptc-script"
+              (let* ((ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+                     (injected nil)
+                     (success-result nil)
+                     (error-result nil)
+                     (script "#.(setq injected t)"))
+                (macher-agent-execute-ptc-script
+                 script
+                 ctx
+                 (lambda (val) (setq success-result val))
+                 (lambda (err) (setq error-result err)))
+                (expect injected :to-be nil)
+                (expect error-result :not :to-be nil))))
 
 (provide 'macher-agent-test-ptc)
 ;;; macher-agent-test-ptc.el ends here

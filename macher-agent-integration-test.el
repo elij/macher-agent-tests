@@ -165,7 +165,7 @@
                    `(:type ACQUIRE_LOCK
                            :task-id ,task-id
                            :metadata (:resource_path ,resource-path)))
-                  (expect (gethash resource-path macher-agent--vfs-lock-table) :to-equal task-id)
+                  (expect (gethash resource-path macher-agent--vfs-lock-table) :to-equal (cons task-id 1))
                   (expect lock-result :to-equal "Resource lock acquired."))))
 
           (it "invokes macher-agent--vfs-a2a-callback directly from wait_for_vfs_semaphore"

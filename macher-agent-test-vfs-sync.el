@@ -83,7 +83,7 @@
                   (expect (macher-agent-vfs-entry-orig entry) :to-equal "new physical state")
                   (expect (macher-agent-vfs-entry-curr entry) :to-equal "new physical state"))))
 
-          (it "OPTIMISTIC CONCURRENCY: invalidates virtual edits if a hostile physical mutation occurs"
+          (it "invalidates uncommitted agent edits when physical disk state changes externally"
               (let* ((entry (macher-agent-vfs-make-entry "test.el" "original state" "agent edit")))
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "user physical edit")
                 (let ((mutated (macher-agent--sync-context-entry entry)))
@@ -128,7 +128,7 @@
                      (contents (list entry))
                      (passed-ws nil))
                 (spy-on 'macher-agent--sync-context-entry :and-call-fake
-                        (lambda (e &optional ws)
+                        (lambda (e &optional ws &rest _r)
                           (setq passed-ws ws)
                           nil))
                 (macher-agent--sync-and-check-dirty-entries contents workspace)
@@ -241,7 +241,246 @@
                           (expect (macher-agent-vfs-entry-orig entry) :to-equal "original state")
                           (expect (macher-agent-vfs-entry-curr entry) :to-equal "original state")))
                     (when (buffer-live-p buf)
-                      (kill-buffer buf)))))))
+                      (kill-buffer buf))))))
+
+          (it "extracts target context from payload and uses entry accessors in compose-artifact"
+              (let* ((mock-entry (macher-agent-vfs-make-entry "target-file.el" "initial" "updated-text"))
+                     (unmodified-entry (macher-agent-vfs-make-entry "clean.el" "same" "same"))
+                     (payload-ctx (macher--make-context :contents (list mock-entry unmodified-entry)))
+                     (payload (list :context payload-ctx :status 'success :data "some data")))
+                ;; Ensure compose-artifact extracts from payload and uses entry-modified-p
+                (let ((composed (macher-agent-vfs--compose-artifact payload)))
+                  (expect (plist-get composed :diff) :not :to-be nil)
+                  (expect (length (plist-get composed :diff)) :to-equal 1)
+                  (expect (macher-agent-vfs-entry-path (car (plist-get composed :diff)))
+                          :to-equal "target-file.el")
+                  (expect (macher-agent-vfs-entry-curr (car (plist-get composed :diff)))
+                          :to-equal "updated-text"))))
+
+          (it "handles resource lock queuing and release with automatic lock transfer"
+              (clrhash macher-agent--vfs-lock-table)
+              (clrhash macher-agent--vfs-lock-queues)
+              (clrhash macher-agent--pending-callbacks)
+              (let* ((resource "src/shared-resource.el")
+                     (cb1-result nil)
+                     (cb2-result nil)
+                     (cb3-result nil))
+                ;; 1. First task acquires lock immediately
+                (puthash resource (lambda (res) (setq cb1-result res)) macher-agent--pending-callbacks)
+                (macher-agent--vfs-a2a-callback
+                 `(:type ACQUIRE_LOCK
+                         :task-id "task-lock-1"
+                         :metadata (:resource_path ,resource)))
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-lock-1" 1))
+                (expect cb1-result :to-equal "Resource lock acquired.")
+
+                ;; 2. Second task attempts to acquire locked resource -> gets queued
+                (puthash resource (lambda (res) (setq cb2-result res)) macher-agent--pending-callbacks)
+                (macher-agent--vfs-a2a-callback
+                 `(:type ACQUIRE_LOCK
+                         :task-id "task-lock-2"
+                         :metadata (:resource_path ,resource)))
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-lock-1" 1))
+                (expect cb2-result :to-be nil)
+                (expect (length (gethash resource macher-agent--vfs-lock-queues)) :to-equal 1)
+
+                ;; 3. Third task attempts to acquire locked resource -> gets queued
+                (puthash resource (lambda (res) (setq cb3-result res)) macher-agent--pending-callbacks)
+                (macher-agent--vfs-a2a-callback
+                 `(:type ACQUIRE_LOCK
+                         :task-id "task-lock-3"
+                         :metadata (:resource_path ,resource)))
+                (expect (length (gethash resource macher-agent--vfs-lock-queues)) :to-equal 2)
+                (expect cb3-result :to-be nil)
+
+                ;; 4. Task 1 releases lock -> Task 2 acquires lock and callback is invoked
+                (macher-agent-vfs-release-lock resource "task-lock-1")
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-lock-2" 1))
+                (expect cb2-result :to-equal "Resource lock acquired.")
+                (expect (length (gethash resource macher-agent--vfs-lock-queues)) :to-equal 1)
+                (expect cb3-result :to-be nil)
+
+                ;; 5. Task 2 releases lock via RELEASE_LOCK message -> Task 3 acquires lock
+                (macher-agent--vfs-a2a-callback
+                 `(:type RELEASE_LOCK
+                         :task-id "task-lock-2"
+                         :metadata (:resource_path ,resource)))
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-lock-3" 1))
+                (expect cb3-result :to-equal "Resource lock acquired.")
+                (expect (gethash resource macher-agent--vfs-lock-queues)) :to-be nil
+
+                ;; 6. Task 3 releases lock -> resource is completely unlocked
+                (macher-agent-vfs-release-lock resource "task-lock-3")
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-be nil)
+                (expect (gethash resource macher-agent--vfs-lock-queues) :to-be nil)))
+
+          (it "rejects lock release when task-id does not match the current owner"
+              (clrhash macher-agent--vfs-lock-table)
+              (clrhash macher-agent--vfs-lock-queues)
+              (clrhash macher-agent--pending-callbacks)
+              (let ((resource "src/owner-mismatch.el"))
+                (puthash resource (cons "task-owner-1" 1) macher-agent--vfs-lock-table)
+                ;; Attempting to release with wrong task-id returns nil
+                (expect (macher-agent-vfs-release-lock resource "task-owner-2") :to-be nil)
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-owner-1" 1))
+                ;; Attempting to release with nil task-id returns nil when owner is not nil
+                (expect (macher-agent-vfs-release-lock resource nil) :to-be nil)
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-owner-1" 1))
+                ;; Releasing with matching task-id succeeds
+                (expect (macher-agent-vfs-release-lock resource "task-owner-1") :to-be t)
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-be nil)))
+
+          (it "releases lock and transfers to queued requester on release"
+              (clrhash macher-agent--vfs-lock-table)
+              (clrhash macher-agent--vfs-lock-queues)
+              (clrhash macher-agent--pending-callbacks)
+              (let* ((resource "src/wildcard-lock.el")
+                     (cb-result nil))
+                (puthash resource (cons "task-1" 1) macher-agent--vfs-lock-table)
+                (puthash resource (list (cons "task-2" (lambda (res) (setq cb-result res)))) macher-agent--vfs-lock-queues)
+                (expect (macher-agent-vfs-release-lock resource "task-1") :to-be t)
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-2" 1))
+                (expect cb-result :to-equal "Resource lock acquired.")))
+
+          (it "registers fallback ephemeral context in active-workspaces to prevent detached contexts"
+              (let* ((macher-agent-active-workspaces (make-hash-table :test 'equal))
+                     (ws-path "/tmp/ephemeral-workspace-test")
+                     (payload (list :workspace-id ws-path)))
+                (let ((extracted-ctx (macher-agent-storage--extract-context payload)))
+                  (expect extracted-ctx :not :to-be nil)
+                  ;; Check that context is registered in active-workspaces table
+                  (expect (gethash (expand-file-name ws-path) macher-agent-active-workspaces)
+                          :to-equal extracted-ctx))))
+
+          (it "enforces optimistic concurrency control in macher-agent--update-context-file against external disk modifications"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (file-path "/mock/proj/test.el")
+                     (original-mtime '(25000 10000))
+                     (drifted-mtime '(25000 20000)))
+                (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
+                (puthash file-path original-mtime (macher-agent-workspace-mtime-tracker workspace))
+                (spy-on 'file-attributes :and-call-fake
+                        (lambda (path)
+                          (if (equal path file-path)
+                              `(t 1 1 1 ,drifted-mtime ,drifted-mtime ,drifted-mtime 100 "mode" t 1 1)
+                            nil)))
+                (expect (macher-agent--update-context-file ctx file-path "New content")
+                        :to-throw 'error)))
+
+          (it "distinguishes between distinct files sharing base filenames without collision during merge and update"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (parent-ctx (macher--make-context :workspace workspace
+                                                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src orig")
+                                                                       (macher-agent-vfs-make-entry "/mock/proj/tests/main.c" "tests orig" "tests orig"))))
+                     (child-ctx (macher--make-context :workspace workspace
+                                                      :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src modified")))))
+                (macher-agent--merge-contexts parent-ctx child-ctx)
+                (let ((src-entry (cl-find "/mock/proj/src/main.c" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal))
+                      (tests-entry (cl-find "/mock/proj/tests/main.c" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                  (expect (macher-agent-vfs-entry-curr src-entry) :to-equal "src modified")
+                  (expect (macher-agent-vfs-entry-curr tests-entry) :to-equal "tests orig"))))
+
+          (it "tracks modification times in mtime tracker when reading context files from disk"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (file-path "/mock/proj/read-track.el")
+                     (mtime '(25000 30000)))
+                (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
+                (spy-on 'file-exists-p :and-return-value t)
+                (spy-on 'file-attributes :and-call-fake
+                        (lambda (path)
+                          (if (equal path file-path)
+                              `(t 1 1 1 ,mtime ,mtime ,mtime 100 "mode" t 1 1)
+                            nil)))
+                (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "content on disk")
+                (let ((content (macher-agent--read-context-file ctx file-path)))
+                  (expect content :to-equal "content on disk")
+                  (expect (gethash file-path (macher-agent-workspace-mtime-tracker workspace)) :to-equal mtime))))
+
+          (it "supports re-entrant lock acquisition when held by the same task-id"
+              (clrhash macher-agent--vfs-lock-table)
+              (clrhash macher-agent--vfs-lock-queues)
+              (clrhash macher-agent--pending-callbacks)
+              (let* ((resource "src/reentrant-res.el")
+                     (cb1-result nil)
+                     (cb2-result nil))
+                ;; Initial lock acquisition
+                (puthash resource (lambda (res) (setq cb1-result res)) macher-agent--pending-callbacks)
+                (macher-agent--vfs-a2a-callback
+                 `(:type ACQUIRE_LOCK
+                         :task-id "task-reentrant-1"
+                         :metadata (:resource_path ,resource)))
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-reentrant-1" 1))
+                (expect cb1-result :to-equal "Resource lock acquired.")
+                ;; Re-entrant lock acquisition with the same task-id
+                (puthash resource (lambda (res) (setq cb2-result res)) macher-agent--pending-callbacks)
+                (macher-agent--vfs-a2a-callback
+                 `(:type ACQUIRE_LOCK
+                         :task-id "task-reentrant-1"
+                         :metadata (:resource_path ,resource)))
+                (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-reentrant-1" 2))
+                (expect cb2-result :to-equal "Resource lock acquired.")
+                (expect (gethash resource macher-agent--vfs-lock-queues) :to-be nil)))
+
+          (it "classifies live buffers and asterisk buffers before slash-based file matching"
+              (let* ((asterisk-slash-buf "*worker/subagent*")
+                     (live-buf (generate-new-buffer "live-no-file-buffer"))
+                     (live-buf-slash (generate-new-buffer "live/buffer/slash")))
+                (unwind-protect
+                    (progn
+                      (expect (macher-agent-context-classify-entry asterisk-slash-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent-context-classify-entry live-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent-context-classify-entry live-buf-slash "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent-context-classify-entry "*scratch*" "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent-context-classify-entry "src/main.rs" "/mock/root") :to-equal 'file))
+                  (kill-buffer live-buf)
+                  (kill-buffer live-buf-slash))))
+
+          (it "computes safe workspace hash inspecting unwrapped project cons cells"
+              (let ((ws-cons '(agent project . "/mock/project/path"))
+                    (direct-project '(project . "/mock/project/path")))
+                (expect (macher-agent--safe-workspace-hash ws-cons)
+                        :to-equal (md5 "/mock/project/path"))
+                (expect (macher-agent--safe-workspace-hash direct-project)
+                        :to-equal (md5 "/mock/project/path"))))
+
+          (it "merges contexts respecting buffer-local macher-agent--is-subagent"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (parent-ctx (macher--make-context :workspace workspace
+                                                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v1"))))
+                     (child-ctx (macher--make-context :workspace workspace
+                                                      :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v2")))))
+                (let ((macher-agent--is-subagent nil))
+                  (macher-agent--merge-contexts parent-ctx child-ctx)
+                  (let ((entry (cl-find "/mock/proj/file.el" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                    (expect (macher-agent-vfs-entry-curr entry) :to-equal "v2")))))
+
+          (it "extracts context from alist using 'context symbol key in macher-agent-storage--extract-context"
+              (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                     (payload-symbol `((context . ,ctx)))
+                     (payload-keyword `((:context . ,ctx)))
+                     (payload-target-sym `((target-context . ,ctx)))
+                     (payload-target-kw `((:target-context . ,ctx))))
+                (expect (macher-agent-storage--extract-context payload-symbol) :to-be ctx)
+                (expect (macher-agent-storage--extract-context payload-keyword) :to-be ctx)
+                (expect (macher-agent-storage--extract-context payload-target-sym) :to-be ctx)
+                (expect (macher-agent-storage--extract-context payload-target-kw) :to-be ctx)))
+
+          (it "ensures trailing newline before separator in macher-agent--write-vfs-entries-to-buffer"
+              (with-temp-buffer
+                (let ((entries (list (macher-agent-vfs-make-entry "file-no-newline.txt" "orig" "content without newline")
+                                     (macher-agent-vfs-make-entry "file-with-newline.txt" "orig" "content with newline\n"))))
+                  (macher-agent--write-vfs-entries-to-buffer entries)
+                  (let ((buf-str (buffer-string)))
+                    (expect buf-str :to-equal
+                            (concat "=== VFS ENTRY: file-no-newline.txt ===\n"
+                                    "content without newline\n"
+                                    "=======================\n\n"
+                                    "=== VFS ENTRY: file-with-newline.txt ===\n"
+                                    "content with newline\n"
+                                    "=======================\n\n")))))))
 
 (provide 'macher-agent-test-vfs-sync)
 ;;; macher-agent-test-vfs-sync.el ends here

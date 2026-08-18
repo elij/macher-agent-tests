@@ -112,14 +112,14 @@
                               (expect resolved :not :to-be canonical-ctx)
                               (expect (macher-context-p resolved) :to-be t)))))
 
-                    (it "signals error when context resolution fails across all pipeline steps"
+                    (it "returns nil when context resolution fails across all pipeline steps"
                         (let ((macher-agent-active-workspaces (make-hash-table :test 'equal))
                               (macher-agent--persistent-context nil)
                               (macher-agent--active-fsm nil)
                               (gptel--fsm-last nil)
                               (macher--fsm-latest nil))
                           (spy-on 'macher-agent--resolve-context-lazy-init :and-return-value nil)
-                          (expect (macher-agent-resolve-context) :to-throw 'error)))
+                          (expect (macher-agent-resolve-context) :to-be nil)))
 
                     (it "reads and updates files via public context API functions"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/api-proj/"))

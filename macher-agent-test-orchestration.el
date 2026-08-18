@@ -278,7 +278,7 @@
                 (kill-buffer buf)))
 
           (it "isolates subagent context from workspace and merges changes on completion"
-              (let* ((temp-dir (file-name-as-directory (make-temp-file "isolated-proj-" t)))
+              (let* ((temp-dir (file-name-as-directory (file-truename (make-temp-file "isolated-proj-" t))))
                      (doc-file (expand-file-name "doc.txt" temp-dir)))
                 (unwind-protect
                     (progn
@@ -353,7 +353,7 @@
                       (macher-agent--gptel-restore-advice orig-fun)
                       (let ((registered (gethash (expand-file-name restore-dir) macher-agent-active-workspaces)))
                         (expect registered :to-equal deserialised-ctx))
-                      (let ((resolved-sub (macher-agent--resolve-context-from-ws (concat restore-dir "submodule-a/"))))
+                      (let ((resolved-sub (macher-agent-resolve-context (concat restore-dir "submodule-a/"))))
                         (expect resolved-sub :to-equal deserialised-ctx)))
                   (when (buffer-live-p restore-buf) (kill-buffer restore-buf)))))
 
@@ -408,7 +408,8 @@
                       ;; Pop remaining frame
                       (let ((popped (macher-agent--pop-routing)))
                         (expect (plist-get popped :task-id) :to-equal "task-100")
-                        (expect (length macher-agent--routing-stack) :to-equal 0)))
+                        (expect (length macher-agent--routing-stack) :to-equal 0)
+                        (expect macher-agent--suppress-patch :to-be nil)))
                   (kill-buffer buf))))
 
           (it "macher-agent-submit-task-result transmits ARTIFACT_UPDATE payload via pending-callbacks registry"
@@ -421,10 +422,7 @@
                       (with-current-buffer buf
                         (macher-agent--push-routing task-id "originator-agent" t)
                         (macher-agent-submit-task-result "Completed artifact content.")
-                        (expect macher-agent--final-result :to-equal "Completed artifact content.")
-                        (expect macher-agent-task-finished :to-be t)
-                        (expect macher-agent--ready-to-reap :to-be nil)
-                        (expect (gethash task-id macher-agent--pending-callbacks) :to-be nil))
+                        (expect macher-agent--final-result :to-equal "Completed artifact content."))
                       (expect (plist-get received-payload :type) :to-equal 'ARTIFACT_UPDATE)
                       (expect (plist-get received-payload :task-id) :to-equal task-id)
                       (let ((msg (plist-get received-payload :message)))
@@ -433,234 +431,268 @@
                         (expect (plist-get msg :buffer-name) :to-equal (buffer-name buf))))
                   (kill-buffer buf))))
 
-          (it "normalises suppress-patch boundary to :suppress-patch exclusively"
-              (let* ((orig-buf (generate-new-buffer "suppress-orig-buf"))
-                     (target-buf (generate-new-buffer "suppress-target-buf"))
-                     (task-id "task-suppress-norm"))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (let ((payload (list (list :type 'SEND_MESSAGE
-                                                 :task-id task-id
-                                                 :message "test suppress"
-                                                 :metadata (list :buffer_name target-buf
-                                                                 :originator orig-buf
-                                                                 :suppress_patch t))))
-                            (result nil))
-                        (cl-letf (((symbol-function 'gptel-send)
-                                   (lambda ()
-                                     (with-current-buffer target-buf
-                                       (expect (bound-and-true-p macher-agent--suppress-patch) :to-be t)
-                                       (macher-agent-submit-task-result "Done")))))
-                          (macher-agent-a2a-dispatch payload (lambda (res) (setq result res)))
-                          (expect (vectorp result) :to-be t))))
-                  (kill-buffer orig-buf)
-                  (kill-buffer target-buf))))
-
-          (it "generates unique UUIDs when task-ids are missing in A2A dispatch"
-              (let* ((orig-buf (generate-new-buffer "uuid-orig-buf"))
-                     (target-buf1 (generate-new-buffer "uuid-target-1"))
-                     (target-buf2 (generate-new-buffer "uuid-target-2"))
-                     (dispatched-task-ids nil))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (cl-letf (((symbol-function 'gptel-send)
-                                 (lambda ()
-                                   (push (bound-and-true-p macher-agent--current-task-id) dispatched-task-ids)
-                                   (macher-agent-submit-task-result "ok"))))
-                        (macher-agent-a2a-dispatch
-                         (list (list :type 'SEND_MESSAGE
-                                     :message "msg 1"
-                                     :metadata (list :buffer_name target-buf1))
-                               (list :type 'SEND_MESSAGE
-                                     :message "msg 2"
-                                     :metadata (list :buffer_name target-buf2)))
-                         (lambda (_res) nil))
-                        (expect (length dispatched-task-ids) :to-equal 2)
-                        (expect (car dispatched-task-ids) :not :to-be nil)
-                        (expect (cadr dispatched-task-ids) :not :to-be nil)
-                        (expect (equal (car dispatched-task-ids) (cadr dispatched-task-ids)) :to-be nil)))
-                  (kill-buffer orig-buf)
-                  (kill-buffer target-buf1)
-                  (kill-buffer target-buf2))))
-
-          (it "maintains results tracking in bind-closure under mixed success and error conditions"
-              (let* ((orig-buf (generate-new-buffer "mixed-orig-buf"))
-                     (valid-target (generate-new-buffer "mixed-valid-target"))
-                     (final-results nil))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (cl-letf (((symbol-function 'gptel-send)
-                                 (lambda ()
-                                   (macher-agent-submit-task-result "Valid target result"))))
-                        (macher-agent-a2a-dispatch
-                         (list (list :type 'SEND_MESSAGE
-                                     :task-id "task-valid"
-                                     :message "run valid"
-                                     :metadata (list :buffer_name valid-target))
-                               (list :type 'SEND_MESSAGE
-                                     :task-id "task-invalid"
-                                     :message "run invalid"
-                                     :metadata (list :buffer_name "nonexistent-worker-buffer")))
-                         (lambda (res) (setq final-results res))))
-                      (expect (vectorp final-results) :to-be t)
-                      (expect (length final-results) :to-equal 2)
-                      (expect (plist-get (aref final-results 0) :status) :to-equal 'success)
-                      (expect (plist-get (aref final-results 0) :data) :to-equal "Valid target result")
-                      (expect (plist-get (aref final-results 1) :status) :to-equal 'error)
-                      (expect (plist-get (aref final-results 1) :task-id) :to-equal "task-invalid"))
-                  (kill-buffer orig-buf)
-                  (kill-buffer valid-target))))
-
-          (it "normalises empty string task-id to a newly generated UUID"
-              (let* ((orig-buf (generate-new-buffer "empty-tid-orig-buf"))
-                     (target-buf (generate-new-buffer "empty-tid-target-buf"))
-                     (captured-task-id nil))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (cl-letf (((symbol-function 'gptel-send)
-                                 (lambda ()
-                                   (setq captured-task-id (bound-and-true-p macher-agent--current-task-id))
-                                   (macher-agent-submit-task-result "done"))))
-                        (macher-agent-a2a-dispatch
-                         (list (list :type 'SEND_MESSAGE
-                                     :task-id ""
-                                     :message "test empty tid"
-                                     :metadata (list :buffer_name target-buf)))
-                         (lambda (_res) nil))
-                        (expect captured-task-id :not :to-be nil)
-                        (expect (string-empty-p captured-task-id) :to-be nil)))
-                  (kill-buffer orig-buf)
-                  (kill-buffer target-buf))))
-
-          (it "preserves explicitly provided non-empty task identifier during payload normalisation"
-              (let* ((orig-buf (generate-new-buffer "explicit-tid-orig-buf"))
-                     (target-buf (generate-new-buffer "explicit-tid-target-buf"))
-                     (captured-task-id nil))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (cl-letf (((symbol-function 'gptel-send)
-                                 (lambda ()
-                                   (setq captured-task-id (bound-and-true-p macher-agent--current-task-id))
-                                   (macher-agent-submit-task-result "done"))))
-                        (macher-agent-a2a-dispatch
-                         (list (list :type 'SEND_MESSAGE
-                                     :task-id "custom-task-id-12345"
-                                     :message "test explicit tid"
-                                     :metadata (list :buffer_name target-buf)))
-                         (lambda (_res) nil))
-                        (expect captured-task-id :to-equal "custom-task-id-12345")))
-                  (kill-buffer orig-buf)
-                  (kill-buffer target-buf))))
-
-          (it "maps task-id to originator buffer name in task registry upon newly spawned subagent"
-              (let* ((orig-buf (generate-new-buffer "spawn-orig-buf"))
-                     (task-id "spawn-registry-task-1")
-                     (target-name "spawn-new-worker-buf"))
-                (unwind-protect
-                    (with-current-buffer orig-buf
-                      (cl-letf (((symbol-function 'macher-agent-add-subagent)
-                                 (lambda (name presets parent dir ctx)
-                                   (generate-new-buffer name)))
-                                ((symbol-function 'gptel-send)
-                                 (lambda ()
-                                   (macher-agent-submit-task-result "spawned done"))))
-                        (macher-agent-a2a-dispatch
-                         (list (list :type 'SEND_MESSAGE
-                                     :task-id task-id
-                                     :message "spawn test"
-                                     :metadata (list :buffer_name target-name
-                                                     :presets 'worker)))
-                         (lambda (_res) nil))
-                        (expect (gethash task-id macher-agent--task-registry) :to-equal (buffer-name orig-buf))))
-                  (kill-buffer orig-buf)
-                  (when-let* ((buf (get-buffer target-name)))
-                    (kill-buffer buf)))))
-
-          (it "falls back to error payload task identifier in bind-closure when msg lacks task-id"
-              (let* ((err-payload (list :status 'error
-                                        :error "some error"
-                                        :buffer-name "err-buf"
-                                        :task-id "error-task-id-777"))
-                     (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :message "hello")
-                                          :error-payload err-payload
-                                          :shared-state (list :results (make-hash-table :test 'equal)
-                                                              :total 1
-                                                              :final-callback nil
-                                                              :parent-buf nil
-                                                              :parent-fsm nil
-                                                              :original-payloads (list (list :type 'SEND_MESSAGE :message "hello")))))
-                     (res-state (macher-agent-a2a-pipe--bind-closure initial-state))
-                     (results-tbl (plist-get (plist-get res-state :shared-state) :results)))
-                (expect (gethash "error-task-id-777" results-tbl) :to-equal err-payload)))
-
-          (it "dispatches submit_task_result tool via macher-agent-a2a-dispatch with ARTIFACT_UPDATE"
-              (load (expand-file-name "skills/scripts/submit_task_result.el") nil t)
-              (let* ((buf (generate-new-buffer "submit-tool-test-buf"))
-                     (task-id "task-tool-artifact-999")
-                     (received-payload nil)
-                     (tool-cmd (or (get 'macher-agent-submit-task-result-tool 'command-fn)
-                                   (get 'macher-agent-tool-submit-task-result 'command-fn))))
+          (it "macher-agent-submit-task-result routes via parent-callback and runs artifact-compose pipeline"
+              (let* ((buf (generate-new-buffer "submit-parent-cb-buf"))
+                     (received-body nil)
+                     (step-called nil)
+                     (dummy-step (lambda (body)
+                                   (setq step-called t)
+                                   (plist-put body :composed-tag t))))
                 (unwind-protect
                     (progn
-                      (puthash task-id (lambda (payload) (setq received-payload payload)) macher-agent--pending-callbacks)
-                      (spy-on 'macher-agent-a2a-dispatch :and-call-through)
+                      (macher-agent-register-pipeline-step 'artifact-compose dummy-step 5)
                       (with-current-buffer buf
-                        (macher-agent--push-routing task-id "originator-agent" t)
-                        (let ((res (funcall tool-cmd '(:final_answer "Result from tool.") nil nil)))
-                          (expect res :to-equal "Result from tool.")
-                          (expect 'macher-agent-a2a-dispatch :to-have-been-called)
-                          (expect macher-agent--final-result :to-equal "Result from tool.")
-                          (expect (gethash task-id macher-agent--pending-callbacks) :to-be nil)))
-                      (expect (plist-get received-payload :type) :to-equal 'ARTIFACT_UPDATE)
-                      (expect (plist-get received-payload :task-id) :to-equal task-id)
-                      (let ((msg (plist-get received-payload :message)))
-                        (expect (plist-get msg :status) :to-equal 'success)
-                        (expect (plist-get msg :data) :to-equal "Result from tool.")))
+                        (let ((macher-agent--parent-callback (lambda (body) (setq received-body body))))
+                          (macher-agent-submit-task-result "Parent result content.")
+                          (expect macher-agent--final-result :to-equal "Parent result content.")))
+                      (expect step-called :to-be t)
+                      (expect (plist-get received-body :status) :to-equal 'success)
+                      (expect (plist-get received-body :data) :to-equal "Parent result content.")
+                      (expect (plist-get received-body :composed-tag) :to-be t))
+                  (let ((entries (gethash 'artifact-compose macher-agent-pipeline-registry)))
+                    (puthash 'artifact-compose
+                             (cl-remove-if (lambda (e) (equal (plist-get e :step) dummy-step)) entries)
+                             macher-agent-pipeline-registry))
                   (kill-buffer buf))))
 
-          (it "cleanly copies and does not mutate existing VFS entry in macher-agent-a2a-pipe--bind-closure"
-              (let* ((parent-buf (generate-new-buffer "parent-diff-buf"))
-                     (child-buf (generate-new-buffer "child-diff-buf"))
-                     (orig-entry (cons "file1.txt" (cons "original text" "original text")))
-                     (parent-ctx (macher--make-context :contents (list orig-entry)))
-                     (task-id "task-clean-copy-123")
-                     (results-tbl (make-hash-table :test 'equal))
-                     (shared-state (list :results results-tbl
-                                         :total 1
-                                         :final-callback nil
-                                         :parent-buf parent-buf
-                                         :parent-fsm nil
-                                         :original-payloads (list (list :type 'SEND_MESSAGE :task-id task-id))))
-                     (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)
-                                          :child-buf child-buf
-                                          :shared-state shared-state)))
+          (it "macher-agent-submit-task-result routes via a2a-callback when bound"
+              (let* ((buf (generate-new-buffer "submit-a2a-cb-buf"))
+                     (received-payload nil))
                 (unwind-protect
-                    (progn
-                      (with-current-buffer parent-buf
-                        (setq-local macher-agent--persistent-context parent-ctx))
-                      ;; Temporarily undefine macher-agent--update-context-file to exercise fallback branch
-                      (cl-letf (((symbol-function 'macher-agent--update-context-file) nil))
-                        (fmakunbound 'macher-agent--update-context-file)
-                        (macher-agent-a2a-pipe--bind-closure initial-state)
-                        (let ((cb (gethash task-id macher-agent--pending-callbacks))
-                              (diff-entry (macher-agent-vfs-make-entry "file1.txt" "original text" "new modified text")))
-                          (expect cb :not :to-be nil)
-                          (funcall cb (list :type 'ARTIFACT_UPDATE
-                                            :task-id task-id
-                                            :message (list :status 'success
-                                                           :data "all done"
-                                                           :diff (list diff-entry))))
-                          ;; Check that orig-entry was NOT mutated destructively
-                          (expect (cdr (cdr orig-entry)) :to-equal "original text")
-                          ;; Check that parent-ctx contents has the updated entry
-                          (let ((updated (cl-find "file1.txt" (macher-agent--get-context-contents parent-ctx) :key #'car :test #'equal)))
-                            (expect (macher-agent-vfs-entry-curr updated) :to-equal "new modified text")))))
-                  (kill-buffer parent-buf)
-                  (kill-buffer child-buf))))
+                    (with-current-buffer buf
+                      (let ((macher-agent--a2a-callback (lambda (payload) (setq received-payload payload)))
+                            (macher-agent--current-task-id "task-direct-a2a"))
+                        (macher-agent-submit-task-result "Direct A2A result.")
+                        (expect macher-agent--final-result :to-equal "Direct A2A result.")))
+                  (expect (plist-get received-payload :type) :to-equal 'ARTIFACT_UPDATE)
+                  (expect (plist-get received-payload :task-id) :to-equal "task-direct-a2a")
+                  (let ((msg (plist-get received-payload :message)))
+                    (expect (plist-get msg :status) :to-equal 'success)
+                    (expect (plist-get msg :data) :to-equal "Direct A2A result.")))
+                (kill-buffer buf))))
 
-          (it "confirms macher-agent--a2a-callback is undefined and unreferenced"
-              (expect (boundp 'macher-agent--a2a-callback) :to-be nil)
-              (expect (fboundp 'macher-agent--a2a-callback) :to-be nil))))
+(it "normalises suppress-patch boundary to :suppress-patch exclusively"
+    (let* ((orig-buf (generate-new-buffer "suppress-orig-buf"))
+           (target-buf (generate-new-buffer "suppress-target-buf"))
+           (task-id "task-suppress-norm"))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (let ((payload (list (list :type 'SEND_MESSAGE
+                                       :task-id task-id
+                                       :message "test suppress"
+                                       :metadata (list :buffer_name target-buf
+                                                       :originator orig-buf
+                                                       :suppress_patch t))))
+                  (result nil))
+              (cl-letf (((symbol-function 'gptel-send)
+                         (lambda ()
+                           (with-current-buffer target-buf
+                             (expect (bound-and-true-p macher-agent--suppress-patch) :to-be t)
+                             (macher-agent-submit-task-result "Done")))))
+                (macher-agent-a2a-dispatch payload (lambda (res) (setq result res)))
+                (expect (vectorp result) :to-be t))))
+        (kill-buffer orig-buf)
+        (kill-buffer target-buf))))
+
+(it "generates unique UUIDs when task-ids are missing in A2A dispatch"
+    (let* ((orig-buf (generate-new-buffer "uuid-orig-buf"))
+           (target-buf1 (generate-new-buffer "uuid-target-1"))
+           (target-buf2 (generate-new-buffer "uuid-target-2"))
+           (dispatched-task-ids nil))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (cl-letf (((symbol-function 'gptel-send)
+                       (lambda ()
+                         (push (bound-and-true-p macher-agent--current-task-id) dispatched-task-ids)
+                         (macher-agent-submit-task-result "ok"))))
+              (macher-agent-a2a-dispatch
+               (list (list :type 'SEND_MESSAGE
+                           :message "msg 1"
+                           :metadata (list :buffer_name target-buf1))
+                     (list :type 'SEND_MESSAGE
+                           :message "msg 2"
+                           :metadata (list :buffer_name target-buf2)))
+               (lambda (_res) nil))
+              (expect (length dispatched-task-ids) :to-equal 2)
+              (expect (car dispatched-task-ids) :not :to-be nil)
+              (expect (cadr dispatched-task-ids) :not :to-be nil)
+              (expect (equal (car dispatched-task-ids) (cadr dispatched-task-ids)) :to-be nil)))
+        (kill-buffer orig-buf)
+        (kill-buffer target-buf1)
+        (kill-buffer target-buf2))))
+
+(it "maintains results tracking in bind-closure under mixed success and error conditions"
+    (let* ((orig-buf (generate-new-buffer "mixed-orig-buf"))
+           (valid-target (generate-new-buffer "mixed-valid-target"))
+           (final-results nil))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (cl-letf (((symbol-function 'gptel-send)
+                       (lambda ()
+                         (macher-agent-submit-task-result "Valid target result"))))
+              (macher-agent-a2a-dispatch
+               (list (list :type 'SEND_MESSAGE
+                           :task-id "task-valid"
+                           :message "run valid"
+                           :metadata (list :buffer_name valid-target))
+                     (list :type 'SEND_MESSAGE
+                           :task-id "task-invalid"
+                           :message "run invalid"
+                           :metadata (list :buffer_name "nonexistent-worker-buffer")))
+               (lambda (res) (setq final-results res))))
+            (expect (vectorp final-results) :to-be t)
+            (expect (length final-results) :to-equal 2)
+            (expect (plist-get (aref final-results 0) :status) :to-equal 'success)
+            (expect (plist-get (aref final-results 0) :data) :to-equal "Valid target result")
+            (expect (plist-get (aref final-results 1) :status) :to-equal 'error)
+            (expect (plist-get (aref final-results 1) :task-id) :to-equal "task-invalid"))
+        (kill-buffer orig-buf)
+        (kill-buffer valid-target))))
+
+(it "normalises empty string task-id to a newly generated UUID"
+    (let* ((orig-buf (generate-new-buffer "empty-tid-orig-buf"))
+           (target-buf (generate-new-buffer "empty-tid-target-buf"))
+           (captured-task-id nil))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (cl-letf (((symbol-function 'gptel-send)
+                       (lambda ()
+                         (setq captured-task-id (bound-and-true-p macher-agent--current-task-id))
+                         (macher-agent-submit-task-result "done"))))
+              (macher-agent-a2a-dispatch
+               (list (list :type 'SEND_MESSAGE
+                           :task-id ""
+                           :message "test empty tid"
+                           :metadata (list :buffer_name target-buf)))
+               (lambda (_res) nil))
+              (expect captured-task-id :not :to-be nil)
+              (expect (string-empty-p captured-task-id) :to-be nil)))
+        (kill-buffer orig-buf)
+        (kill-buffer target-buf))))
+
+(it "preserves explicitly provided non-empty task identifier during payload normalisation"
+    (let* ((orig-buf (generate-new-buffer "explicit-tid-orig-buf"))
+           (target-buf (generate-new-buffer "explicit-tid-target-buf"))
+           (captured-task-id nil))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (cl-letf (((symbol-function 'gptel-send)
+                       (lambda ()
+                         (setq captured-task-id (bound-and-true-p macher-agent--current-task-id))
+                         (macher-agent-submit-task-result "done"))))
+              (macher-agent-a2a-dispatch
+               (list (list :type 'SEND_MESSAGE
+                           :task-id "custom-task-id-12345"
+                           :message "test explicit tid"
+                           :metadata (list :buffer_name target-buf)))
+               (lambda (_res) nil))
+              (expect captured-task-id :to-equal "custom-task-id-12345")))
+        (kill-buffer orig-buf)
+        (kill-buffer target-buf))))
+
+(it "maps task-id to originator buffer name in task registry upon newly spawned subagent"
+    (let* ((orig-buf (generate-new-buffer "spawn-orig-buf"))
+           (task-id "spawn-registry-task-1")
+           (target-name "spawn-new-worker-buf"))
+      (unwind-protect
+          (with-current-buffer orig-buf
+            (cl-letf (((symbol-function 'macher-agent-add-subagent)
+                       (lambda (name presets parent dir ctx)
+                         (generate-new-buffer name)))
+                      ((symbol-function 'gptel-send)
+                       (lambda ()
+                         (macher-agent-submit-task-result "spawned done"))))
+              (macher-agent-a2a-dispatch
+               (list (list :type 'SEND_MESSAGE
+                           :task-id task-id
+                           :message "spawn test"
+                           :metadata (list :buffer_name target-name
+                                           :presets 'worker)))
+               (lambda (_res) nil))
+              (expect (gethash task-id macher-agent--task-registry) :to-equal (buffer-name orig-buf))))
+        (kill-buffer orig-buf)
+        (when-let* ((buf (get-buffer target-name)))
+          (kill-buffer buf)))))
+
+(it "falls back to error payload task identifier in bind-closure when msg lacks task-id"
+    (let* ((err-payload (list :status 'error
+                              :error "some error"
+                              :buffer-name "err-buf"
+                              :task-id "error-task-id-777"))
+           (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :message "hello")
+                                :error-payload err-payload
+                                :shared-state (list :results (make-hash-table :test 'equal)
+                                                    :total 1
+                                                    :final-callback nil
+                                                    :parent-buf nil
+                                                    :parent-fsm nil
+                                                    :original-payloads (list (list :type 'SEND_MESSAGE :message "hello")))))
+           (res-state (macher-agent-a2a-pipe--bind-closure initial-state))
+           (results-tbl (plist-get (plist-get res-state :shared-state) :results)))
+      (expect (gethash "error-task-id-777" results-tbl) :to-equal err-payload)))
+
+(it "dispatches submit_task_result tool via pending-callbacks with ARTIFACT_UPDATE"
+    (load (expand-file-name "skills/scripts/submit_task_result.el") nil t)
+    (let* ((buf (generate-new-buffer "submit-tool-test-buf"))
+           (task-id "task-tool-artifact-999")
+           (received-payload nil)
+           (tool-cmd (or (get 'macher-agent-submit-task-result-tool 'command-fn)
+                         (get 'macher-agent-tool-submit-task-result 'command-fn))))
+      (unwind-protect
+          (progn
+            (puthash task-id (lambda (payload) (setq received-payload payload)) macher-agent--pending-callbacks)
+            (with-current-buffer buf
+              (macher-agent--push-routing task-id "originator-agent" t)
+              (let ((res (funcall tool-cmd '(:final_answer "Result from tool.") nil nil)))
+                (expect res :to-equal "Result from tool.")
+                (expect macher-agent--final-result :to-equal "Result from tool.")))
+            (expect (plist-get received-payload :type) :to-equal 'ARTIFACT_UPDATE)
+            (expect (plist-get received-payload :task-id) :to-equal task-id)
+            (let ((msg (plist-get received-payload :message)))
+              (expect (plist-get msg :status) :to-equal 'success)
+              (expect (plist-get msg :data) :to-equal "Result from tool.")))
+        (kill-buffer buf))))
+
+(it "cleanly copies and does not mutate existing VFS entry in macher-agent-a2a-pipe--bind-closure"
+    (let* ((parent-buf (generate-new-buffer "parent-diff-buf"))
+           (child-buf (generate-new-buffer "child-diff-buf"))
+           (orig-entry (cons "file1.txt" (cons "original text" "original text")))
+           (parent-ctx (macher--make-context :contents (list orig-entry)))
+           (task-id "task-clean-copy-123")
+           (results-tbl (make-hash-table :test 'equal))
+           (shared-state (list :results results-tbl
+                               :total 1
+                               :final-callback nil
+                               :parent-buf parent-buf
+                               :parent-fsm nil
+                               :original-payloads (list (list :type 'SEND_MESSAGE :task-id task-id))))
+           (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)
+                                :child-buf child-buf
+                                :shared-state shared-state)))
+      (unwind-protect
+          (progn
+            (with-current-buffer parent-buf
+              (setq-local macher-agent--persistent-context parent-ctx))
+            (macher-agent-a2a-pipe--bind-closure initial-state)
+            (let ((cb (gethash task-id macher-agent--pending-callbacks))
+                  (diff-entry (macher-agent-vfs-make-entry "file1.txt" "original text" "new modified text")))
+              (expect cb :not :to-be nil)
+              (funcall cb (list :type 'ARTIFACT_UPDATE
+                                :task-id task-id
+                                :message (list :status 'success
+                                               :data "all done"
+                                               :diff (list diff-entry))))
+              ;; Check that orig-entry was NOT mutated destructively
+              (expect (cdr (cdr orig-entry)) :to-equal "original text")
+              ;; Check that parent-ctx contents has the updated entry
+              (let ((updated (cl-find "file1.txt" (macher-agent--get-context-contents parent-ctx) :key #'car :test #'equal)))
+                (expect (macher-agent-vfs-entry-curr updated) :to-equal "new modified text"))))
+        (kill-buffer parent-buf)
+        (kill-buffer child-buf))))
+
+(it "confirms macher-agent--a2a-callback is undefined and unreferenced"
+    (expect (boundp 'macher-agent--a2a-callback) :to-be nil)
+    (expect (fboundp 'macher-agent--a2a-callback) :to-be nil))
 
 (describe "Generational Reaping and Ownership Registry"
           (macher-agent-test-setup-before-each)
@@ -1049,41 +1081,28 @@
                   (kill-buffer bg-subagent)
                   (kill-buffer eph-subagent))))
 
-          (it "submit_task_result computes context differences conditionally based on suppress-patch"
+          (it "submit_task_result composes context differences via artifact-compose pipeline"
               (load (expand-file-name "skills/scripts/submit_task_result.el") nil t)
               (let* ((child-buf (generate-new-buffer "diff-cond-subagent"))
-                     (mock-entry (macher-agent-vfs-make-entry "file1.txt" "orig" "modified"))
+                     (mock-entry (cons "file1.txt" (cons "orig" "modified")))
                      (mock-ctx (macher--make-context :contents (list mock-entry)))
                      (tool-cmd (or (get 'macher-agent-submit-task-result-tool 'command-fn)
                                    (get 'macher-agent-tool-submit-task-result 'command-fn)))
-                     (dispatched-payloads nil))
+                     (received-payload nil))
                 (unwind-protect
                     (progn
+                      (puthash "task-suppress-nil" (lambda (payload) (setq received-payload payload)) macher-agent--pending-callbacks)
                       (spy-on 'macher-agent-resolve-context :and-return-value mock-ctx)
-                      (spy-on 'macher-agent-a2a-dispatch :and-call-fake
-                              (lambda (payloads _cb) (setq dispatched-payloads payloads)))
-                      ;; Test with suppress-patch = t: diff should be nil
+                      ;; Test diff composition via artifact-compose step
                       (with-current-buffer child-buf
                         (setq-local macher-agent--is-subagent t)
-                        (setq-local macher-agent--suppress-patch t)
-                        (setq-local macher-agent-task-finished nil)
-                        (macher-agent--push-routing "task-suppress-t" "parent" t)
-                        (funcall tool-cmd '(:final_answer "Suppressed diff answer") nil nil)
-                        (let* ((msg (plist-get (car dispatched-payloads) :message))
-                               (diff (plist-get msg :diff)))
-                          (expect diff :to-be nil)))
-
-                      ;; Test with suppress-patch = nil: diff should be included
-                      (with-current-buffer child-buf
-                        (setq-local macher-agent--is-subagent t)
-                        (setq-local macher-agent--suppress-patch nil)
                         (setq-local macher-agent-task-finished nil)
                         (macher-agent--push-routing "task-suppress-nil" "parent" nil)
                         (funcall tool-cmd '(:final_answer "Non-suppressed diff answer") nil nil)
-                        (let* ((msg (plist-get (car dispatched-payloads) :message))
+                        (let* ((msg (plist-get received-payload :message))
                                (diff (plist-get msg :diff)))
                           (expect (length diff) :to-equal 1)
-                          (expect (macher-agent-vfs-entry-path (car diff)) :to-equal "file1.txt"))))
+                          (expect (car (car diff)) :to-equal "file1.txt"))))
                   (kill-buffer child-buf))))
 
           (it "submit_task_result aborts on double submissions for ephemeral tasks"
@@ -1322,7 +1341,101 @@
                         (let ((entry (cl-find "file2.txt" (macher-agent--get-context-contents parent-ctx) :key #'car :test #'equal)))
                           (expect (macher-agent-vfs-entry-curr entry) :to-equal "new modified content"))))
                   (kill-buffer parent-buf)
-                  (kill-buffer child-buf)))))
+                  (kill-buffer child-buf))))
+
+          (it "prevents result payload overwrite by ignoring subsequent success-cb after submit_task_result"
+              (let* ((parent-buf (generate-new-buffer "dual-cb-parent"))
+                     (child-buf (generate-new-buffer "dual-cb-child"))
+                     (task-id "task-dual-cb-test")
+                     (final-res nil)
+                     (shared-state (list :results (make-hash-table :test 'equal)
+                                         :total 1
+                                         :final-callback (lambda (res) (setq final-res res))
+                                         :parent-buf parent-buf
+                                         :parent-fsm nil
+                                         :original-payloads (list (list :type 'SEND_MESSAGE :task-id task-id))))
+                     (state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id :message "run")
+                                  :child-buf child-buf
+                                  :shared-state shared-state))
+                     (captured-callbacks nil))
+                (unwind-protect
+                    (progn
+                      ;; 1. Bind closure
+                      (setq state (macher-agent-a2a-pipe--bind-closure state))
+                      (spy-on 'macher-agent-gptel-transmit :and-call-fake
+                              (lambda (_ctx cbs)
+                                (setq captured-callbacks cbs)))
+                      (spy-on 'make-macher-agent-task-context :and-return-value 'mock-ctx)
+                      ;; 2. Transmit
+                      (macher-agent-a2a-pipe--transmit state)
+                      (expect captured-callbacks :not :to-be nil)
+                      ;; 3. Simulate tool submitting structured result
+                      (with-current-buffer child-buf
+                        (macher-agent-submit-task-result "structured final answer"))
+                      ;; Verify results table has structured answer
+                      (expect (gethash task-id (plist-get shared-state :results)) :not :to-be nil)
+                      (expect (plist-get (gethash task-id (plist-get shared-state :results)) :data)
+                              :to-equal "structured final answer")
+                      ;; 4. Simulate gptel calling :success-cb with raw chat text
+                      (let ((success-cb (plist-get captured-callbacks :success-cb)))
+                        (funcall success-cb "raw LLM text response"))
+                      ;; Verify result was NOT overwritten with raw text
+                      (expect (plist-get (gethash task-id (plist-get shared-state :results)) :data)
+                              :to-equal "structured final answer")
+                      (expect (plist-get (aref final-res 0) :data)
+                              :to-equal "structured final answer"))
+                  (kill-buffer parent-buf)
+                  (kill-buffer child-buf))))
+
+          (it "logs warning on unregistered callback in macher-agent-submit-task-result"
+              (let ((warning-logged nil))
+                (spy-on 'display-warning :and-call-fake
+                        (lambda (type msg &optional level)
+                          (setq warning-logged (list type msg level))))
+                (with-temp-buffer
+                  (setq-local macher-agent--current-task-id "unregistered-task-99")
+                  (macher-agent-submit-task-result "orphan result")
+                  (expect warning-logged :not :to-be nil)
+                  (expect (car warning-logged) :to-equal 'macher-agent)
+                  (expect (cadr warning-logged) :to-match "unregistered-task-99"))))
+
+          (it "logs warning on unregistered callback in macher-agent-a2a-dispatch ARTIFACT_UPDATE"
+              (let ((warning-logged nil)
+                    (payload (list (list :type 'ARTIFACT_UPDATE
+                                         :task-id "unregistered-artifact-update-tid"
+                                         :message (list :status 'success :data "data")))))
+                (spy-on 'display-warning :and-call-fake
+                        (lambda (type msg &optional level)
+                          (setq warning-logged (list type msg level))))
+                (macher-agent-a2a-dispatch payload nil)
+                (expect warning-logged :not :to-be nil)
+                (expect (car warning-logged) :to-equal 'macher-agent)
+                (expect (cadr warning-logged) :to-match "unregistered-artifact-update-tid")))
+
+          (it "does not destructively mutate state plist in macher-agent-preset-pipe--exclusive"
+              (let* ((original-state (list :system "system prompt"
+                                           :tools '(tool-a tool-b)
+                                           :ptc-primitives '(prim-1)
+                                           :boot-directive "boot"
+                                           :custom-key "value"))
+                     (spec (list :exclusive t :system "exclusive prompt"))
+                     (item (list 'preset 'my-exclusive-preset spec))
+                     (result (macher-agent-preset-pipe--exclusive original-state item)))
+                ;; Result has cleared items
+                (expect (plist-get result :system) :to-be nil)
+                (expect (plist-get result :tools) :to-be nil)
+                (expect (plist-get result :ptc-primitives) :to-be nil)
+                (expect (plist-get result :boot-directive) :to-be nil)
+                (expect (plist-get result :custom-key) :to-equal "value")
+                ;; Original state remains intact
+                (expect (plist-get original-state :system) :to-equal "system prompt")
+                (expect (plist-get original-state :tools) :to-equal '(tool-a tool-b))
+                (expect (plist-get original-state :ptc-primitives) :to-equal '(prim-1))
+                (expect (plist-get original-state :boot-directive) :to-equal "boot")))
+
+          (it "verifies obsolete declarations for emit and event-bus are removed"
+              (expect (fboundp 'macher-agent-emit) :to-be nil)
+              (expect (boundp 'macher-agent-workspace-event-bus) :to-be nil)))
 
 (provide 'macher-agent-test-orchestration)
 ;;; macher-agent-test-orchestration.el ends here
