@@ -73,6 +73,20 @@
                             (expect macher-agent--pending-instructions-queue :not :to-be nil))
                           (setq state (macher-agent-pipe--compile-directives state orig-buf nil nil nil))
                           (expect (macher-agent-transmission-state-compiled-prompt state) :to-match "Base System Prompt\n\nUSER OVERRIDE DIRECTIVE:\nThought 1")
+                          (kill-buffer orig-buf)))
+
+                    (it "appends ptc directive when ptc-primitives are active on state"
+                        (let* ((orig-buf (generate-new-buffer "test-ptc-directive-buf"))
+                               (state (make-macher-agent-transmission-state
+                                       :target-buffer orig-buf
+                                       :ptc-primitives '(spawn-subagent)
+                                       :tools (list (gptel-make-tool :name "spawn-subagent"
+                                                                     :description "Spawn subagent"
+                                                                     :args '((:name "path" :type "string")))))))
+                          (setq state (macher-agent-sandbox-append-ptc-directive state orig-buf nil nil nil))
+                          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
+                          (expect (car (macher-agent-transmission-state-directives state))
+                                  :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ===")
                           (kill-buffer orig-buf))))
 
           (it "triggers flush hook on completion when FSM transitions to DONE"

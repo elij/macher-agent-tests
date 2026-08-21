@@ -73,6 +73,22 @@
                 (let ((macher-agent--active-ptc-primitives '(unmatched-primitive)))
                   (expect (macher-agent--inject-ptc-prompt base-prompt) :to-equal base-prompt))))
 
+          (it "appends ptc directive to transmission state via macher-agent-sandbox-append-ptc-directive"
+              (let* ((tool (gptel-make-tool
+                            :name "spawn-subagent"
+                            :description "Spawn subagent"
+                            :args '((:name "path" :type "string"))))
+                     (orig-buf (generate-new-buffer "test-ptc-append-directive-buf"))
+                     (state (make-macher-agent-transmission-state
+                             :target-buffer orig-buf
+                             :ptc-primitives '(spawn-subagent)
+                             :tools (list tool))))
+                (setq state (macher-agent-sandbox-append-ptc-directive state orig-buf nil nil nil))
+                (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
+                (expect (car (macher-agent-transmission-state-directives state))
+                        :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ===")
+                (kill-buffer orig-buf)))
+
           (it "extracts raw payload and applies success-fn formatting"
               (let* ((res "raw payload")
                      (cb-raw-val nil)

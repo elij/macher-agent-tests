@@ -252,11 +252,22 @@
                              :key (lambda (e) (plist-get e :step)))))
         (expect (plist-get entry :priority) :to-equal 50)))
 
+    (it "registers macher-agent-sandbox-append-ptc-directive to transmission pipeline via macher-agent-sandbox-install"
+      (clrhash macher-agent-pipeline-registry)
+      (macher-agent-sandbox-install)
+      (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+        (expect (member #'macher-agent-sandbox-append-ptc-directive steps) :to-be-truthy))
+      (let* ((entries (gethash 'transmission macher-agent-pipeline-registry))
+             (entry (cl-find #'macher-agent-sandbox-append-ptc-directive entries
+                             :key (lambda (e) (plist-get e :step)))))
+        (expect (plist-get entry :priority) :to-equal 80)))
+
     (it "verifies macher-agent-ptc-install is an alias of macher-agent-sandbox-install"
       (expect (symbol-function 'macher-agent-ptc-install) :not :to-be nil)
       (clrhash macher-agent-pipeline-registry)
       (macher-agent-ptc-install)
-      (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy))
+      (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
+      (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
 
     (it "evaluates AST safely using macher-agent-ptc--evaluate-ast"
       (let ((res (macher-agent-ptc--evaluate-ast '(+ 40 2) nil 5.0)))
@@ -603,6 +614,7 @@
       (expect (member #'macher-agent-vfs--merge-payload (macher-agent-get-pipeline-steps 'payload-merge)) :to-be-truthy)
       (expect (member #'macher-agent-vfs--compose-artifact (macher-agent-get-pipeline-steps 'artifact-compose)) :to-be-truthy)
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
+      (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-memory--truncate-prompt (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--payload-explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
