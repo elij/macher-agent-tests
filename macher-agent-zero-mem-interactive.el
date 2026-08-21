@@ -28,6 +28,7 @@
                     (string-prefix-p " *" bname)
                     (string-match-p "Macher Intensive" bname))
           (ignore-errors (kill-buffer buf))))))
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob)
   (garbage-collect))
 
 ;; 2. Native metrics extraction

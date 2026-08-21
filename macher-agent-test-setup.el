@@ -31,6 +31,7 @@
   (macher-agent-install))
 (when (fboundp 'macher-agent-context-resolution-install)
   (macher-agent-context-resolution-install))
+(setq macher-agent-search-backend-function #'macher-agent-search-glob)
 
 (defmacro macher-agent-test-setup-before-each ()
   `(before-each
@@ -38,6 +39,7 @@
     (spy-on 'gptel-send)
     (spy-on 'macher--add-termination-handler)
     (setq macher-agent--persistent-context nil)
+    (setq macher-agent-search-backend-function #'macher-agent-search-glob)
     (let* ((ctx (ignore-errors (macher-agent-resolve-context)))
            (ws (when ctx (macher-agent--get-context-workspace ctx))))
       (when ws (setf (macher-agent-workspace-active-subagents ws) nil)))))

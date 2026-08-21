@@ -325,7 +325,7 @@
                   (insert resp))
                 (insert "Latest user query content")
                 (let ((macher-agent-max-context-chars '((nil . 25))))
-                  (macher-agent-transformer-snip-context nil nil))
+                  (macher-agent-memory-pipe--truncate-buffer nil (current-buffer) nil nil nil))
                 (expect (buffer-string) :to-match "Latest user query content")))
 
           (it "protects frontmatter header when snipping context history"
@@ -336,7 +336,7 @@
                   (insert resp))
                 (insert "Latest user query content")
                 (let ((macher-agent-max-context-chars '((nil . 25))))
-                  (macher-agent-transformer-snip-context nil nil))
+                  (macher-agent-memory-pipe--truncate-buffer nil (current-buffer) nil nil nil))
                 (expect (buffer-string) :to-match "^---\nkey: value\n---")))
 
           (it "registers sync prompt transformer and transformers in setup-gptel-buffer"

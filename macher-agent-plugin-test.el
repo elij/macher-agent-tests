@@ -27,6 +27,14 @@
   (macher-agent-test-setup-before-each)
   (before-each
     (macher-agent-install))
+  (after-each
+    (when (fboundp 'macher-agent-zero-mem-uninstall)
+      (macher-agent-zero-mem-uninstall))
+    (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+  (after-all
+    (when (fboundp 'macher-agent-zero-mem-uninstall)
+      (macher-agent-zero-mem-uninstall))
+    (setq macher-agent-search-backend-function #'macher-agent-search-glob))
 
   (describe "1. Core Routing and Pipeline Registry"
     (it "initialises macher-agent-pipeline-registry as a hash table"
@@ -287,13 +295,13 @@
                 :to-throw 'error))))
 
   (describe "4. Memory System"
-    (it "calculates limits using context horizon in macher-agent-memory--truncate-prompt"
+    (it "calculates limits using context horizon in macher-agent-memory-pipe--inject-tool"
       (with-temp-buffer
         (insert (make-string 2000 ?a))
         (let* ((macher-agent-max-context-chars '((nil . 500)))
                (state (make-macher-agent-transmission-state :target-buffer (current-buffer)
                                                             :tools (list 'read_file)))
-               (updated (macher-agent-memory--truncate-prompt state (current-buffer) nil nil nil)))
+               (updated (macher-agent-memory-pipe--inject-tool state (current-buffer) nil nil nil)))
           (let ((tool-names (mapcar (lambda (tl)
                                       (if (symbolp tl) (symbol-name tl) (gptel-tool-name tl)))
                                     (macher-agent-transmission-state-tools updated))))
@@ -305,27 +313,54 @@
         (let* ((macher-agent-max-context-chars '((nil . 50000)))
                (state (make-macher-agent-transmission-state :target-buffer (current-buffer)
                                                             :tools (list 'read_file)))
-               (updated (macher-agent-memory--truncate-prompt state (current-buffer) nil nil nil)))
+               (updated (macher-agent-memory-pipe--inject-tool state (current-buffer) nil nil nil)))
           (let ((tool-names (mapcar (lambda (tl)
                                       (if (symbolp tl) (symbol-name tl) (gptel-tool-name tl)))
                                     (macher-agent-transmission-state-tools updated))))
             (expect (member "search_conversation_history" tool-names) :to-be nil)))))
 
-    (it "registers macher-agent-memory--truncate-prompt to transmission pipeline via macher-agent-zero-mem-install"
+    (it "registers memory pipeline steps to transmission pipeline via macher-agent-zero-mem-install"
       (clrhash macher-agent-pipeline-registry)
       (macher-agent-zero-mem-install)
       (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
-        (expect (member #'macher-agent-memory--truncate-prompt steps) :to-be-truthy))
+        (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
+        (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
+        (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy))
       (let* ((entries (gethash 'transmission macher-agent-pipeline-registry))
-             (entry (cl-find #'macher-agent-memory--truncate-prompt entries
-                             :key (lambda (e) (plist-get e :step)))))
-        (expect (plist-get entry :priority) :to-equal 90)))
+             (entry45 (cl-find #'macher-agent-memory-pipe--inject-tool entries
+                              :key (lambda (e) (plist-get e :step))))
+             (entry55 (cl-find #'macher-agent-memory-pipe--truncate-buffer entries
+                              :key (lambda (e) (plist-get e :step))))
+             (entry85 (cl-find #'macher-agent-memory-pipe--inject-directive entries
+                              :key (lambda (e) (plist-get e :step)))))
+        (expect (plist-get entry45 :priority) :to-equal 45)
+        (expect (plist-get entry55 :priority) :to-equal 55)
+        (expect (plist-get entry85 :priority) :to-equal 85)))
 
     (it "verifies macher-agent-memory-install is an alias of macher-agent-zero-mem-install"
       (expect (symbol-function 'macher-agent-memory-install) :not :to-be nil)
       (clrhash macher-agent-pipeline-registry)
       (macher-agent-memory-install)
-      (expect (member #'macher-agent-memory--truncate-prompt (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
+      (expect (member #'macher-agent-memory-pipe--inject-tool (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-memory-pipe--truncate-buffer (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-memory-pipe--inject-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
+
+    (it "uninstalls memory pipeline steps and resets search backend via macher-agent-zero-mem-uninstall"
+      (macher-agent-zero-mem-install)
+      (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
+      (macher-agent-zero-mem-uninstall)
+      (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+        (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
+        (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
+        (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil))
+      (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
+      (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
+
+    (it "verifies macher-agent-memory-uninstall is an alias of macher-agent-zero-mem-uninstall"
+      (expect (symbol-function 'macher-agent-memory-uninstall) :not :to-be nil)
+      (macher-agent-memory-install)
+      (macher-agent-memory-uninstall)
+      (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
 
     (it "persists conversation history to vector storage with macher-agent-memory--persist-interaction"
       (with-temp-buffer
@@ -615,7 +650,9 @@
       (expect (member #'macher-agent-vfs--compose-artifact (macher-agent-get-pipeline-steps 'artifact-compose)) :to-be-truthy)
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
       (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
-      (expect (member #'macher-agent-memory--truncate-prompt (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-memory-pipe--inject-tool (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-memory-pipe--truncate-buffer (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-memory-pipe--inject-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--payload-explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--payload-shared (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)

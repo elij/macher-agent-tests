@@ -3,6 +3,7 @@
 (require 'buttercup)
 (require 'macher-agent-macher)
 (require 'macher-agent)
+(require 'macher-agent-zero-mem)
 (let* ((file-name (or load-file-name buffer-file-name))
        (current-dir (if file-name (file-name-directory file-name) default-directory)))
   (add-to-list 'load-path (expand-file-name "helpers" current-dir)))
@@ -11,6 +12,20 @@
 
 (describe
  "macher-agent-skills"
+ (before-all
+  (when (fboundp 'macher-agent-zero-mem-uninstall)
+    (macher-agent-zero-mem-uninstall))
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+ (before-each
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+ (after-each
+  (when (fboundp 'macher-agent-zero-mem-uninstall)
+    (macher-agent-zero-mem-uninstall))
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+ (after-all
+  (when (fboundp 'macher-agent-zero-mem-uninstall)
+    (macher-agent-zero-mem-uninstall))
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob))
 
  (describe
   "Orchestration Tools (skills/scripts/*.el)"
@@ -293,21 +308,21 @@
       (let ((buf (generate-new-buffer "test-conv-zeromem")))
         (with-current-buffer buf
           (insert "Trace 1: macher-agent initialization\nTrace 2: gptel-bridge configuration\nTrace 3: random text\n"))
-        (let ((res (macher-agent-search-zero-mem "macher-agent" buf 2)))
+        (let ((res (macher-agent-memory-search-zero-mem "macher-agent" buf 2)))
           (expect res :to-match "Match near line 1")
           (expect res :to-match "macher-agent initialization"))
         (kill-buffer buf)))
 
-  (it "defaults macher-agent-search-backend to zero-mem"
-      (expect (default-value 'macher-agent-search-backend) :to-equal 'zero-mem))
+  (it "defaults macher-agent-search-backend-function to macher-agent-search-glob"
+      (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
 
-  (it "dispatches search based on macher-agent-search-backend configuration"
+  (it "dispatches search based on macher-agent-search-backend-function configuration"
       (let ((buf (generate-new-buffer "test-conv-dispatch"))
-            (macher-agent-search-backend 'glob))
+            (macher-agent-search-backend-function #'macher-agent-search-glob))
         (with-current-buffer buf
           (insert "Header text\nTarget query inside history\nFooter text\n"))
         (spy-on 'macher-agent-search-glob :and-call-through)
-        (spy-on 'macher-agent-search-zero-mem :and-call-through)
+        (spy-on 'macher-agent-memory-search-zero-mem :and-call-through)
         
         ;; Test glob backend
         (let ((res-glob (macher-agent-search-dispatch "query" buf 2)))
@@ -315,9 +330,9 @@
           (expect res-glob :to-match "Target query inside history"))
         
         ;; Test zero-mem backend
-        (setq macher-agent-search-backend 'zero-mem)
+        (setq macher-agent-search-backend-function #'macher-agent-memory-search-zero-mem)
         (let ((res-zm (macher-agent-search-dispatch "query" buf 2)))
-          (expect 'macher-agent-search-zero-mem :to-have-been-called)
+          (expect 'macher-agent-memory-search-zero-mem :to-have-been-called)
           (expect res-zm :to-match "Target query inside history"))
         
         ;; Test dead buffer error handling
@@ -333,7 +348,7 @@
              (macher-agent--active-fsm mock-fsm)
              (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
                          (get 'macher-agent-tool-search-conversation-history 'command-fn)))
-             (macher-agent-search-backend 'glob))
+             (macher-agent-search-backend-function #'macher-agent-search-glob))
         (with-current-buffer buf
           (insert "Line 1: hello\nLine 2: target-match\nLine 3: world\n"))
         (spy-on 'macher-agent-search-dispatch :and-call-through)
@@ -351,7 +366,7 @@
                                                   :contents nil))
              (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
                          (get 'macher-agent-tool-search-conversation-history 'command-fn)))
-             (macher-agent-search-backend 'glob)
+             (macher-agent-search-backend-function #'macher-agent-search-glob)
              (macher-agent--active-fsm nil))
         (with-current-buffer buf
           (insert "Line 1: foo\nLine 2: context-buffer-match\nLine 3: bar\n"))

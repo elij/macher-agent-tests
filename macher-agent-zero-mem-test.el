@@ -119,7 +119,10 @@ forces an immediate garbage collection cycle."
                 (string-match-p "buttercup" (buffer-name buf)))
       (ignore-errors (kill-buffer buf))))
 
-  ;; 3. Explicitly force a garbage collection cycle
+  ;; 3. Reset search backend function to default glob backend
+  (setq macher-agent-search-backend-function #'macher-agent-search-glob)
+
+  ;; 4. Explicitly force a garbage collection cycle
   (garbage-collect))
 
 
@@ -288,6 +291,16 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
 ;;;; 5. Test Suite Specifications
 
 (describe "Macher Agent Zero-Mem Test Suite"
+          (before-each
+            (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+          (after-each
+            (when (fboundp 'macher-agent-zero-mem-uninstall)
+              (macher-agent-zero-mem-uninstall))
+            (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+          (after-all
+            (when (fboundp 'macher-agent-zero-mem-uninstall)
+              (macher-agent-zero-mem-uninstall))
+            (setq macher-agent-search-backend-function #'macher-agent-search-glob))
 
           (describe "1. Environment Isolation and Synthetic Generators"
                     (it "successfully isolates environment by cancelling timers, wiping buffers, and running GC"

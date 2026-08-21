@@ -25,7 +25,7 @@
                 (insert "Latest user query content")
                 (let ((macher-agent-max-context-chars '((gpt-4o . 25) (nil . 2000000)))
                       (gptel-model 'gpt-4o))
-                  (macher-agent-transformer-snip-context nil nil))
+                  (macher-agent-memory-pipe--truncate-buffer nil (current-buffer) nil nil nil))
                 (expect (buffer-string) :to-match "Latest user query content")))
 
           (describe "Refactored Unified Transmission Reducer Pipeline"
