@@ -203,6 +203,7 @@
     (it "registers macher-agent-vfs--merge-payload and macher-agent-vfs--compose-artifact via macher-agent-vfs-install"
       (clrhash macher-agent-pipeline-registry)
       (setq macher-agent-task-flush-hook nil)
+      (setq macher-agent-vfs-flush-hook nil)
       (macher-agent-vfs-install)
       (let ((merge-steps (macher-agent-get-pipeline-steps 'payload-merge))
             (compose-steps (macher-agent-get-pipeline-steps 'artifact-compose)))
@@ -212,7 +213,8 @@
              (entry (cl-find #'macher-agent-vfs--compose-artifact entries
                              :key (lambda (e) (plist-get e :step)))))
         (expect (plist-get entry :priority) :to-equal 10))
-      (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy))
+      (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy)
+      (expect (member #'macher-agent-macher-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy))
 
     (it "composes artifact payload with diff when context has modified files"
       (let* ((mock-entry (cons "file1.txt" (cons "original" "modified")))
@@ -645,6 +647,7 @@
     (it "installs all plugin hooks and pipeline steps via macher-agent-install"
       (clrhash macher-agent-pipeline-registry)
       (setq macher-agent-task-flush-hook nil)
+      (setq macher-agent-vfs-flush-hook nil)
       (macher-agent-install)
       (expect (member #'macher-agent-vfs--merge-payload (macher-agent-get-pipeline-steps 'payload-merge)) :to-be-truthy)
       (expect (member #'macher-agent-vfs--compose-artifact (macher-agent-get-pipeline-steps 'artifact-compose)) :to-be-truthy)
@@ -658,6 +661,7 @@
       (expect (member #'macher-agent-ctx-pipe--payload-shared (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
       (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy)
+      (expect (member #'macher-agent-macher-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy)
       (expect (member #'macher-agent--mutation-dispatcher macher-agent-context-mutated-hook) :to-be-truthy))
 
     (it "invokes Level 3 bridge and Level 1 plugin loaders dynamically when bound"
