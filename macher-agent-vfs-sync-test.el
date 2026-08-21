@@ -1,4 +1,4 @@
-;;; macher-agent-test-vfs-sync.el --- VFS Synchronisation Tests -*- lexical-binding: t; -*-
+;;; macher-agent-vfs-sync-test.el --- VFS Synchronisation Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond

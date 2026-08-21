@@ -1059,6 +1059,34 @@
                 (expect (macher-agent-get-active-fsm) :to-be nil)
                 (expect (macher-agent-get-active-fsm nil) :to-be nil))))
 
+(describe "14. Test Suite File Cleanliness"
+          (it "ensures obsolete 0-byte test files are deleted using delete-file and absent from directory listings"
+              (let* ((test-dir (cond
+                                ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                                 (expand-file-name default-directory))
+                                ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                                 (expand-file-name "tests" default-directory))
+                                (t (expand-file-name "tests" (or (locate-dominating-file default-directory "tests") default-directory)))))
+                     (obsolete-files '("macher-agent-test-vfs-sync.el"
+                                       "macher-agent-test-transmission-pipeline.el"
+                                       "macher-agent-test-tool-lifecycle.el"
+                                       "macher-agent-test-skills-media.el"
+                                       "macher-agent-test-sandbox-rsync.el"
+                                       "macher-agent-test-ptc.el"
+                                       "macher-agent-test-presets.el"
+                                       "macher-agent-test-orchestration.el"
+                                       "macher-agent-test-context-resolution.el"
+                                       "macher-agent-context-resolution-test.el"
+                                       "macher-agent-orchestration-test.el")))
+                (dolist (file obsolete-files)
+                  (let ((path (expand-file-name file test-dir)))
+                    (when (file-exists-p path)
+                      (delete-file path))
+                    (expect (file-exists-p path) :to-be nil)))
+                (let ((dir-files (directory-files test-dir nil "\\`macher-agent.*\\.el\\'")))
+                  (dolist (file obsolete-files)
+                    (expect (member file dir-files) :to-be nil))))))
+
 (provide 'macher-agent-core-test)
 ;;; macher-agent-core-test.el ends here
 

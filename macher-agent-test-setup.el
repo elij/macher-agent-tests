@@ -12,7 +12,22 @@
   (when root-dir
     (add-to-list 'load-path (expand-file-name root-dir)))
   (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir))
+  (let ((obsolete-files '("macher-agent-test-vfs-sync.el"
+                          "macher-agent-test-transmission-pipeline.el"
+                          "macher-agent-test-tool-lifecycle.el"
+                          "macher-agent-test-skills-media.el"
+                          "macher-agent-test-sandbox-rsync.el"
+                          "macher-agent-test-ptc.el"
+                          "macher-agent-test-presets.el"
+                          "macher-agent-test-orchestration.el"
+                          "macher-agent-test-context-resolution.el"
+                          "macher-agent-context-resolution-test.el"
+                          "macher-agent-orchestration-test.el")))
+    (dolist (f obsolete-files)
+      (let ((path (expand-file-name f test-dir)))
+        (when (file-exists-p path)
+          (ignore-errors (delete-file path)))))))
 
 (require 'subr-x)
 (require 'buttercup)
