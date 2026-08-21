@@ -270,10 +270,10 @@
                              :key (lambda (e) (plist-get e :step)))))
         (expect (plist-get entry :priority) :to-equal 80)))
 
-    (it "verifies macher-agent-ptc-install is an alias of macher-agent-sandbox-install"
-      (expect (symbol-function 'macher-agent-ptc-install) :not :to-be nil)
+    (it "verifies macher-agent-sandbox-install installs sandbox steps"
+      (expect (symbol-function 'macher-agent-sandbox-install) :not :to-be nil)
       (clrhash macher-agent-pipeline-registry)
-      (macher-agent-ptc-install)
+      (macher-agent-sandbox-install)
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
       (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
 
@@ -337,10 +337,10 @@
         (expect (plist-get entry55 :priority) :to-equal 55)
         (expect (plist-get entry85 :priority) :to-equal 85)))
 
-    (it "verifies macher-agent-memory-install is an alias of macher-agent-zero-mem-install"
-      (expect (symbol-function 'macher-agent-memory-install) :not :to-be nil)
+    (it "verifies macher-agent-zero-mem-install installs memory steps"
+      (expect (symbol-function 'macher-agent-zero-mem-install) :not :to-be nil)
       (clrhash macher-agent-pipeline-registry)
-      (macher-agent-memory-install)
+      (macher-agent-zero-mem-install)
       (expect (member #'macher-agent-memory-pipe--inject-tool (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-memory-pipe--truncate-buffer (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-memory-pipe--inject-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
@@ -356,10 +356,10 @@
       (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
       (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
 
-    (it "verifies macher-agent-memory-uninstall is an alias of macher-agent-zero-mem-uninstall"
-      (expect (symbol-function 'macher-agent-memory-uninstall) :not :to-be nil)
-      (macher-agent-memory-install)
-      (macher-agent-memory-uninstall)
+    (it "verifies macher-agent-zero-mem-uninstall uninstalls memory backend"
+      (expect (symbol-function 'macher-agent-zero-mem-uninstall) :not :to-be nil)
+      (macher-agent-zero-mem-install)
+      (macher-agent-zero-mem-uninstall)
       (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
 
     (it "persists conversation history to vector storage with macher-agent-memory--persist-interaction"

@@ -17,6 +17,7 @@
 (defvar gptel--fsm)
 (defvar macher-agent--active-fsm)
 (defvar gptel--fsm-last)
+(defvar macher--fsm-latest)
 
 ;; Dummy gptel structures for mocking
 (cl-defstruct mock-gptel-fsm info state)
@@ -162,7 +163,7 @@
 
                 (spy-on 'rename-buffer)
                 (spy-on 'macher--get-buffer :and-return-value (list (get-buffer-create "*patch*")))
-                (spy-on 'macher-agent-set-context-prompt :and-call-fake #'macher-agent--set-context-prompt)
+                (spy-on 'macher-agent--set-context-prompt :and-call-through)
 
                 (let ((orig-called-with nil)
                       (prompt-seen nil))
@@ -539,6 +540,80 @@
                               (mock-ctx (macher--make-context :contents nil)))
                           (expect (macher-agent--inject-context-into-fsm-info mock-ctx nil) :to-be nil))))
 
+          (describe "macher-agent-bridge-reset-fsm-context"
+                    (it "resets context when active FSM is bound via macher-agent--active-fsm"
+                        (let* ((old-ctx (macher--make-context :contents nil))
+                               (new-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :macher-agent-context old-ctx :model "test-model")))
+                               (macher-agent--active-fsm fsm)
+                               (gptel--fsm nil)
+                               (gptel--fsm-last nil)
+                               (macher--fsm-latest nil))
+                          (macher-agent-bridge-reset-fsm-context new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx)))
+
+                    (it "resets context when active FSM is bound via gptel--fsm fallback"
+                        (let* ((old-ctx (macher--make-context :contents nil))
+                               (new-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :macher--context old-ctx)))
+                               (macher-agent--active-fsm nil)
+                               (gptel--fsm fsm)
+                               (gptel--fsm-last nil)
+                               (macher--fsm-latest nil))
+                          (macher-agent-bridge-reset-fsm-context new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx)))
+
+                    (it "resets context when active FSM is bound via gptel--fsm-last fallback"
+                        (let* ((old-ctx (macher--make-context :contents nil))
+                               (new-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :macher-context old-ctx)))
+                               (macher-agent--active-fsm nil)
+                               (gptel--fsm nil)
+                               (gptel--fsm-last fsm)
+                               (macher--fsm-latest nil))
+                          (macher-agent-bridge-reset-fsm-context new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx)))
+
+                    (it "resets context when active FSM is bound via macher--fsm-latest fallback"
+                        (let* ((old-ctx (macher--make-context :contents nil))
+                               (new-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :macher-agent-context old-ctx)))
+                               (macher-agent--active-fsm nil)
+                               (gptel--fsm nil)
+                               (gptel--fsm-last nil)
+                               (macher--fsm-latest fsm))
+                          (macher-agent-bridge-reset-fsm-context new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-context) :to-be new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx)))
+
+                    (it "does nothing when no FSM is active"
+                        (let ((new-ctx (macher--make-context :contents nil))
+                              (macher-agent--active-fsm nil)
+                              (gptel--fsm nil)
+                              (gptel--fsm-last nil)
+                              (macher--fsm-latest nil))
+                          (expect (macher-agent-bridge-reset-fsm-context new-ctx) :to-be nil)))
+
+                    (it "does not update FSM info when no context property is present"
+                        (let* ((new-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :model "test-model")))
+                               (macher-agent--active-fsm fsm)
+                               (gptel--fsm nil)
+                               (gptel--fsm-last nil)
+                               (macher--fsm-latest nil))
+                          (macher-agent-bridge-reset-fsm-context new-ctx)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be nil)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-context) :to-be nil)
+                          (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be nil)
+                          (expect (plist-get (gptel-fsm-info fsm) :model) :to-equal "test-model"))))
+
           (describe "macher-agent--transformer-sync-context"
                     (it "synchronizes context and initializes skills with buffer presets"
                         (let* ((orig-buf (get-buffer-create "test-ert-sync-ctx-orig"))
@@ -829,7 +904,7 @@
           (it "resolves prompt from :data :prompt when direct slot is nil"
               (let ((ctx (macher--make-context :prompt nil :data '(:prompt "fallback prompt message"))))
                 (expect (macher-agent--get-context-prompt ctx) :to-equal "fallback prompt message")
-                (expect (macher-agent--resolve-prompt-from-context ctx) :to-equal "fallback prompt message")))
+                (expect (macher-agent--get-context-prompt ctx) :to-equal "fallback prompt message")))
 
           (it "resolves prompt from direct slot when direct slot is present"
               (let ((ctx (macher--make-context :prompt "direct prompt" :data '(:prompt "data prompt"))))
@@ -837,7 +912,7 @@
 
           (it "synchronizes both direct slot and :data :prompt when setting prompt"
               (let ((ctx (macher--make-context :prompt nil :data nil)))
-                (macher-agent-set-context-prompt ctx "new synchronized prompt")
+                (macher-agent--set-context-prompt ctx "new synchronized prompt")
                 (expect (macher-context-prompt ctx) :to-equal "new synchronized prompt")
                 (expect (macher-agent--get-context-data ctx :prompt) :to-equal "new synchronized prompt")
                 (expect (macher-agent--get-context-prompt ctx) :to-equal "new synchronized prompt")))
@@ -913,7 +988,76 @@
                   (macher-agent-vfs-handle-flush ctx)
                   (expect hook-prompt :to-equal "vfs flush prompt")
                   (expect (macher-context-prompt ctx) :to-equal "vfs flush prompt")
-                  (expect (macher-agent--get-context-data ctx :prompt) :to-equal "vfs flush prompt")))))
+                  (expect (macher-agent--get-context-data ctx :prompt) :to-equal "vfs flush prompt"))))
+
+          (it "allows setting prompt cleanly via macher-agent--set-context-prompt"
+              (let ((ctx (macher--make-context :prompt nil :data nil)))
+                (macher-agent--set-context-prompt ctx "public alias prompt")
+                (expect (macher-context-prompt ctx) :to-equal "public alias prompt")
+                (expect (macher-agent--get-context-prompt ctx) :to-equal "public alias prompt")))
+
+          (it "executes macher-agent-macher-build-patch-from-hook without infinite recursion when setting prompt"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (context (macher--make-context :workspace (cons 'project "/mock/proj/")
+                                                    :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "a" "b"))))
+                     (fsm (gptel-make-fsm))
+                     (macher--fsm-latest fsm))
+                (setf (gptel-fsm-info fsm) (list :prompt "Hook Prompt Without Recursion"))
+                (setf (macher-context-dirty-p context) t)
+                (spy-on 'rename-buffer)
+                (spy-on 'macher--get-buffer :and-return-value (list (get-buffer-create "*patch*")))
+                (spy-on 'macher--build-patch :and-return-value nil)
+                (macher-agent-macher-build-patch-from-hook context)
+                (expect (macher-context-prompt context) :to-equal "Hook Prompt Without Recursion"))))
+
+(describe "13. Active FSM Fallback Precedence"
+          (it "prefers explicit current-fsm argument over all fallback variables"
+              (let ((fsm-arg 'fsm-arg)
+                    (macher-agent--active-fsm 'fsm-active)
+                    (gptel--fsm 'fsm-gptel)
+                    (gptel--fsm-last 'fsm-last)
+                    (macher--fsm-latest 'fsm-latest))
+                (expect (macher-agent-get-active-fsm fsm-arg) :to-equal 'fsm-arg)))
+
+          (it "falls back to macher-agent--active-fsm when current-fsm is nil"
+              (let ((macher-agent--active-fsm 'fsm-active)
+                    (gptel--fsm 'fsm-gptel)
+                    (gptel--fsm-last 'fsm-last)
+                    (macher--fsm-latest 'fsm-latest))
+                (expect (macher-agent-get-active-fsm nil) :to-equal 'fsm-active)
+                (expect (macher-agent-get-active-fsm) :to-equal 'fsm-active)))
+
+          (it "falls back to gptel--fsm when macher-agent--active-fsm is nil"
+              (let ((macher-agent--active-fsm nil)
+                    (gptel--fsm 'fsm-gptel)
+                    (gptel--fsm-last 'fsm-last)
+                    (macher--fsm-latest 'fsm-latest))
+                (expect (macher-agent-get-active-fsm nil) :to-equal 'fsm-gptel)
+                (expect (macher-agent-get-active-fsm) :to-equal 'fsm-gptel)))
+
+          (it "falls back to gptel--fsm-last when gptel--fsm is nil"
+              (let ((macher-agent--active-fsm nil)
+                    (gptel--fsm nil)
+                    (gptel--fsm-last 'fsm-last)
+                    (macher--fsm-latest 'fsm-latest))
+                (expect (macher-agent-get-active-fsm nil) :to-equal 'fsm-last)
+                (expect (macher-agent-get-active-fsm) :to-equal 'fsm-last)))
+
+          (it "falls back to macher--fsm-latest when gptel--fsm-last is nil"
+              (let ((macher-agent--active-fsm nil)
+                    (gptel--fsm nil)
+                    (gptel--fsm-last nil)
+                    (macher--fsm-latest 'fsm-latest))
+                (expect (macher-agent-get-active-fsm nil) :to-equal 'fsm-latest)
+                (expect (macher-agent-get-active-fsm) :to-equal 'fsm-latest)))
+
+          (it "returns nil when none of the FSM sources are set"
+              (let ((macher-agent--active-fsm nil)
+                    (gptel--fsm nil)
+                    (gptel--fsm-last nil)
+                    (macher--fsm-latest nil))
+                (expect (macher-agent-get-active-fsm) :to-be nil)
+                (expect (macher-agent-get-active-fsm nil) :to-be nil))))
 
 (provide 'macher-agent-core-test)
 ;;; macher-agent-core-test.el ends here
