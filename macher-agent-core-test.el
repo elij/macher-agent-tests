@@ -825,6 +825,96 @@
                           (expect (funcall defines-sym-p vfs-forms 'macher-agent-root) :to-be nil)
                           (expect (funcall defines-sym-p vfs-forms 'macher-agent-context-mutated-hook) :to-be nil)))))
 
+(describe "12. Prompt Synchronization and Fallback Resolution"
+          (it "resolves prompt from :data :prompt when direct slot is nil"
+              (let ((ctx (macher--make-context :prompt nil :data '(:prompt "fallback prompt message"))))
+                (expect (macher-agent--get-context-prompt ctx) :to-equal "fallback prompt message")
+                (expect (macher-agent--resolve-prompt-from-context ctx) :to-equal "fallback prompt message")))
+
+          (it "resolves prompt from direct slot when direct slot is present"
+              (let ((ctx (macher--make-context :prompt "direct prompt" :data '(:prompt "data prompt"))))
+                (expect (macher-agent--get-context-prompt ctx) :to-equal "direct prompt")))
+
+          (it "synchronizes both direct slot and :data :prompt when setting prompt"
+              (let ((ctx (macher--make-context :prompt nil :data nil)))
+                (macher-agent-set-context-prompt ctx "new synchronized prompt")
+                (expect (macher-context-prompt ctx) :to-equal "new synchronized prompt")
+                (expect (macher-agent--get-context-data ctx :prompt) :to-equal "new synchronized prompt")
+                (expect (macher-agent--get-context-prompt ctx) :to-equal "new synchronized prompt")))
+
+          (it "clones context preserving prompt in both direct and data slots"
+              (let* ((orig (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/proj")
+                                                 :prompt nil
+                                                 :data '(:prompt "cloned prompt text")))
+                     (cloned (macher-agent--clone-context orig)))
+                (expect (macher-context-prompt cloned) :to-equal "cloned prompt text")
+                (expect (macher-agent--get-context-data cloned :prompt) :to-equal "cloned prompt text")
+                (expect (macher-agent--get-context-prompt cloned) :to-equal "cloned prompt text")))
+
+          (it "prepares patch contexts preserving prompt from :data :prompt in both slots"
+              (let* ((ws (cons 'project "/mock/proj/"))
+                     (ctx (macher--make-context :workspace ws
+                                                :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "a" "b"))
+                                                :prompt nil
+                                                :data '(:prompt "patch preparation prompt")))
+                     (res (macher-agent--prepare-patch-contexts ctx nil "/mock/proj/"))
+                     (p-ctx (nth 1 res)))
+                (expect p-ctx :not :to-be nil)
+                (expect (macher-context-prompt p-ctx) :to-equal "patch preparation prompt")
+                (expect (macher-agent--get-context-data p-ctx :prompt) :to-equal "patch preparation prompt")
+                (expect (macher-agent--get-context-prompt p-ctx) :to-equal "patch preparation prompt")))
+
+          (it "preserves prompt in macher-agent-macher-build-patch-from-hook when context only has :data :prompt"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
+                     (context (macher--make-context :workspace (cons 'project "/mock/proj/")
+                                                    :contents (list (macher-agent-vfs-make-entry "/mock/proj/disk-file.el" "old" "new"))
+                                                    :prompt nil
+                                                    :data '(:prompt "hook patch prompt")))
+                     (fsm (gptel-make-fsm))
+                     (macher--fsm-latest fsm)
+                     (prompt-seen nil))
+                (spy-on 'rename-buffer)
+                (spy-on 'macher--get-buffer :and-return-value (list (get-buffer-create "*patch*")))
+                (spy-on 'macher--build-patch :and-call-fake
+                        (lambda (ctx _fsm)
+                          (push (macher-context-prompt ctx) prompt-seen)
+                          (run-hooks 'macher-patch-ready-hook)))
+                (setf (macher-context-dirty-p context) t)
+                (macher-agent-macher-build-patch-from-hook context)
+                (expect (car prompt-seen) :to-equal "hook patch prompt")))
+
+          (it "transfers user prompt from orphaned context with :data :prompt via wrapped tool"
+              (let* ((orphaned-ctx (macher--make-context :prompt nil :data '(:prompt "orphaned data prompt")))
+                     (agent-ctx (macher--make-context :prompt nil :data nil))
+                     (called-with-ctx nil)
+                     (mock-tool (gptel-make-tool
+                                 :name "mock_tool"
+                                 :function (lambda (ctx cb &rest _args)
+                                             (setq called-with-ctx ctx)
+                                             (funcall cb "done"))
+                                 :description "Mock Tool")))
+                (spy-on 'macher-agent-resolve-context :and-return-value agent-ctx)
+                (macher-agent--wrap-single-tool mock-tool)
+                (funcall (gptel-tool-function mock-tool) orphaned-ctx (lambda (_res) nil))
+                (expect (macher-context-prompt agent-ctx) :to-equal "orphaned data prompt")
+                (expect (macher-agent--get-context-data agent-ctx :prompt) :to-equal "orphaned data prompt")
+                (expect (macher-agent--get-context-prompt agent-ctx) :to-equal "orphaned data prompt")))
+
+          (it "synchronizes prompt in both slots during vfs-handle-flush before running hooks"
+              (let* ((ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/proj")
+                                                :contents (list (macher-agent-vfs-make-entry "/mock/proj/f.el" "1" "2"))
+                                                :prompt nil
+                                                :data '(:prompt "vfs flush prompt")
+                                                :dirty-p t))
+                     (hook-prompt nil))
+                (let ((macher-agent-vfs-flush-hook
+                       (list (lambda (c)
+                               (setq hook-prompt (macher-context-prompt c))))))
+                  (macher-agent-vfs-handle-flush ctx)
+                  (expect hook-prompt :to-equal "vfs flush prompt")
+                  (expect (macher-context-prompt ctx) :to-equal "vfs flush prompt")
+                  (expect (macher-agent--get-context-data ctx :prompt) :to-equal "vfs flush prompt")))))
+
 (provide 'macher-agent-core-test)
 ;;; macher-agent-core-test.el ends here
 
