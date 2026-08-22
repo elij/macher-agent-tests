@@ -9,6 +9,69 @@
 (require 'macher-agent-orchestration)
 (require 'macher-agent-api)
 
+(defun macher-agent--fsm-hijack-transform (callback fsm)
+  "Mutate the FSM to inject media, capture prompts, protect callbacks, and trigger patches."
+  (let* ((info (gptel-fsm-info fsm))
+         (orig-cb (plist-get info :callback))
+         (b-prop (macher-agent--extract-prop info :buffer))
+         (target-buf (if (eq b-prop 'macher-missing) nil b-prop)))
+
+    (when (and target-buf (buffer-live-p target-buf))
+      (with-current-buffer target-buf
+        (setq-local macher--fsm-latest fsm)))
+
+    (let* ((prompt-start
+            (if (or (bound-and-true-p gptel-mode) 
+                    (bound-and-true-p gptel-track-response))
+                (if (and (> (point-max) (point-min)) 
+                         (get-text-property (1- (point-max)) 'gptel))
+                    (point-max)
+                  (or (previous-single-property-change (point-max) 'gptel) (point-min)))
+              (point-min)))
+           (raw-prompt
+            (if (fboundp 'gptel--trim-prefixes)
+                (gptel--trim-prefixes
+                 (buffer-substring-no-properties prompt-start (point-max)))
+              (string-trim (buffer-substring-no-properties prompt-start (point-max))))))
+      (when (and raw-prompt (not (string-empty-p raw-prompt)))
+        (setq info (plist-put info :prompt raw-prompt))
+        (setf (gptel-fsm-info fsm) info)
+        (let ((ctx (when (and target-buf (buffer-live-p target-buf))
+                     (buffer-local-value 'macher-agent--persistent-context target-buf))))
+          (when ctx
+            (when (fboundp 'macher-agent--set-context-prompt)
+              (macher-agent--set-context-prompt ctx raw-prompt))
+            (when (fboundp 'macher-agent--set-context-data)
+              (macher-agent--set-context-data ctx :prompt raw-prompt))
+            (ignore-errors (setf (macher-context-prompt ctx) raw-prompt))))))
+
+    (when orig-cb
+      (setq info
+            (plist-put (gptel-fsm-info fsm) :callback
+                       (lambda (response &rest args)
+                         (let ((info-arg (car args)))
+                           (when (or response (plist-get info-arg :tool-use))
+                             (apply orig-cb (or response "") args))))))
+      (setf (gptel-fsm-info fsm) info))
+    
+    (let* ((handlers (gptel-fsm-handlers fsm))
+           (all-states (delete-dups (append (mapcar #'car handlers) '(WAIT DONE ERRS ABRT))))
+           (augmented-handlers
+            (cl-loop
+             for state in all-states
+             for funcs = (alist-get state handlers)
+             collect (cons state 
+                           (cond
+                            ((eq state 'WAIT)
+                             (cons #'macher-agent--inject-media-fsm-logic funcs))
+                            ((memq state '(DONE ERRS ABRT))
+                             (append funcs (list #'macher-agent-gptel--trigger-flush)))
+                            (t funcs))))))
+      (setf (gptel-fsm-handlers fsm) augmented-handlers)))
+  
+  (when (functionp callback)
+    (funcall callback)))
+
 (defmacro with-macher-agent-mock-fsm (ctx &rest body)
   "Execute BODY synchronously while pretending an FSM is active with CTX."
   (declare (indent 1))
@@ -27,7 +90,7 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
   (declare (indent 2))
   `(let* ((queues (copy-tree ,routing-alist))
           (ws (make-macher-agent-workspace :project-root default-directory))
-          (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+          (ctx (macher--make-context :workspace ws :contents nil)))
 
      (setq-local macher-agent--persistent-context ctx)
      (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
@@ -55,7 +118,7 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
                            (resp (and queue-pair (pop (cdr queue-pair)))))
                       
                       (when fsm
-                        (plist-put info :macher-agent-context ctx)
+                        (setq info (plist-put info :macher-agent-context ctx))
                         (setf (gptel-fsm-info fsm) info)
                         (when target-buf
                           (with-current-buffer target-buf
@@ -65,8 +128,9 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
                                    (lambda ()
                                      (when (buffer-live-p target-buf)
                                        (when fsm
-                                         (plist-put info :http-status "200")
-                                         (plist-put info :status "200 OK")
+                                         (setq info (plist-put info :http-status "200"))
+                                         (setq info (plist-put info :status "200 OK"))
+                                         (setf (gptel-fsm-info fsm) info)
                                          (gptel--fsm-transition fsm))
                                        
                                        (if resp
@@ -80,21 +144,23 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
                                                                  (tool-vals (cdr tool-req))
                                                                  (tool-spec (or (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name))
                                                                                             (plist-get info :tools))
-                                                                                (ignore-errors (gptel-get-tool tool-name))))
-                                                                 (expected-args (when tool-spec (gptel-tool-args tool-spec)))
-                                                                 (args-plist nil))
-                                                            (when tool-spec
-                                                              (unless (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name)) (plist-get info :tools))
-                                                                (plist-put info :tools (append (plist-get info :tools) (list tool-spec)))
-                                                                (setf (gptel-fsm-info fsm) info)))
-                                                            (cl-loop for arg in expected-args
-                                                                     for val in tool-vals
-                                                                     do (setq args-plist (plist-put args-plist (intern (concat ":" (if (symbolp (plist-get arg :name)) (symbol-name (plist-get arg :name)) (plist-get arg :name)))) val)))
-                                                            (push (list :id (format "call_%s_%d" buf-name i)
-                                                                        :name tool-name
-                                                                        :args args-plist)
-                                                                  tool-use-list)))
-                                                 (plist-put info :tool-use (nreverse tool-use-list))))
+                                                                                (ignore-errors (gptel-get-tool tool-name)))))
+                                                            (unless tool-spec
+                                                              (error "Unknown mock tool: %s" tool-name))
+                                                            (unless (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name)) (plist-get info :tools))
+                                                              (setq info (plist-put info :tools (append (plist-get info :tools) (list tool-spec))))
+                                                              (setf (gptel-fsm-info fsm) info))
+                                                            (let ((expected-args (gptel-tool-args tool-spec))
+                                                                  (args-plist nil))
+                                                              (cl-loop for arg in expected-args
+                                                                       for val in tool-vals
+                                                                       do (setq args-plist (plist-put args-plist (intern (concat ":" (if (symbolp (plist-get arg :name)) (symbol-name (plist-get arg :name)) (plist-get arg :name)))) val)))
+                                                              (push (list :id (format "call_%s_%d" buf-name i)
+                                                                          :name tool-name
+                                                                          :args args-plist)
+                                                                    tool-use-list))))
+                                                 (setq info (plist-put info :tool-use (nreverse tool-use-list)))
+                                                 (setf (gptel-fsm-info fsm) info)))
                                              
                                              (if (plist-get resp :text)
                                                  (funcall cb (plist-get resp :text) info)

@@ -18,9 +18,7 @@
 (defvar macher-agent--active-fsm)
 (defvar gptel--fsm-last)
 (defvar macher--fsm-latest)
-
-;; Dummy gptel structures for mocking
-(cl-defstruct mock-gptel-fsm info state)
+(defvar sandbox-root)
 
 (describe "Macher-Agent Core Behaviours"
           (after-each
@@ -33,56 +31,75 @@
                                (file-path "/mock/proj/test.el")
                                (original-mtime '(25000 12345))
                                (drifted-mtime '(25000 99999)))
-                          (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
+                          (unwind-protect
+                              (progn
+                                (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
 
-                          (puthash file-path original-mtime (macher-agent-workspace-mtime-tracker workspace))
+                                (puthash file-path original-mtime (macher-agent-workspace-mtime-tracker workspace))
 
-                          (spy-on 'file-attributes :and-call-fake
-                                  (lambda (&rest args)
-                                    (let ((file (car args)))
-                                      (if (string= file file-path)
-                                          `(t 1 1 1 ,drifted-mtime ,drifted-mtime ,drifted-mtime 100 "mode" t 1 1)
-                                        nil))))
+                                (spy-on 'file-attributes :and-call-fake
+                                        (lambda (&rest args)
+                                          (let ((file (car args)))
+                                            (if (string= file file-path)
+                                                `(t 1 1 1 ,drifted-mtime ,drifted-mtime ,drifted-mtime 100 "mode" t 1 1)
+                                              nil))))
 
-                          (let ((threw nil))
-                            (condition-case err
-                                (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "New content")
-                              (error
-                               (setq threw t)
-                               (expect (cadr err) :to-equal "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply")))
-                            (expect threw :to-be t))))
+                                (let ((threw nil))
+                                  (condition-case err
+                                      (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "New content")
+                                    (error
+                                     (setq threw t)
+                                     (expect (cadr err) :to-equal "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply")))
+                                  (expect threw :to-be t)))
+                            (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces))))
 
                     (it "asserts that different agent sessions within the same workspace share uncommitted VFS state"
                         (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                                (ctx-a (macher--make-context :workspace workspace :contents nil))
                                (ctx-b (macher--make-context :workspace workspace :contents nil))
                                (file-path "/mock/proj/shared.el"))
-                          (puthash (expand-file-name "/mock/proj/") ctx-a macher-agent-active-workspaces)
+                          (unwind-protect
+                              (progn
+                                (puthash (expand-file-name "/mock/proj/") ctx-a macher-agent-active-workspaces)
 
-                          (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "Agent A changes")
+                                (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "Agent A changes")
 
-                          (let ((read-content (macher-agent-vfs-read (macher-agent-workspace-vfs-buffers workspace) nil file-path)))
-                            (expect read-content :to-equal "Agent A changes")))))
+                                (let ((read-content (macher-agent-vfs-read (macher-agent-workspace-vfs-buffers workspace) nil file-path)))
+                                  (expect read-content :to-equal "Agent A changes")))
+                            (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
 
           (describe "2. Execution Environments (Sandbox)"
                     (it "asserts that sandbox inflation overlays the uncommitted VFS changes"
                         (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                                (ctx (macher--make-context :workspace workspace :contents nil)))
                           (macher-agent--set-context-data ctx :sandbox-path "/tmp/macher-sandbox/")
-                          (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
+                          (unwind-protect
+                              (progn
+                                (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
 
-                          (puthash "/mock/proj/overlay.el" "VFS Overlay Content" (macher-agent-workspace-vfs-buffers workspace))
+                                (puthash "/mock/proj/overlay.el" "VFS Overlay Content" (macher-agent-workspace-vfs-buffers workspace))
 
-                          (let ((written-to-sandbox nil))
-                            (spy-on 'file-in-directory-p :and-return-value t)
-                            (spy-on 'write-region :and-call-fake
-                                    (lambda (start end filename &rest _args)
-                                      (when (string-suffix-p "overlay.el" filename)
-                                        (setq written-to-sandbox (substring-no-properties start end)))))
+                                (let ((written-to-sandbox nil))
+                                  (spy-on 'file-in-directory-p :and-return-value t)
+                                  (spy-on 'write-region :and-call-fake
+                                          (lambda (start end filename &rest _args)
+                                            (when (string-suffix-p "overlay.el" filename)
+                                              (setq written-to-sandbox
+                                                    (cond
+                                                     ((stringp start)
+                                                      (if (and (integerp end) (<= end (length start)))
+                                                          (substring-no-properties start 0 end)
+                                                        (substring-no-properties start)))
+                                                     ((and (or (integerp start) (markerp start))
+                                                           (or (integerp end) (markerp end)))
+                                                      (buffer-substring-no-properties start end))
+                                                     (t
+                                                      (buffer-substring-no-properties (point-min) (point-max))))))))
 
-                            (macher-agent-sandbox-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers workspace) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
+                                  (macher-agent-sandbox-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers workspace) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
 
-                            (expect written-to-sandbox :to-equal "VFS Overlay Content")))))
+                                  (expect written-to-sandbox :to-equal "VFS Overlay Content")))
+                            (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
 
           (describe "3. Context and Isolation (Lexical Survival)"
                     (it "asserts that lexical context survives async gptel callbacks without buffer bleeding"
@@ -143,7 +160,7 @@
                 (spy-on 'gptel--inject-media :and-return-value nil)
                 (spy-on 'gptel--inject-prompt :and-return-value nil)
 
-                (macher-agent--inject-media-fsm-advice (lambda (f) f) fsm)
+                (macher-agent--inject-media-fsm-logic fsm)
 
                 (expect 'gptel--inject-media :to-have-been-called)
                 (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil))))
@@ -151,7 +168,7 @@
 (describe "5. Diff Splitting Behaviour"
           (it "asserts that virtual buffer modifications are split from physical file modifications"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (context (macher--make-context :workspace (cons 'project "/mock/proj/")
+                     (context (macher--make-context :workspace workspace
                                                     :contents (list (macher-agent-vfs-make-entry "/mock/proj/disk-file.el" "old" "new")
                                                                     (macher-agent-vfs-make-entry "*scratch*" "old" "new"))))
                      (fsm (gptel-make-fsm))
@@ -180,7 +197,7 @@
                   (expect (car (car orig-called-with)) :to-equal '("*scratch*" "old" . "new"))
                   (expect (car (cadr orig-called-with)) :to-equal '("/mock/proj/disk-file.el" "old" . "new"))))))
 
-(describe "5. Sandbox Security and Path Traversal (Jailbreaks)"
+(describe "6. Sandbox Security and Path Traversal (Jailbreaks)"
 
           (before-each
            (setq sandbox-root "/tmp/macher-sandbox/"))
@@ -209,7 +226,7 @@
                   (error (setq threw t)))
                 (expect threw :to-be t))))
 
-(describe "6. Agent Orchestration and Sub-agent Delegation"
+(describe "7. Agent Orchestration and Sub-agent Delegation"
 
           (it "dispatches point-to-point A2A payloads and invokes completion callback"
               (spy-on 'macher-agent-resolve-context :and-return-value nil)
@@ -283,7 +300,7 @@
               (expect (macher-normalise-preset-name '(@reviewer)) :to-be 'reviewer)
               (expect (macher-normalise-preset-name nil) :to-be nil)))
 
-(describe "7. Prompt Transformer Pipeline and Media Watcher"
+(describe "8. Prompt Transformer Pipeline and Media Watcher"
           (it "deduplicates tool usage blocks keeping the most recent occurrences"
               (with-temp-buffer
                 (insert "User prompt\n")
@@ -354,10 +371,10 @@
                 (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
                 (macher-agent--set-context-data ctx :pending-media (list "data"))
                 (spy-on 'macher-agent--perform-pending-media-injection)
-                (macher-agent--inject-media-fsm-advice (lambda (&rest _) nil) fsm 'WAIT)
+                (macher-agent--inject-media-fsm-logic fsm)
                 (expect 'macher-agent--perform-pending-media-injection :to-have-been-called-with fsm))))
 
-(describe "8. Buffer Resolution and User Interface Delegation (Phase 4)"
+(describe "9. Buffer Resolution and User Interface Delegation (Phase 4)"
           (describe "macher-agent--resolve-buffer-name"
                     (it "resolves buffer objects to buffer name string"
                         (let ((buf (get-buffer-create "test-resolve-buf-obj")))
@@ -372,14 +389,15 @@
                             (kill-buffer buf))))
 
                     (it "resolves file paths to buffer names via native get-file-buffer"
-                        (let* ((temp-file (make-temp-file "macher-resolve-test"))
-                               (buf (find-file-noselect temp-file)))
+                        (let* ((mock-file "/mock/proj/dummy-file.el")
+                               (buf (get-buffer-create "test-resolve-buf-file")))
                           (unwind-protect
                               (progn
-                                (expect (macher-agent--resolve-buffer-name temp-file) :to-equal (buffer-name buf))
-                                (expect (macher-agent--resolve-buffer-name (expand-file-name temp-file)) :to-equal (buffer-name buf)))
-                            (when (buffer-live-p buf) (kill-buffer buf))
-                            (when (file-exists-p temp-file) (delete-file temp-file)))))
+                                (with-current-buffer buf
+                                  (setq buffer-file-name (expand-file-name mock-file)))
+                                (expect (macher-agent--resolve-buffer-name mock-file) :to-equal "test-resolve-buf-file")
+                                (expect (macher-agent--resolve-buffer-name (expand-file-name mock-file)) :to-equal "test-resolve-buf-file"))
+                            (when (buffer-live-p buf) (kill-buffer buf)))))
 
                     (it "returns original name string when buffer or file buffer is unmapped"
                         (expect (macher-agent--resolve-buffer-name "/tmp/nonexistent-file-path-xyz.el")
@@ -411,7 +429,7 @@
                     (it "confirms redundant macher-agent--show-ui function is removed"
                         (expect (fboundp 'macher-agent--show-ui) :to-be nil))))
 
-(describe "9. Context Resolution and Prompt Injection"
+(describe "10. Context Resolution and Prompt Injection"
           (it "verifies macher-agent--resolve-context is deleted and unmapped"
               (expect (fboundp 'macher-agent--resolve-context) :to-be nil))
 
@@ -709,20 +727,23 @@
 
                     (it "executes flush hook and clears instructions on FSM completion"
                         (let* ((target-buf (get-buffer-create "test-ert-flush-hook-buf"))
-                               (fsm (gptel-make-fsm :info (list :buffer target-buf) :state 'DONE))
+                               (mock-ctx (macher--make-context :contents nil))
+                               (fsm (gptel-make-fsm :info (list :buffer target-buf :macher-agent-context mock-ctx) :state 'DONE))
                                (flush-called nil)
-                               (hook-fn (lambda () (setq flush-called t))))
+                               (hook-fn (lambda (&rest _) (setq flush-called t))))
                           (unwind-protect
                               (with-current-buffer target-buf
+                                (setq-local macher-agent--persistent-context mock-ctx)
                                 (setq-local macher-agent--pending-instructions-queue '("pending-1"))
                                 (add-hook 'macher-agent-task-flush-hook hook-fn)
                                 (macher-agent-gptel--trigger-flush fsm)
                                 (expect flush-called :to-be t)
-                                (expect macher-agent--pending-instructions-queue :to-be nil)
-                                (remove-hook 'macher-agent-task-flush-hook hook-fn))
-                            (kill-buffer target-buf)))))
+                                (expect macher-agent--pending-instructions-queue :to-be nil))
+                            (remove-hook 'macher-agent-task-flush-hook hook-fn)
+                            (when (buffer-live-p target-buf)
+                              (kill-buffer target-buf))))))
 
-          (describe "10. Source File Syntax and Parsing Integrity"
+          (describe "11. Source File Syntax and Parsing Integrity"
                     (it "parses all main source files without end-of-file or syntax errors"
                         (let* ((root (locate-dominating-file default-directory "macher-agent-core.el"))
                                (source-files '("macher-agent-core.el"
@@ -738,19 +759,22 @@
                                                "macher-agent.el")))
                           (dolist (file source-files)
                             (let* ((full-path (expand-file-name file (or root default-directory))))
-                              (when (file-exists-p full-path)
-                                (with-temp-buffer
-                                  (insert-file-contents full-path)
-                                  (goto-char (point-min))
-                                  (let ((forms-read 0))
-                                    (condition-case err
-                                        (while t
-                                          (read (current-buffer))
-                                          (setq forms-read (1+ forms-read)))
-                                      (end-of-file
-                                       (expect forms-read :to-be-greater-than 0))
-                                      (error
-                                       (error "Failed parsing %s: %S" file err))))))))))
+                              (expect (file-exists-p full-path) :to-be t)
+                              (with-temp-buffer
+                                (emacs-lisp-mode)
+                                (insert-file-contents full-path)
+                                (check-parens)
+                                (goto-char (point-min))
+                                (let ((forms-read 0))
+                                  (condition-case err
+                                      (while t
+                                        (read (current-buffer))
+                                        (setq forms-read (1+ forms-read)))
+                                    (end-of-file
+                                     (expect (= (point) (point-max)) :to-be t)
+                                     (expect forms-read :to-be-greater-than 0))
+                                    (error
+                                     (error "Failed parsing %s: %S" file err)))))))))
 
                     (it "verifies defun, let, if, and cond structures in macher-agent-core, macher, and vfs"
                         (let* ((root (locate-dominating-file default-directory "macher-agent-core.el"))
@@ -784,18 +808,21 @@
                                           (funcall self-fn curr self-fn))))))))
                           (dolist (file target-files)
                             (let ((full-path (expand-file-name file (or root default-directory))))
-                              (when (file-exists-p full-path)
-                                (with-temp-buffer
-                                  (insert-file-contents full-path)
-                                  (goto-char (point-min))
-                                  (condition-case err
-                                      (while t
-                                        (let ((form (read (current-buffer))))
-                                          (funcall validate-node form validate-node)))
-                                    (end-of-file nil)
-                                    (error (error "Structural error in %s: %S" file err))))))))))
+                              (expect (file-exists-p full-path) :to-be t)
+                              (with-temp-buffer
+                                (emacs-lisp-mode)
+                                (insert-file-contents full-path)
+                                (check-parens)
+                                (goto-char (point-min))
+                                (condition-case err
+                                    (while t
+                                      (let ((form (read (current-buffer))))
+                                        (funcall validate-node form validate-node)))
+                                  (end-of-file
+                                   (expect (= (point) (point-max)) :to-be t))
+                                  (error (error "Structural error in %s: %S" file err)))))))))
 
-          (describe "11. Centralised Universal Constants, Global State, and Utility Functions"
+          (describe "12. Centralised Universal Constants, Global State, and Utility Functions"
                     (it "verifies macher-agent-active-workspaces is initialised in core"
                         (expect (boundp 'macher-agent-active-workspaces) :to-be t)
                         (expect (hash-table-p macher-agent-active-workspaces) :to-be t)
@@ -900,10 +927,9 @@
                           (expect (funcall defines-sym-p vfs-forms 'macher-agent-root) :to-be nil)
                           (expect (funcall defines-sym-p vfs-forms 'macher-agent-context-mutated-hook) :to-be nil)))))
 
-(describe "12. Prompt Synchronization and Fallback Resolution"
+(describe "13. Prompt Synchronization and Fallback Resolution"
           (it "resolves prompt from :data :prompt when direct slot is nil"
               (let ((ctx (macher--make-context :prompt nil :data '(:prompt "fallback prompt message"))))
-                (expect (macher-agent--get-context-prompt ctx) :to-equal "fallback prompt message")
                 (expect (macher-agent--get-context-prompt ctx) :to-equal "fallback prompt message")))
 
           (it "resolves prompt from direct slot when direct slot is present"
@@ -941,7 +967,7 @@
 
           (it "preserves prompt in macher-agent-macher-build-patch-from-hook when context only has :data :prompt"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (context (macher--make-context :workspace (cons 'project "/mock/proj/")
+                     (context (macher--make-context :workspace workspace
                                                     :contents (list (macher-agent-vfs-make-entry "/mock/proj/disk-file.el" "old" "new"))
                                                     :prompt nil
                                                     :data '(:prompt "hook patch prompt")))
@@ -998,7 +1024,7 @@
 
           (it "executes macher-agent-macher-build-patch-from-hook without infinite recursion when setting prompt"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (context (macher--make-context :workspace (cons 'project "/mock/proj/")
+                     (context (macher--make-context :workspace workspace
                                                     :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "a" "b"))))
                      (fsm (gptel-make-fsm))
                      (macher--fsm-latest fsm))
@@ -1006,11 +1032,12 @@
                 (setf (macher-context-dirty-p context) t)
                 (spy-on 'rename-buffer)
                 (spy-on 'macher--get-buffer :and-return-value (list (get-buffer-create "*patch*")))
-                (spy-on 'macher--build-patch :and-return-value nil)
+                (spy-on 'macher--build-patch :and-call-fake
+                        (lambda (_ctx _fsm) nil))
                 (macher-agent-macher-build-patch-from-hook context)
                 (expect (macher-context-prompt context) :to-equal "Hook Prompt Without Recursion"))))
 
-(describe "13. Active FSM Fallback Precedence"
+(describe "14. Active FSM Fallback Precedence"
           (it "prefers explicit current-fsm argument over all fallback variables"
               (let ((fsm-arg 'fsm-arg)
                     (macher-agent--active-fsm 'fsm-active)
@@ -1059,8 +1086,8 @@
                 (expect (macher-agent-get-active-fsm) :to-be nil)
                 (expect (macher-agent-get-active-fsm nil) :to-be nil))))
 
-(describe "14. Test Suite File Cleanliness"
-          (it "ensures obsolete 0-byte test files are deleted using delete-file and absent from directory listings"
+(describe "15. Test Suite File Cleanliness"
+          (it "ensures obsolete 0-byte test files are absent from directory listings"
               (let* ((test-dir (cond
                                 ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                                  (expand-file-name default-directory))
@@ -1080,8 +1107,6 @@
                                        "macher-agent-orchestration-test.el")))
                 (dolist (file obsolete-files)
                   (let ((path (expand-file-name file test-dir)))
-                    (when (file-exists-p path)
-                      (delete-file path))
                     (expect (file-exists-p path) :to-be nil)))
                 (let ((dir-files (directory-files test-dir nil "\\`macher-agent.*\\.el\\'")))
                   (dolist (file obsolete-files)

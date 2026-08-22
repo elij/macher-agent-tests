@@ -267,7 +267,7 @@
                 (while (and (> timeout 0) 
                             (let ((current-fsm (macher-agent--get-fsm-latest)))
                               (or (not (string-match-p "Found token in VFS search" (buffer-string)))
-                                  (and current-fsm (not (eq (gptel-fsm-state current-fsm) 'STOP))))))
+                                  (and current-fsm (not (memq (gptel-fsm-state current-fsm) '(DONE ERRS ABRT)))))))
                   (accept-process-output nil 0.05)
                   (cl-decf timeout)))
 

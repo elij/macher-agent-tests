@@ -95,16 +95,18 @@
                      (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
                                           :state 'DONE))
                      (flush-called nil)
-                     (hook-fn (lambda () (setq flush-called t))))
+                     (hook-fn (lambda (&rest _) (setq flush-called t))))
                 (unwind-protect
                     (with-current-buffer buf
+                      (setq-local macher-agent--persistent-context mock-ctx)
                       (setq-local macher-agent--pending-instructions-queue '("queue-item"))
                       (add-hook 'macher-agent-task-flush-hook hook-fn)
                       (macher-agent-gptel--trigger-flush fsm)
                       (expect flush-called :to-be t)
-                      (expect macher-agent--pending-instructions-queue :to-be nil)
-                      (remove-hook 'macher-agent-task-flush-hook hook-fn))
-                  (kill-buffer buf)))))
+                      (expect macher-agent--pending-instructions-queue :to-be nil))
+                  (remove-hook 'macher-agent-task-flush-hook hook-fn)
+                  (when (buffer-live-p buf)
+                    (kill-buffer buf))))))
 
 (provide 'macher-agent-transmission-pipeline-test)
 ;;; macher-agent-transmission-pipeline-test.el ends here
