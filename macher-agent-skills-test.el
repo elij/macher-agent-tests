@@ -320,20 +320,20 @@
       (let ((buf (generate-new-buffer "test-conv-dispatch"))
             (macher-agent-search-backend-function #'macher-agent-search-glob))
         (with-current-buffer buf
-          (insert "Header text\nTarget query inside history\nFooter text\n"))
+          (insert "Header text\nTarget Query inside history\nFooter text\n"))
         (spy-on 'macher-agent-search-glob :and-call-through)
         (spy-on 'macher-agent-memory-search-zero-mem :and-call-through)
         
         ;; Test glob backend
         (let ((res-glob (macher-agent-search-dispatch "query" buf 2)))
           (expect 'macher-agent-search-glob :to-have-been-called)
-          (expect res-glob :to-match "Target query inside history"))
+          (expect res-glob :to-match "Target Query inside history"))
         
         ;; Test zero-mem backend
         (setq macher-agent-search-backend-function #'macher-agent-memory-search-zero-mem)
         (let ((res-zm (macher-agent-search-dispatch "query" buf 2)))
           (expect 'macher-agent-memory-search-zero-mem :to-have-been-called)
-          (expect res-zm :to-match "Target query inside history"))
+          (expect res-zm :to-match "Target Query inside history"))
         
         ;; Test dead buffer error handling
         (kill-buffer buf)
