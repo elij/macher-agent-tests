@@ -29,64 +29,51 @@
                 (expect (buffer-string) :to-match "Latest user query content")))
 
           (describe "Refactored Unified Transmission Reducer Pipeline"
-                    
-                    (it "inits core subagent directive when buffer is a subagent"
-                        (let* ((orig-buf (generate-new-buffer "test-subagent-buf"))
-                               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
-                          (with-current-buffer orig-buf
-                            (setq-local macher-agent--is-subagent t))
-                          (setq state (macher-agent-pipe--init-core-directives state orig-buf nil nil nil))
-                          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
-                          (expect (car (macher-agent-transmission-state-directives state)) :to-match "CRITICAL DIRECTIVE:")
-                          (kill-buffer orig-buf)))
 
-                    (it "appends boot directive on initial request when no gptel response property exists"
-                        (let* ((orig-buf (generate-new-buffer "test-initial-request-boot-buf"))
-                               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
-                          (with-current-buffer orig-buf
+                    (it "processes subagent and boot directives across turns in transmission state"
+                        (let* ((init-buf (generate-new-buffer "test-init-boot-buf"))
+                               (subseq-buf (generate-new-buffer "test-subseq-boot-buf"))
+                               (state1 (make-macher-agent-transmission-state :target-buffer init-buf))
+                               (state2 (make-macher-agent-transmission-state :target-buffer subseq-buf)))
+                          ;; 1. Subagent core directive
+                          (with-current-buffer init-buf
+                            (setq-local macher-agent--is-subagent t)
                             (setq-local macher-agent--boot-directive "Execute boot setup now."))
-                          (setq state (macher-agent-pipe--append-boot-directive state orig-buf nil nil nil))
-                          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
-                          (expect (car (macher-agent-transmission-state-directives state)) :to-equal "Execute boot setup now.")
-                          (kill-buffer orig-buf)))
+                          (setq state1 (macher-agent-pipe--init-core-directives state1 init-buf nil nil nil))
+                          (setq state1 (macher-agent-pipe--append-boot-directive state1 init-buf nil nil nil))
+                          (expect (length (macher-agent-transmission-state-directives state1)) :to-equal 2)
+                          (expect (car (macher-agent-transmission-state-directives state1)) :to-equal "Execute boot setup now.")
+                          (expect (cadr (macher-agent-transmission-state-directives state1)) :to-match "CRITICAL DIRECTIVE:")
 
-                    (it "does not append boot directive on subsequent request when gptel response property exists"
-                        (let* ((orig-buf (generate-new-buffer "test-subsequent-request-boot-buf"))
-                               (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
-                          (with-current-buffer orig-buf
+                          ;; 2. Subsequent request (has response property) skips boot directive
+                          (with-current-buffer subseq-buf
                             (setq-local macher-agent--boot-directive "Execute boot setup now.")
                             (insert "Previous assistant response")
                             (put-text-property (point-min) (point-max) 'gptel 'response))
-                          (setq state (macher-agent-pipe--append-boot-directive state orig-buf nil nil nil))
-                          (expect (macher-agent-transmission-state-directives state) :to-be nil)
-                          (kill-buffer orig-buf)))
+                          (setq state2 (macher-agent-pipe--append-boot-directive state2 subseq-buf nil nil nil))
+                          (expect (macher-agent-transmission-state-directives state2) :to-be nil)
 
-                    (it "drains thought queue and compiles directives into system prompt"
-                        (let* ((orig-buf (generate-new-buffer "test-thought-queue-buf"))
-                               (state (make-macher-agent-transmission-state :base-prompt "Base System Prompt"
-                                                                            :target-buffer orig-buf)))
-                          (with-current-buffer orig-buf
-                            (macher-agent-add-pending-instruction "Thought 1"))
-                          (setq state (macher-agent-pipe--drain-thought-queue state orig-buf nil nil nil))
-                          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
-                          (with-current-buffer orig-buf
-                            (expect macher-agent--pending-instructions-queue :not :to-be nil))
-                          (setq state (macher-agent-pipe--compile-directives state orig-buf nil nil nil))
-                          (expect (macher-agent-transmission-state-compiled-prompt state) :to-match "Base System Prompt\n\nUSER OVERRIDE DIRECTIVE:\nThought 1")
-                          (kill-buffer orig-buf)))
+                          (kill-buffer init-buf)
+                          (kill-buffer subseq-buf)))
 
-                    (it "appends ptc directive when ptc-primitives are active on state"
-                        (let* ((orig-buf (generate-new-buffer "test-ptc-directive-buf"))
+                    (it "drains thought queue, appends PTC directives, and compiles system prompt"
+                        (let* ((orig-buf (generate-new-buffer "test-thought-ptc-buf"))
                                (state (make-macher-agent-transmission-state
+                                       :base-prompt "Base System Prompt"
                                        :target-buffer orig-buf
                                        :ptc-primitives '(spawn-subagent)
                                        :tools (list (gptel-make-tool :name "spawn-subagent"
                                                                      :description "Spawn subagent"
                                                                      :args '((:name "path" :type "string")))))))
+                          (with-current-buffer orig-buf
+                            (macher-agent-add-pending-instruction "Thought 1"))
+                          (setq state (macher-agent-pipe--drain-thought-queue state orig-buf nil nil nil))
                           (setq state (macher-agent-sandbox-append-ptc-directive state orig-buf nil nil nil))
-                          (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
-                          (expect (car (macher-agent-transmission-state-directives state))
-                                  :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ===")
+                          (setq state (macher-agent-pipe--compile-directives state orig-buf nil nil nil))
+                          (let ((compiled (macher-agent-transmission-state-compiled-prompt state)))
+                            (expect compiled :to-match "Base System Prompt")
+                            (expect compiled :to-match "USER OVERRIDE DIRECTIVE:\nThought 1")
+                            (expect compiled :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ==="))
                           (kill-buffer orig-buf))))
 
           (it "triggers flush hook on completion when FSM transitions to DONE"

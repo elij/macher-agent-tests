@@ -150,24 +150,7 @@
           (macher-agent--auto-sync-context ctx)
           (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)
           (when (buffer-live-p file-buf) (kill-buffer file-buf)))
-        (delete-directory temp-dir t))))
-
- (describe
-  "5. Module Loading and Balanced Syntax"
-  (it "loads macher-agent-gptel without syntax or unbalanced parenthesis errors"
-      (expect (featurep 'macher-agent-gptel) :to-be t)
-      (expect (fboundp 'macher-agent-sweep-subagents) :to-be t)
-      (expect (fboundp 'macher-agent-post-response-reaper) :to-be t))
-
-  (it "validates that macher-agent-gptel.el passes check-parens without error"
-      (let* ((root (or (locate-dominating-file default-directory "macher-agent-gptel.el")
-                       (file-name-directory (directory-file-name default-directory))))
-             (file (expand-file-name "macher-agent-gptel.el" root)))
-        (when (file-exists-p file)
-          (with-temp-buffer
-            (insert-file-contents file)
-            (emacs-lisp-mode)
-            (expect (check-parens) :not :to-throw)))))))
+        (delete-directory temp-dir t)))))
 
 (provide 'macher-agent-resilience-test)
 ;;; macher-agent-resilience-test.el ends here

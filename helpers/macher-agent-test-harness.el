@@ -45,13 +45,13 @@
               (macher-agent--set-context-data ctx :prompt raw-prompt))
             (ignore-errors (setf (macher-context-prompt ctx) raw-prompt))))))
 
-    (when orig-cb
+    (let ((cb (or orig-cb #'ignore)))
       (setq info
             (plist-put (gptel-fsm-info fsm) :callback
                        (lambda (response &rest args)
                          (let ((info-arg (car args)))
-                           (when (or response (plist-get info-arg :tool-use))
-                             (apply orig-cb (or response "") args))))))
+                           (when (or response (and (listp info-arg) (plist-get info-arg :tool-use)))
+                             (apply cb (or response "") args))))))
       (setf (gptel-fsm-info fsm) info))
     
     (let* ((handlers (gptel-fsm-handlers fsm))
@@ -105,7 +105,16 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
            (gptel-model 'mock-model)
            (gptel-tools (hash-table-values (macher-agent-workspace-tools-registry ws))))
 
-       (cl-letf (((symbol-function 'gptel--get-api-key) 
+       (cl-letf (((symbol-function 'macher-agent-resolve-context)
+                  (lambda (&optional input)
+                    (cond
+                     ((macher-agent-valid-context-p input) input)
+                     ((and (bufferp input) (buffer-live-p input)
+                           (buffer-local-value 'macher-agent--persistent-context input)))
+                     ((and (stringp input) (get-buffer input) (buffer-live-p (get-buffer input))
+                           (buffer-local-value 'macher-agent--persistent-context (get-buffer input))))
+                     (t ctx))))
+                 ((symbol-function 'gptel--get-api-key) 
                   (lambda (&rest _) "mock-key"))
                  ((symbol-function 'gptel-curl-get-response)
                   (lambda (info-or-fsm &optional callback)
@@ -124,52 +133,53 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
                           (with-current-buffer target-buf
                             (setq-local gptel--fsm-last fsm))))
                       
-                      (run-at-time 0.01 nil
-                                   (lambda ()
-                                     (when (buffer-live-p target-buf)
-                                       (when fsm
-                                         (setq info (plist-put info :http-status "200"))
-                                         (setq info (plist-put info :status "200 OK"))
-                                         (setf (gptel-fsm-info fsm) info)
-                                         (gptel--fsm-transition fsm))
+                      (let ((run-response
+                             (lambda ()
+                               (when (buffer-live-p target-buf)
+                                 (when fsm
+                                   (setq info (plist-put info :http-status "200"))
+                                   (setq info (plist-put info :status "200 OK"))
+                                   (setf (gptel-fsm-info fsm) info)
+                                   (gptel--fsm-transition fsm))
+                                 
+                                 (if resp
+                                     (progn
+                                       (when (and fsm (plist-get resp :tool-use))
+                                         (let ((tool-use-list nil))
+                                           (cl-loop for tool-req in (plist-get resp :tool-use)
+                                                    for i from 1
+                                                    do
+                                                    (let* ((tool-name (car tool-req))
+                                                           (tool-vals (cdr tool-req))
+                                                           (tool-spec (or (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name))
+                                                                                      (plist-get info :tools))
+                                                                          (ignore-errors (gptel-get-tool tool-name)))))
+                                                      (unless tool-spec
+                                                        (error "Unknown mock tool: %s" tool-name))
+                                                      (unless (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name)) (plist-get info :tools))
+                                                        (setq info (plist-put info :tools (append (plist-get info :tools) (list tool-spec))))
+                                                        (setf (gptel-fsm-info fsm) info))
+                                                      (let ((expected-args (gptel-tool-args tool-spec))
+                                                            (args-plist nil))
+                                                        (cl-loop for arg in expected-args
+                                                                 for val in tool-vals
+                                                                 do (setq args-plist (plist-put args-plist (intern (concat ":" (if (symbolp (plist-get arg :name)) (symbol-name (plist-get arg :name)) (plist-get arg :name)))) val)))
+                                                        (push (list :id (format "call_%s_%d" buf-name i)
+                                                                    :name tool-name
+                                                                    :args args-plist)
+                                                              tool-use-list))))
+                                           (setq info (plist-put info :tool-use (nreverse tool-use-list)))
+                                           (setf (gptel-fsm-info fsm) info)))
                                        
-                                       (if resp
-                                           (progn
-                                             (when (and fsm (plist-get resp :tool-use))
-                                               (let ((tool-use-list nil))
-                                                 (cl-loop for tool-req in (plist-get resp :tool-use)
-                                                          for i from 1
-                                                          do
-                                                          (let* ((tool-name (car tool-req))
-                                                                 (tool-vals (cdr tool-req))
-                                                                 (tool-spec (or (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name))
-                                                                                            (plist-get info :tools))
-                                                                                (ignore-errors (gptel-get-tool tool-name)))))
-                                                            (unless tool-spec
-                                                              (error "Unknown mock tool: %s" tool-name))
-                                                            (unless (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) tool-name)) (plist-get info :tools))
-                                                              (setq info (plist-put info :tools (append (plist-get info :tools) (list tool-spec))))
-                                                              (setf (gptel-fsm-info fsm) info))
-                                                            (let ((expected-args (gptel-tool-args tool-spec))
-                                                                  (args-plist nil))
-                                                              (cl-loop for arg in expected-args
-                                                                       for val in tool-vals
-                                                                       do (setq args-plist (plist-put args-plist (intern (concat ":" (if (symbolp (plist-get arg :name)) (symbol-name (plist-get arg :name)) (plist-get arg :name)))) val)))
-                                                              (push (list :id (format "call_%s_%d" buf-name i)
-                                                                          :name tool-name
-                                                                          :args args-plist)
-                                                                    tool-use-list))))
-                                                 (setq info (plist-put info :tool-use (nreverse tool-use-list)))
-                                                 (setf (gptel-fsm-info fsm) info)))
-                                             
-                                             (if (plist-get resp :text)
-                                                 (funcall cb (plist-get resp :text) info)
-                                               (funcall cb nil info)))
-                                         (funcall cb "Fallback mock response." info))
-                                       
-                                       (when fsm
-                                         (gptel--fsm-transition fsm))
-                                       (cl-incf ,call-counter)))))))
+                                       (if (plist-get resp :text)
+                                           (when (functionp cb) (funcall cb (plist-get resp :text) info))
+                                         (when (functionp cb) (funcall cb nil info))))
+                                   (when (functionp cb) (funcall cb "Fallback mock response." info)))
+                                 
+                                 (when fsm
+                                   (gptel--fsm-transition fsm))
+                                 (cl-incf ,call-counter)))))
+                        (run-at-time 0.01 nil run-response)))))
                  ((symbol-function 'gptel--url-get-response)
                   (symbol-function 'gptel-curl-get-response)))
          ,@body))))

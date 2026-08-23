@@ -3,6 +3,7 @@
 (require 'buttercup)
 (require 'macher-agent-macher)
 (require 'macher-agent)
+(require 'macher-agent-vfs)
 (require 'macher-agent-zero-mem)
 (let* ((file-name (or load-file-name buffer-file-name))
        (current-dir (if file-name (file-name-directory file-name) default-directory)))
@@ -638,7 +639,11 @@
                          (expect (plist-get composed :ptc-primitives) :to-equal '(spawn_subagent delegate_tasks))))
                      (delete-directory mock-dir t)))))
 
-           )
+           (describe "Skills Media Support"
+                     (it "detects media file extensions"
+                         (expect (macher-agent-media-file-p "image.png") :to-be-truthy)
+                         (expect (macher-agent-media-file-p "photo.jpg") :to-be-truthy)
+                         (expect (macher-agent-media-file-p "code.el") :to-be nil))))
 
  )
 

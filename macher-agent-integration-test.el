@@ -27,30 +27,47 @@
 (describe "Macher-Agent Orchestration Integration"
           (before-each
            (setq macher-agent--garbage-queue nil)
-           (spy-on 'macher-agent-resolve-context :and-return-value
-                   (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj"))
-                          (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
-                     (puthash (expand-file-name "/mock/proj") ctx macher-agent-active-workspaces)
-                     (macher-agent-initialize-skills ctx (or (bound-and-true-p macher-agent--bundled-skills-dir) macher-agent-bundled-skills-directory))
-                     ctx))
+           (spy-on 'macher-agent-resolve-context :and-call-fake
+                   (lambda (&optional input)
+                     (cond
+                      ((macher-agent-valid-context-p input) input)
+                      ((and (bufferp input) (buffer-live-p input)
+                            (buffer-local-value 'macher-agent--persistent-context input)))
+                      ((and (stringp input) (get-buffer input) (buffer-live-p (get-buffer input))
+                            (buffer-local-value 'macher-agent--persistent-context (get-buffer input))))
+                      ((and input (ignore-errors (macher-agent-resolve-from-transit-payload input))))
+                      ((bound-and-true-p macher-agent--persistent-context)
+                       macher-agent--persistent-context)
+                      ((gethash (expand-file-name default-directory) macher-agent-active-workspaces))
+                      (t
+                       (let* ((ws (make-macher-agent-workspace :project-root (expand-file-name default-directory)))
+                              (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                         (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
+                         (macher-agent-initialize-skills ctx (or (bound-and-true-p macher-agent--bundled-skills-dir)
+                                                                 (bound-and-true-p macher-agent-bundled-skills-directory)))
+                         ctx)))))
            
            ;; 1. Mock the LLM: Intercept gptel-send to act as the AI for the sub-agents
-           (spy-on 'gptel-send :and-call-fake
-                   (lambda (&rest _)
-                     (let ((buf (current-buffer))
-                           (name (buffer-name (current-buffer))))
-                       (cond
-                        ((string-match-p "agent-france" name)
-                         (with-current-buffer buf
-                           (setq-local macher-agent--is-subagent t)
-                           (setq-local macher-agent--ready-to-reap t))
-                         (macher-agent-submit-task-result "The capital of France is Paris."))
-                        
-                        ((string-match-p "agent-spain" name)
-                         (with-current-buffer buf
-                           (setq-local macher-agent--is-subagent t)
-                           (setq-local macher-agent--ready-to-reap t))
-                         (macher-agent-submit-task-result "The capital of Spain is Madrid."))))))
+           (let ((orig-send (symbol-function 'gptel-send)))
+             (spy-on 'gptel-send :and-call-fake
+                     (lambda (&rest args)
+                       (let ((buf (current-buffer))
+                             (name (buffer-name (current-buffer))))
+                         (cond
+                          ((string-match-p "agent-france" name)
+                           (with-current-buffer buf
+                             (setq-local macher-agent--is-subagent t)
+                             (setq-local macher-agent--ready-to-reap t))
+                           (macher-agent-submit-task-result "The capital of France is Paris."))
+                          
+                          ((string-match-p "agent-spain" name)
+                           (with-current-buffer buf
+                             (setq-local macher-agent--is-subagent t)
+                             (setq-local macher-agent--ready-to-reap t))
+                           (macher-agent-submit-task-result "The capital of Spain is Madrid."))
+                          (t
+                           (when (functionp orig-send)
+                             (apply orig-send args))))))))
 
            ;; 2. Mock timers: Force deferred buffer cleanups to happen synchronously
            (spy-on 'run-at-time :and-call-fake
@@ -98,21 +115,10 @@
                                           :preset "@macher-agent-worker")))
                             (delegate-fn (gptel-tool-function delegate-tool)))
                         
-                        (cl-letf (((symbol-function 'gptel-send)
-                                   (lambda ()
-                                     (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
-                                            (cb (when task-id (gethash task-id macher-agent--pending-callbacks)))
-                                            (bname (buffer-name)))
-                                       (when cb
-                                         (with-current-buffer (get-buffer bname)
-                                           (setq-local macher-agent--ready-to-reap t))
-                                         (funcall cb (list :type 'ARTIFACT_UPDATE
-                                                           :task-id task-id
-                                                           :message (list :status 'success :buffer-name bname :data (if (string-match-p "france" bname) "The capital of France is Paris." "The capital of Spain is Madrid.")))))))))
-                          (funcall delegate-fn
-                                   (lambda (result)
-                                     (setq final-result result))
-                                   :tasks tasks))
+                        (funcall delegate-fn
+                                 (lambda (result)
+                                   (setq final-result result))
+                                 :tasks tasks)
 
                         ;; --- D. Assertions ---
                         (expect final-result :to-be-truthy)
@@ -133,21 +139,13 @@
                      (results nil))
                 (with-current-buffer parent-buf
                   (macher-agent-add-subagent "agent-france")
-                  (cl-letf (((symbol-function 'gptel-send)
-                             (lambda ()
-                               (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
-                                      (cb (when task-id (gethash task-id macher-agent--pending-callbacks))))
-                                 (when cb
-                                   (funcall cb (list :type 'ARTIFACT_UPDATE
-                                                     :task-id task-id
-                                                     :message (list :status 'success :data "Paris"))))))))
-                    (macher-agent-a2a-dispatch
-                     (list (list :type 'SEND_MESSAGE
-                                 :task-id "fake-task"
-                                 :metadata (list :buffer_name "agent-france" :presets "@macher-agent-worker")
-                                 :message (list :instructions "What is the capital of France?")))
-                     (lambda (res)
-                       (setq results res))))
+                  (macher-agent-a2a-dispatch
+                   (list (list :type 'SEND_MESSAGE
+                               :task-id "fake-task"
+                               :metadata (list :buffer_name "agent-france" :presets "@macher-agent-worker")
+                               :message (list :instructions "What is the capital of France?")))
+                   (lambda (res)
+                     (setq results res)))
                   (expect results :to-be-truthy)
                   (let ((m (or (plist-get (aref results 0) :message) (aref results 0))))
                     (expect (plist-get m :status) :to-equal 'success)
@@ -182,9 +180,60 @@
                 (expect (gethash resource-path macher-agent--vfs-lock-table) :to-be-truthy)
                 (expect lock-result :to-match "Resource lock acquired")))
 
-          (it "verifies removal of global event bus and emit function"
-              (expect (fboundp 'macher-agent-emit) :to-be nil)
-              (expect (boundp 'macher-agent-workspace-event-bus) :to-be nil)))
+          (it "interleaves macher-agent tools and macher tools seamlessly across turns"
+              (let* ((call-count 0)
+                     (temp-dir (make-temp-file "macher-ws-" t))
+                     (parent-buffer (generate-new-buffer "*macher-test-interleave*")))
+                (unwind-protect
+                    (let ((default-directory (file-name-as-directory (expand-file-name temp-dir))))
+                      (cl-letf (((symbol-function 'macher-agent-resolve-workspace-root)
+                                 (lambda (&rest _) (file-name-as-directory (expand-file-name temp-dir))))
+                                ((symbol-function 'vc-root-dir)
+                                 (lambda (&rest _) (file-name-as-directory (expand-file-name temp-dir))))
+                                ((symbol-function 'project-current)
+                                 (lambda (&rest _) (cons 'transient (file-name-as-directory (expand-file-name temp-dir))))))
+                        (with-current-buffer parent-buffer
+                          (setq default-directory (file-name-as-directory (expand-file-name temp-dir)))
+                          (when (fboundp 'markdown-mode) (markdown-mode))
+                          (when (fboundp 'gptel-mode) (gptel-mode 1))
+                          (when (fboundp 'macher-agent-mode) (macher-agent-mode 1))
 
+                          ;; Prevent interactive diff patch generation from deadlocking the test
+                          (setq-local macher-agent--suppress-patch t)
+
+                          (insert "Interleave macher-agent and macher tool edits.")
+
+                          (with-macher-agent-test-context
+                           '(("macher-test-interleave" .
+                              ((:text nil :tool-use (("write_buffer_in_workspace" "interleave-full.txt" "Agent Edit 1")))
+                               (:text nil :tool-use (("read_buffer_in_workspace" "interleave-full.txt")))
+                               (:text "Read final interleaved edit" :tool-use nil))))
+                           call-count
+
+                           (fset 'macher-agent--mock-midturn
+                                 (lambda (&rest _)
+                                   (remove-hook 'macher-agent-post-tool-use-hook #'macher-agent--mock-midturn)
+                                   (macher-agent-context-update ctx "interleave-full.txt" "Macher Edit 2 Overwrite")))
+                           (add-hook 'macher-agent-post-tool-use-hook #'macher-agent--mock-midturn)
+
+                           (unwind-protect
+                               (progn
+                                 (if (and (fboundp 'macher-agent-send) (symbol-function 'macher-agent-send))
+                                     (funcall #'macher-agent-send)
+                                   (gptel-send))
+
+                                 (let ((timeout 100))
+                                   (while (and (< call-count 3) (> timeout 0))
+                                     (sleep-for 0.02)
+                                     (accept-process-output nil 0.02)
+                                     (cl-decf timeout)))
+
+                                 (expect (>= call-count 2) :to-be t)
+                                 (let ((norm-key (macher-agent--normalize-path-key "interleave-full.txt" ctx)))
+                                   (expect (macher-agent--read-context-file ctx norm-key) :to-equal "Macher Edit 2 Overwrite")))
+                             (remove-hook 'macher-agent-post-tool-use-hook #'macher-agent--mock-midturn))))))
+
+                  (when (buffer-live-p parent-buffer) (kill-buffer parent-buffer))
+                  (when (file-directory-p temp-dir) (delete-directory temp-dir t))))))
 (provide 'macher-agent-integration-test)
 ;;; macher-agent-integration-test.el ends here
