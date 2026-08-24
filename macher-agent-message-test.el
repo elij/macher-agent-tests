@@ -76,7 +76,7 @@
                                      :message "Instructions for new subagent"))
 
                           (expect (get-buffer target-buf-name) :to-be nil)
-                          (expect sender-reply :to-equal (format "ERROR: Target agent buffer '%s' does not exist or is not registered for callbacks." target-buf-name))
+                          (expect sender-reply :to-equal (format "ERROR: Target agent buffer '%s' does not exist." target-buf-name))
                           (kill-buffer sender-buf))))
 
           (describe "routing stack behavior"
@@ -105,7 +105,7 @@
 
                           (expect peer-received :not :to-be nil)
                           (expect (plist-get peer-received :type) :to-equal 'ARTIFACT_UPDATE)
-                          (expect (plist-get (plist-get peer-received :message) :data) :to-equal "Peer answer")
+                          (expect (plist-get (plist-get peer-received :message) :message) :to-equal "Peer answer")
                           (expect root-received :to-be nil)
 
                           ;; 4. Child completes root task -> submit_task_result pops root frame
@@ -114,7 +114,7 @@
 
                           (expect root-received :not :to-be nil)
                           (expect (plist-get root-received :type) :to-equal 'ARTIFACT_UPDATE)
-                          (expect (plist-get (plist-get root-received :message) :data) :to-equal "Root final answer")
+                          (expect (plist-get (plist-get root-received :message) :message) :to-equal "Root final answer")
 
                           (kill-buffer root-buf)
                           (kill-buffer child-buf)

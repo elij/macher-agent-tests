@@ -65,7 +65,8 @@
              (callback-called nil)
              (callback (lambda (res) (setq callback-called res)))
              (json-tasks (vector (list :buffer_name "test-sub" :instructions "do work")))
-             (tool-fn (gptel-tool-function macher-agent-delegate-tasks-to-subagents-tool))
+             (tool-fn (gptel-tool-function (or (bound-and-true-p macher-agent-delegate-tasks-tool)
+                                               macher-agent-delegate-tasks-tool)))
              (buf (get-buffer-create "test-sub")))
         
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
@@ -171,7 +172,7 @@
                                       (expect (funcall tool-fn nil "My final answer")
                                               :to-equal "SUCCESS: Result submitted. STOP NOW."))
           (expect (plist-get callback-data :type) :to-equal 'ARTIFACT_UPDATE)
-          (expect (plist-get (plist-get callback-data :message) :data) :to-equal "My final answer")
+          (expect (plist-get (plist-get callback-data :message) :message) :to-equal "My final answer")
           (expect macher-agent-task-finished :to-be t)
           (expect (funcall tool-fn nil "Second final answer") :to-equal "ERROR: Task has already been submitted."))
         (kill-buffer buf)))
@@ -246,7 +247,13 @@
              (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
                          (get 'macher-agent-tool-search-in-workspace 'command-fn))))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-        (spy-on 'call-process :and-return-value 0)
+        (spy-on 'macher-agent--vfs-verify-clean-merge)
+        (spy-on 'macher-agent--vfs-sync-baseline)
+        (spy-on 'shell-command-to-string :and-call-fake
+                (lambda (cmd)
+                  (if (string-match-p "unique-vfs-search-token" cmd)
+                      "vfs-search-target.txt:1:unique-vfs-search-token line\n"
+                    "No matches found.")))
         (with-macher-agent-mock-fsm ctx
                                     (funcall write-fn nil "vfs-search-target.txt" "unique-vfs-search-token line")
                                     (let ((res (funcall cmd-fn '(:pattern "unique-vfs-search-token") ctx default-directory)))

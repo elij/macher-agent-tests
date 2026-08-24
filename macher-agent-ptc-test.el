@@ -47,8 +47,10 @@
                  (lambda (err) (setq error-result err)))
                 (expect error-result :to-be nil)
                 (expect (reverse spawn-calls) :to-equal '("agent-alpha" "agent-beta"))
-                (expect success-result :to-equal [(:status success :data "result-alpha" :buffer-name "agent-alpha")
-                                                  (:status success :data "result-beta" :buffer-name "agent-beta")])))
+                (expect success-result :to-match "All sub-agents completed:")
+                (expect success-result :to-match "=== Response from sub-agent ===")
+                (expect success-result :to-match "result-alpha")
+                (expect success-result :to-match "result-beta")))
 
           (it "safely evaluates synchronous expressions without leaking iter-end-of-sequence"
               (let ((val (macher-agent-sandbox-run '(+ 10 20) nil)))

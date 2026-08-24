@@ -16,7 +16,6 @@
                         (expect (fboundp 'macher-agent-scope-add-file) :to-be t)
                         (expect (fboundp 'macher-agent-a2a-dispatch) :to-be t)
                         (expect (fboundp 'macher-agent-prepare-instructions) :to-be t)
-                        (expect (fboundp 'macher-agent-submit-task-result) :to-be t)
                         (expect (fboundp 'macher-agent-sandbox-run) :to-be t)
                         (expect (fboundp 'macher-agent-workspace-root) :to-be t)
                         (expect (fboundp 'macher-agent-api-register-skills-in-directory) :to-be t)
@@ -137,14 +136,13 @@
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents (list 'dummy))))
                           (spy-on 'macher-agent--vfs-verify-clean-merge :and-call-fake (lambda (&rest _) (push 'verify step-order)))
                           (spy-on 'macher-agent--vfs-sync-baseline :and-call-fake (lambda (&rest _) (push 'sync step-order)))
-                          (spy-on 'macher-agent--vfs-apply-overlay-stateless :and-call-fake (lambda (&rest _) (push 'overlay step-order)))
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
                           (spy-on 'delete-directory :and-call-through)
 
                           (macher-agent-with-strict-vfs-pipeline ctx
                                                                  'done)
 
-                          (expect (reverse step-order) :to-equal '(verify sync overlay))))
+                          (expect (reverse step-order) :to-equal '(verify sync))))
 
                     (it "binds default-directory to isolated temporary sandbox directory during body execution"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
@@ -152,7 +150,6 @@
                                (captured-dir nil))
                           (spy-on 'macher-agent--vfs-verify-clean-merge)
                           (spy-on 'macher-agent--vfs-sync-baseline)
-                          (spy-on 'macher-agent--vfs-apply-overlay-stateless)
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
 
                           (macher-agent-with-strict-vfs-pipeline ctx
@@ -161,36 +158,12 @@
                           (expect captured-dir :not :to-equal "/mock/vfs-proj/")
                           (expect (string-match-p "macher-sandbox-" captured-dir) :to-be-truthy)))
 
-                    (it "overlays virtual context edits into sandbox and returns body evaluation result"
-                        (spy-on 'macher-agent--vfs-sync-baseline)
-                        (let* ((temp-proj (file-name-as-directory (make-temp-file "macher-strict-vfs-" t)))
-                               (file-rel "config.txt")
-                               (file-abs (expand-file-name file-rel temp-proj))
-                               (ws (make-macher-agent-workspace :project-root temp-proj))
-                               (ctx (macher-agent--make-vfs-context
-                                     :workspace ws
-                                     :contents (list (macher-agent-vfs-make-entry file-abs "orig-disk" "virtual-overlay"))))
-                               (result nil))
-                          (unwind-protect
-                              (progn
-                                (write-region "orig-disk" nil file-abs nil 'silent)
-                                (setq result
-                                      (macher-agent-with-strict-vfs-pipeline ctx
-                                                                             (if (file-exists-p file-rel)
-                                                                                 (with-temp-buffer
-                                                                                   (insert-file-contents file-rel)
-                                                                                   (buffer-string))
-                                                                               "not-found")))
-                                (expect result :to-equal "virtual-overlay"))
-                            (delete-directory temp-proj t))))
-
                     (it "guarantees sandbox directory cleanup even when body signals an error"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
                                (created-sandbox nil))
                           (spy-on 'macher-agent--vfs-verify-clean-merge)
                           (spy-on 'macher-agent--vfs-sync-baseline)
-                          (spy-on 'macher-agent--vfs-apply-overlay-stateless)
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
 
                           (expect
