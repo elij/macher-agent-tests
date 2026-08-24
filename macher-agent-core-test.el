@@ -246,7 +246,6 @@
     (expect (get 'macher-agent--is-ephemeral 'permanent-local) :to-be t)
     (expect (get 'macher-agent--routing-stack 'permanent-local) :to-be t)
     (expect (get 'macher-agent--current-task-id 'permanent-local) :to-be t)
-    (expect (get 'macher-agent--is-subagent 'permanent-local) :to-be t)
     (expect (get 'macher-agent--ready-to-reap 'permanent-local) :to-be t)
     (expect (get 'macher-agent-presets 'permanent-local) :to-be t)
     (expect (get 'macher-agent--active-ptc-primitives 'permanent-local) :to-be t)

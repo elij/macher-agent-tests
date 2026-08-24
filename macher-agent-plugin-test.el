@@ -91,7 +91,7 @@
                                                     :shared-state (list :results (make-hash-table :test 'equal)
                                                                         :total 1
                                                                         :final-callback nil
-                                                                        :parent-buf (current-buffer)
+                                                                        :parent-buffer (current-buffer)
                                                                         :parent-fsm nil
                                                                         :original-payloads nil)
                                                     :child-buf (generate-new-buffer "test-bind-child"))))
@@ -104,7 +104,7 @@
                             (remhash colliding-id macher-agent--pending-callbacks)
                             (kill-buffer (plist-get initial-state :child-buf)))))
 
-                    (it "extracts parent-buf from plist, alist, and hash-table shared state in macher-agent-a2a-pipe--acquire-target"
+                    (it "extracts parent-buffer from plist, alist, and hash-table shared state in macher-agent-a2a-pipe--acquire-target"
                         (let* ((mock-dir (make-temp-file "macher-a2a-acquire-target-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
                                (parent-ctx (macher--make-context :workspace workspace :contents nil))
@@ -117,7 +117,7 @@
                                 (let* ((state-plist (list :a2a-msg (list :task-id "task-p1" :metadata (list :buffer_name "test-a2a-child-buf"))
                                                           :target "test-a2a-child-buf"
                                                           :target-name "test-a2a-child-buf"
-                                                          :shared-state (list :parent-buf parent-buf)))
+                                                          :shared-state (list :parent-buffer parent-buf)))
                                        (res-plist (macher-agent-a2a-pipe--acquire-target state-plist)))
                                   (expect (plist-get res-plist :child-buf) :to-be child-buf)
                                   (with-current-buffer child-buf
@@ -128,7 +128,7 @@
                                 (let* ((state-alist (list :a2a-msg (list :task-id "task-a1" :metadata (list :buffer_name "test-a2a-child-buf"))
                                                           :target "test-a2a-child-buf"
                                                           :target-name "test-a2a-child-buf"
-                                                          :shared-state `((parent-buf . ,parent-buf))))
+                                                          :shared-state `((parent-buffer . ,parent-buf))))
                                        (res-alist (macher-agent-a2a-pipe--acquire-target state-alist)))
                                   (expect (plist-get res-alist :child-buf) :to-be child-buf)
                                   (with-current-buffer child-buf
@@ -137,7 +137,7 @@
                                 (with-current-buffer child-buf
                                   (setq-local macher-agent--persistent-context nil))
                                 (let* ((shared-ht (make-hash-table :test 'equal)))
-                                  (puthash :parent-buf parent-buf shared-ht)
+                                  (puthash :parent-buffer parent-buf shared-ht)
                                   (let* ((state-ht (list :a2a-msg (list :task-id "task-h1" :metadata (list :buffer_name "test-a2a-child-buf"))
                                                          :target "test-a2a-child-buf"
                                                          :target-name "test-a2a-child-buf"
@@ -203,7 +203,7 @@
                                 (macher-agent-vfs--merge-payload (list :shared-state (list :context ctx) :diff (list (cons "shared-file.txt" (cons nil "shared content")))))
                                 (expect (macher-agent--read-context-file ctx "shared-file.txt") :to-equal "shared content")
                                 ;; 4. Target buffer persistent context update
-                                (let ((res (macher-agent-vfs--merge-payload (list :parent-ctx ctx :target-buffer target-buf :diff (list (cons "merged-doc.txt" (cons nil "fresh content")))))))
+                                (let ((res (macher-agent-vfs--merge-payload (list :parent-context ctx :target-buffer target-buf :diff (list (cons "merged-doc.txt" (cons nil "fresh content")))))))
                                   (expect (plist-get res :target-context) :to-be ctx)
                                   (expect (macher-agent--read-context-file ctx "merged-doc.txt") :to-equal "fresh content")
                                   (with-current-buffer target-buf
@@ -365,21 +365,25 @@
                                     :to-be nil))))
 
                     (it "installs and uninstalls memory pipeline steps via zero-mem-install and zero-mem-uninstall"
-                        (clrhash macher-agent-pipeline-registry)
-                        (macher-agent-zero-mem-install)
-                        (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
-                          (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
-                          (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
-                          (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy))
-                        (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
-                        (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
-                        (macher-agent-zero-mem-uninstall)
-                        (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
-                          (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
-                          (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
-                          (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil))
-                        (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
-                        (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
+                        (let ((saved-registry (copy-hash-table macher-agent-pipeline-registry)))
+                          (unwind-protect
+                              (progn
+                                (clrhash macher-agent-pipeline-registry)
+                                (macher-agent-zero-mem-install)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy))
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
+                                (macher-agent-zero-mem-uninstall)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil))
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
+                            (setq macher-agent-pipeline-registry saved-registry))))
 
                     (it "persists conversation history and aggregates results without premature task flush"
                         (with-temp-buffer
@@ -472,7 +476,7 @@
                                        (shared-state (list :results results
                                                            :total 1
                                                            :final-callback nil
-                                                           :parent-buf parent-buf
+                                                           :parent-buffer parent-buf
                                                            :parent-fsm nil
                                                            :original-payloads nil))
                                        (state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)
@@ -512,7 +516,7 @@
                                        (shared-state (list :results results
                                                            :total 1
                                                            :final-callback nil
-                                                           :parent-buf parent-buf
+                                                           :parent-buffer parent-buf
                                                            :parent-fsm nil
                                                            :original-payloads nil))
                                        (state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)
@@ -547,7 +551,7 @@
                                (shared-state (list :results results-tbl
                                                    :total 1
                                                    :final-callback nil
-                                                   :parent-buf parent-buf
+                                                   :parent-buffer parent-buf
                                                    :parent-fsm nil
                                                    :original-payloads nil))
                                (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)

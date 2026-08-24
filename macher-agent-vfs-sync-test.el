@@ -378,16 +378,15 @@
                 (expect (macher-agent--safe-workspace-hash direct-project)
                         :to-equal (md5 "/mock/project/path"))))
 
-          (it "merges contexts respecting buffer-local macher-agent--is-subagent"
+          (it "merges contexts directly in macher-agent--merge-contexts"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                      (parent-ctx (macher--make-context :workspace workspace
                                                        :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v1"))))
                      (child-ctx (macher--make-context :workspace workspace
                                                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v2")))))
-                (let ((macher-agent--is-subagent nil))
-                  (macher-agent--merge-contexts parent-ctx child-ctx)
-                  (let ((entry (cl-find "/mock/proj/file.el" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                    (expect (macher-agent-vfs-entry-curr entry) :to-equal "v2")))))
+                (macher-agent--merge-contexts parent-ctx child-ctx)
+                (let ((entry (cl-find "/mock/proj/file.el" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                  (expect (macher-agent-vfs-entry-curr entry) :to-equal "v2"))))
 
           (it "extracts context from alist using 'context symbol key in macher-agent-storage--extract-context"
               (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))

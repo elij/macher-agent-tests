@@ -30,14 +30,17 @@
 
           (describe "Refactored Unified Transmission Reducer Pipeline"
 
-                    (it "processes subagent and boot directives across turns in transmission state"
+                    (it "processes task submission and boot directives across turns in transmission state"
                         (let* ((init-buf (generate-new-buffer "test-init-boot-buf"))
                                (subseq-buf (generate-new-buffer "test-subseq-boot-buf"))
-                               (state1 (make-macher-agent-transmission-state :target-buffer init-buf))
+                               (state1 (make-macher-agent-transmission-state
+                                        :target-buffer init-buf
+                                        :tools (list (gptel-make-tool :name "submit_task_result"
+                                                                      :description "Submit result"
+                                                                      :args nil))))
                                (state2 (make-macher-agent-transmission-state :target-buffer subseq-buf)))
-                          ;; 1. Subagent core directive
+                          ;; 1. Core directive when submit_task_result is present
                           (with-current-buffer init-buf
-                            (setq-local macher-agent--is-subagent t)
                             (setq-local macher-agent--boot-directive "Execute boot setup now."))
                           (setq state1 (macher-agent-pipe--init-core-directives state1 init-buf nil nil nil))
                           (setq state1 (macher-agent-pipe--append-boot-directive state1 init-buf nil nil nil))

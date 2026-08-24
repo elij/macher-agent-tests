@@ -98,18 +98,17 @@
                           (let ((default-directory sub-dir))
                             (expect (macher-agent-resolve-context) :to-be ctx))))
 
-                    (it "clones canonical context when resolving inside subagent buffer to ensure isolation"
+                    (it "resolves canonical context from workspace registry"
                         (let* ((macher-agent-active-workspaces (make-hash-table :test 'equal))
                                (root-dir "/mock/subagent-proj/")
                                (ws (make-macher-agent-workspace :project-root root-dir))
                                (canonical-ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
                           (puthash (expand-file-name root-dir) canonical-ctx macher-agent-active-workspaces)
                           (let ((default-directory root-dir)
-                                (macher-agent--is-subagent t)
                                 (macher-agent--persistent-context nil))
                             (spy-on 'macher-agent-root :and-return-value root-dir)
                             (let ((resolved (macher-agent-resolve-context)))
-                              (expect resolved :not :to-be canonical-ctx)
+                              (expect resolved :to-be canonical-ctx)
                               (expect (macher-context-p resolved) :to-be t)))))
 
                     (it "returns nil when context resolution fails across all pipeline steps"
