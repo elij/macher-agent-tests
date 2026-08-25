@@ -28,29 +28,37 @@
                                           (list :buffer_name a2 :instructions \"task2\"))))
                         (delegate-tasks-to-subagents tasks))")
                      (spawn-calls nil)
+                     (spawned-bufs nil)
                      (success-result nil)
                      (error-result nil))
-                (spy-on 'macher-agent-add-subagent :and-call-fake
-                        (lambda (name &optional _presets _parent-buf _dir _context)
-                          (push name spawn-calls)
-                          (generate-new-buffer name)))
-                (spy-on 'macher-agent-a2a-dispatch :and-call-fake
-                        (lambda (_tasks callback &optional _parent-ctx)
-                          (funcall callback
-                                   (vector
-                                    (list :status 'success :data "result-alpha" :buffer-name "agent-alpha")
-                                    (list :status 'success :data "result-beta" :buffer-name "agent-beta")))))
-                (macher-agent-execute-ptc-script
-                 script
-                 ctx
-                 (lambda (val) (setq success-result val))
-                 (lambda (err) (setq error-result err)))
-                (expect error-result :to-be nil)
-                (expect (reverse spawn-calls) :to-equal '("agent-alpha" "agent-beta"))
-                (expect success-result :to-match "All sub-agents completed:")
-                (expect success-result :to-match "=== Response from sub-agent ===")
-                (expect success-result :to-match "result-alpha")
-                (expect success-result :to-match "result-beta")))
+                (unwind-protect
+                    (progn
+                      (spy-on 'macher-agent-add-subagent :and-call-fake
+                              (lambda (name &optional _presets _parent-buf _dir _context)
+                                (push name spawn-calls)
+                                (let ((buf (generate-new-buffer name)))
+                                  (push buf spawned-bufs)
+                                  buf)))
+                      (spy-on 'macher-agent-a2a-dispatch :and-call-fake
+                              (lambda (_tasks callback &optional _parent-ctx)
+                                (funcall callback
+                                         (vector
+                                          (list :status 'success :data "result-alpha" :buffer-name "agent-alpha")
+                                          (list :status 'success :data "result-beta" :buffer-name "agent-beta")))))
+                      (macher-agent-execute-ptc-script
+                       script
+                       ctx
+                       (lambda (val) (setq success-result val))
+                       (lambda (err) (setq error-result err)))
+                      (expect error-result :to-be nil)
+                      (expect (reverse spawn-calls) :to-equal '("agent-alpha" "agent-beta"))
+                      (expect success-result :to-match "All sub-agents completed:")
+                      (expect success-result :to-match "=== Response from sub-agent ===")
+                      (expect success-result :to-match "result-alpha")
+                      (expect success-result :to-match "result-beta"))
+                  (dolist (b spawned-bufs)
+                    (when (buffer-live-p b)
+                      (kill-buffer b))))))
 
           (it "safely evaluates synchronous expressions without leaking iter-end-of-sequence"
               (let ((val (macher-agent-sandbox-run '(+ 10 20) nil)))

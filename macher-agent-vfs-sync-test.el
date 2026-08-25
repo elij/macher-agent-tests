@@ -417,7 +417,173 @@
                                     "=======================\n\n"
                                     "=== VFS ENTRY: file-with-newline.txt ===\n"
                                     "content with newline\n"
-                                    "=======================\n\n")))))))
+                                    "=======================\n\n"))))))
+
+          (it "computes canonical and deterministic expressive patch buffer names"
+              (let* ((ws (cons 'project "/mock/my-project/"))
+                     (hash (macher-agent--safe-workspace-hash ws 4))
+                     (canonical (macher-agent--canonical-patch-buffer-name ws))
+                     (expr-phys (macher-agent--expressive-patch-buffer-name "physical" ws "agent-france"))
+                     (expr-virt (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-france"))
+                     (expr-fallback (macher-agent--expressive-patch-buffer-name "physical" ws nil)))
+                (expect canonical :to-equal (format "*macher-patch:project@my-project<%s>*" hash))
+                (expect expr-phys :to-equal (format "*macher-physical-patch:project@my-project<%s>[agent-france]*" hash))
+                (expect expr-virt :to-equal (format "*macher-virtual-patch:project@my-project<%s>[agent-france]*" hash))
+                (expect expr-fallback :to-equal (format "*macher-physical-patch:project@my-project<%s>*" hash))))
+
+          (it "reuses existing live physical patch buffer across multiple flush operations"
+              (let* ((ws (cons 'project "/mock/reuse-proj/"))
+                     (orig-buf (generate-new-buffer "agent-reuse-test"))
+                     (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
+                     (ctx1 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2"))))
+                     (ctx2 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2\nline3")))))
+                (unwind-protect
+                    (let* ((buf1 (macher-agent--build-and-rename-patch ctx1 fsm "physical"))
+                           (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf)))
+                      (expect (buffer-live-p buf1) :to-be-truthy)
+                      (expect (buffer-name buf1) :to-equal expected-name)
+                      (expect (with-current-buffer buf1 (buffer-string)) :to-match "\\+line2")
+                      ;; Subsequent flush should reuse the exact same buffer in place
+                      (let ((buf2 (macher-agent--build-and-rename-patch ctx2 fsm "physical")))
+                        (expect buf2 :to-be buf1)
+                        (expect (buffer-name buf2) :to-equal expected-name)
+                        (expect (with-current-buffer buf2 (buffer-string)) :to-match "\\+line3")))
+                  (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "physical" ws "agent-reuse-test"))))
+                    (kill-buffer b)))))
+
+          (it "reuses existing live virtual patch buffer across multiple flush operations"
+              (let* ((ws (cons 'project "/mock/virt-reuse-proj/"))
+                     (orig-buf (generate-new-buffer "agent-virt-test"))
+                     (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
+                     (ctx1 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v2"))))
+                     (ctx2 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v3")))))
+                (unwind-protect
+                    (let* ((buf1 (macher-agent--build-and-rename-patch ctx1 fsm "virtual"))
+                           (expected-name (macher-agent--expressive-patch-buffer-name "virtual" ws orig-buf)))
+                      (expect (buffer-live-p buf1) :to-be-truthy)
+                      (expect (buffer-name buf1) :to-equal expected-name)
+                      (expect (with-current-buffer buf1 (buffer-string)) :to-match "\\+v2")
+                      ;; Subsequent flush reuses the live buffer in place
+                      (let ((buf2 (macher-agent--build-and-rename-patch ctx2 fsm "virtual")))
+                        (expect buf2 :to-be buf1)
+                        (expect (buffer-name buf2) :to-equal expected-name)
+                        (expect (with-current-buffer buf2 (buffer-string)) :to-match "\\+v3")))
+                  (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-virt-test"))))
+                    (kill-buffer b)))))
+
+          (it "guarantees deterministic buffer uniqueness across distinct agent buffers in the same workspace"
+              (when (get-buffer "agent-alpha") (kill-buffer (get-buffer "agent-alpha")))
+              (when (get-buffer "agent-beta") (kill-buffer (get-buffer "agent-beta")))
+              (let* ((ws (cons 'project "/mock/multi-agent-proj/"))
+                     (agent1-buf (generate-new-buffer "agent-alpha"))
+                     (agent2-buf (generate-new-buffer "agent-beta"))
+                     (fsm1 (gptel-make-fsm :info (list :buffer agent1-buf)))
+                     (fsm2 (gptel-make-fsm :info (list :buffer agent2-buf)))
+                     (ctx1 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/a.el" "old1" "new1"))))
+                     (ctx2 (macher-agent--make-vfs-context
+                            :workspace ws
+                            :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/b.el" "old2" "new2")))))
+                (unwind-protect
+                    (let* ((pbuf1 (macher-agent--build-and-rename-patch ctx1 fsm1 "physical"))
+                           (pbuf2 (macher-agent--build-and-rename-patch ctx2 fsm2 "physical"))
+                           (vbuf1 (macher-agent--build-and-rename-patch ctx1 fsm1 "virtual"))
+                           (vbuf2 (macher-agent--build-and-rename-patch ctx2 fsm2 "virtual")))
+                      (expect pbuf1 :not :to-be pbuf2)
+                      (expect (buffer-name pbuf1) :to-match "\\[agent-alpha\\]\\*$")
+                      (expect (buffer-name pbuf2) :to-match "\\[agent-beta\\]\\*$")
+                      (expect (buffer-name vbuf1) :to-match "\\[agent-alpha\\]\\*$")
+                      (expect (buffer-name vbuf2) :to-match "\\[agent-beta\\]\\*$")
+                      ;; Re-flushing agent1 reuses agent1's buffer without affecting agent2
+                      (let ((pbuf1-reused (macher-agent--build-and-rename-patch ctx1 fsm1 "physical")))
+                        (expect pbuf1-reused :to-be pbuf1)
+                        (expect (buffer-live-p pbuf2) :to-be-truthy)))
+                  (when (buffer-live-p agent1-buf) (kill-buffer agent1-buf))
+                  (when (buffer-live-p agent2-buf) (kill-buffer agent2-buf))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "physical" ws "agent-alpha"))))
+                    (kill-buffer b))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "physical" ws "agent-beta"))))
+                    (kill-buffer b))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-alpha"))))
+                    (kill-buffer b))
+                  (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-beta"))))
+                    (kill-buffer b)))))
+
+          (it "restores expressive buffer name safely if macher--build-patch signals an error"
+              (let* ((ws (cons 'project "/mock/error-proj/"))
+                     (orig-buf (generate-new-buffer "agent-error-test"))
+                     (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
+                     (ctx (macher-agent--make-vfs-context
+                           :workspace ws
+                           :contents (list (macher-agent-vfs-make-entry "/mock/error-proj/f.el" "1" "2"))))
+                     (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf)))
+                (unwind-protect
+                    (let ((buf (macher-agent--build-and-rename-patch ctx fsm "physical")))
+                      (expect (buffer-live-p buf) :to-be-truthy)
+                      (expect (buffer-name buf) :to-equal expected-name)
+                      ;; Now simulate an error during next flush
+                      (cl-letf (((symbol-function 'macher--build-patch)
+                                 (lambda (&rest _) (error "Simulated patch build failure"))))
+                        (expect (macher-agent--build-and-rename-patch ctx fsm "physical") :to-throw 'error))
+                      ;; Buffer should have been restored back to expressive name
+                      (expect (buffer-name buf) :to-equal expected-name)
+                      (expect (get-buffer (macher-agent--canonical-patch-buffer-name ws)) :to-be nil))
+                  (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                  (when-let* ((b (get-buffer expected-name))) (kill-buffer b)))))
+
+          (it "executes multi-turn split patch flush reusing both physical and virtual buffers"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/split-reuse/"))
+                     (agent-buf (generate-new-buffer "agent-split-turn"))
+                     (fsm (gptel-make-fsm :info (list :buffer agent-buf :prompt "Turn 1")))
+                     (gptel--fsm fsm)
+                     (macher-agent--active-fsm fsm)
+                     (ctx (macher--make-context
+                           :workspace workspace
+                           :prompt "Turn 1"
+                           :contents (list (macher-agent-vfs-make-entry "/mock/split-reuse/main.rs" "fn a(){}" "fn a(){ 1 }")
+                                           (macher-agent-vfs-make-entry "*app-scratch*" "init" "init modified")))))
+                (unwind-protect
+                    (progn
+                      (setq gptel--fsm fsm)
+                      (setq macher-agent--active-fsm fsm)
+                      (setf (gptel-fsm-info fsm) (list :buffer agent-buf :prompt "Turn 1" :macher-agent-context ctx))
+                      (setf (macher-context-dirty-p ctx) t)
+                      ;; Turn 1 flush
+                      (macher-agent-macher-build-patch-from-hook ctx)
+                      (let* ((ws (cons 'project (macher-agent-workspace-project-root workspace)))
+                             (p-name (macher-agent--expressive-patch-buffer-name "physical" ws agent-buf))
+                             (v-name (macher-agent--expressive-patch-buffer-name "virtual" ws agent-buf))
+                             (p-buf1 (get-buffer p-name))
+                             (v-buf1 (get-buffer v-name)))
+                        (expect (buffer-live-p p-buf1) :to-be-truthy)
+                        (expect (buffer-live-p v-buf1) :to-be-truthy)
+                        ;; Turn 2 flush with further modifications
+                        (macher-agent--update-context-file ctx "/mock/split-reuse/main.rs" "fn a(){ 2 }")
+                        (macher-agent--update-context-file ctx "*app-scratch*" "init modified again")
+                        (macher-agent-macher-build-patch-from-hook ctx)
+                        (let ((p-buf2 (get-buffer p-name))
+                              (v-buf2 (get-buffer v-name)))
+                          (expect p-buf2 :to-be p-buf1)
+                          (expect v-buf2 :to-be v-buf1))))
+                  (setq gptel--fsm nil)
+                  (setq macher-agent--active-fsm nil)
+                  (when (buffer-live-p agent-buf) (kill-buffer agent-buf))
+                  (let* ((ws (cons 'project (macher-agent-workspace-project-root workspace)))
+                         (p-name (macher-agent--expressive-patch-buffer-name "physical" ws "agent-split-turn"))
+                         (v-name (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-split-turn")))
+                    (when-let* ((b (get-buffer p-name))) (kill-buffer b))
+                    (when-let* ((b (get-buffer v-name))) (kill-buffer b)))))))
 
 (provide 'macher-agent-vfs-sync-test)
 ;;; macher-agent-vfs-sync-test.el ends here
