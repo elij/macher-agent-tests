@@ -50,7 +50,7 @@
                 (spy-on 'make-temp-file :and-return-value "/tmp/sandbox-12345/")
                 (spy-on 'delete-directory)
                 (spy-on 'shell-command-to-string :and-return-value "running")
-                (let ((mock-context (macher--make-context :workspace nil :contents (list 'dummy))))
+                (let ((mock-context (macher--make-context :workspace nil :contents '(("mock-file.txt" . "content")))))
                   (macher-agent-with-strict-vfs-pipeline mock-context
                                                          (shell-command-to-string "echo 'running'")))
                 (expect 'macher-agent--vfs-verify-clean-merge :to-have-been-called)

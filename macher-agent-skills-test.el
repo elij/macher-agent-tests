@@ -65,8 +65,8 @@
              (callback-called nil)
              (callback (lambda (res) (setq callback-called res)))
              (json-tasks (vector (list :buffer_name "test-sub" :instructions "do work")))
-             (tool-fn (gptel-tool-function (or (bound-and-true-p macher-agent-delegate-tasks-tool)
-                                               macher-agent-delegate-tasks-tool)))
+             (tool-fn (gptel-tool-function (or (bound-and-true-p macher-agent-delegate-tasks-to-subagents-tool)
+                                               macher-agent-delegate-tasks-to-subagents-tool)))
              (buf (get-buffer-create "test-sub")))
         
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)

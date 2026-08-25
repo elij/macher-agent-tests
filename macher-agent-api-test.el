@@ -133,7 +133,7 @@
                     (it "executes pipeline steps in strict sequential order"
                         (let* ((step-order nil)
                                (ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents (list 'dummy))))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents '(("mock-file.txt" . "content")))))
                           (spy-on 'macher-agent--vfs-verify-clean-merge :and-call-fake (lambda (&rest _) (push 'verify step-order)))
                           (spy-on 'macher-agent--vfs-sync-baseline :and-call-fake (lambda (&rest _) (push 'sync step-order)))
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")

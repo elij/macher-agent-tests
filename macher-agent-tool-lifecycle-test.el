@@ -204,7 +204,59 @@
                 (funcall (gptel-tool-function mock-underscored-schema-tool)
                          (lambda (res) (setq callback-result res))
                          :user-profile '(:foo_bar 3 :user_name "charlie"))
-                (expect callback-result :to-equal "User: charlie (foo_bar: 3)"))))
+                (expect callback-result :to-equal "User: charlie (foo_bar: 3)")))
+
+          (it "supports optional :include keyword in macher-agent-make-tool and respects omission"
+              ;; When omitted, :include is not passed to gptel-make-tool and defaults to gptel's default (t)
+              (macher-agent-make-tool mock-no-include-tool
+                  "Tool without include"
+                :category "test"
+                :args '((:name "arg1" :type string))
+                :command-fn (lambda (payload _ctx _root) (plist-get payload :arg1)))
+              (expect (gptel-tool-include mock-no-include-tool) :to-be t)
+
+              ;; When :include nil is supplied, it is passed to gptel-make-tool
+              (macher-agent-make-tool mock-nil-include-tool
+                  "Tool with nil include"
+                :category "test"
+                :include nil
+                :args '((:name "arg1" :type string))
+                :command-fn (lambda (payload _ctx _root) (plist-get payload :arg1)))
+              (expect (gptel-tool-include mock-nil-include-tool) :to-be nil)
+
+              ;; When :include 'call is supplied, it is passed to gptel-make-tool
+              (macher-agent-make-tool mock-call-include-tool
+                  "Tool with call include"
+                :category "test"
+                :include 'call
+                :args '((:name "arg1" :type string))
+                :command-fn (lambda (payload _ctx _root) (plist-get payload :arg1)))
+              (expect (gptel-tool-include mock-call-include-tool) :to-equal 'call)
+
+              ;; When :include t is explicitly supplied
+              (macher-agent-make-tool mock-explicit-t-include-tool
+                  "Tool with explicit t include"
+                :category "test"
+                :include t
+                :args '((:name "arg1" :type string))
+                :command-fn (lambda (payload _ctx _root) (plist-get payload :arg1)))
+              (expect (gptel-tool-include mock-explicit-t-include-tool) :to-be t))
+
+          (it "fully replaces search_in_workspace in macher-agent--wrap-single-tool with the script tool definition"
+              (let* ((legacy-search-tool (gptel-make-tool
+                                          :name "search_in_workspace"
+                                          :category "legacy-cat"
+                                          :description "Legacy search description"
+                                          :args '((:name "old_arg" :type string))
+                                          :function (lambda (&rest _) "legacy-result")))
+                     (macher-agent--wrapped-tools-hash (make-hash-table :test 'eq)))
+                (macher-agent--wrap-single-tool legacy-search-tool)
+                (expect (gptel-tool-name legacy-search-tool) :to-equal "search_in_workspace")
+                (expect (gptel-tool-category legacy-search-tool) :to-equal "perception")
+                (expect (gptel-tool-description legacy-search-tool)
+                        :to-equal "Search for a regular expression pattern within the strictly bounded workspace.")
+                (expect (gptel-tool-args legacy-search-tool)
+                        :to-equal '((:name "pattern" :type "string" :description "The regex pattern to search for"))))))
 
 (provide 'macher-agent-tool-lifecycle-test)
 ;;; macher-agent-tool-lifecycle-test.el ends here
