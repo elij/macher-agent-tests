@@ -51,8 +51,9 @@
                 (spy-on 'delete-directory)
                 (spy-on 'shell-command-to-string :and-return-value "running")
                 (let ((mock-context (macher--make-context :workspace nil :contents '(("mock-file.txt" . "content")))))
-                  (macher-agent-with-strict-vfs-pipeline mock-context
-                                                         (shell-command-to-string "echo 'running'")))
+                  (macher-agent-call-with-strict-vfs-pipeline
+                   mock-context
+                   (lambda () (shell-command-to-string "echo 'running'"))))
                 (expect 'macher-agent--vfs-verify-clean-merge :to-have-been-called)
                 (expect 'macher-agent--vfs-sync-baseline :to-have-been-called)
                 (expect (reverse call-order) :to-equal '(merge sync)))))

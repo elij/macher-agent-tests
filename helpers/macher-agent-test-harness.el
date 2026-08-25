@@ -13,8 +13,7 @@
   "Mutate the FSM to inject media, capture prompts, protect callbacks, and trigger patches."
   (let* ((info (gptel-fsm-info fsm))
          (orig-cb (plist-get info :callback))
-         (b-prop (macher-agent--extract-prop info :buffer))
-         (target-buf (if (eq b-prop 'macher-missing) nil b-prop)))
+         (target-buf (when (macher-agent--plist-p info) (plist-get info :buffer))))
 
     (when (and target-buf (buffer-live-p target-buf))
       (with-current-buffer target-buf

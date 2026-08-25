@@ -151,14 +151,13 @@
            (_gptel--fsm-last fsm))
 
       (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
-      (macher-agent--set-context-data ctx :pending-media (list (list "mockbase64" :mime "image/png")))
+      (macher-agent--set-context-data ctx :pending-media "mockbase64")
 
-      (spy-on 'gptel--inject-media :and-return-value nil)
       (spy-on 'gptel--inject-prompt :and-return-value nil)
 
       (macher-agent--inject-media-fsm-logic fsm)
 
-      (expect 'gptel--inject-media :to-have-been-called)
+      (expect 'gptel--inject-prompt :to-have-been-called)
       (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil))))
 
 (describe "5. Diff Splitting Behaviour"
@@ -392,14 +391,37 @@
               (with-current-buffer orig-buf
                 (setq-local gptel-directives '((custom-preset . "Custom directive text")))
                 (setq-local gptel-system-prompt "Custom directive text")
-                (setq-local macher-agent-presets nil))
+                (setq-local macher-agent-presets '(base-preset)))
               (let ((res (macher-agent--transformer-sync-context mock-ctx orig-buf)))
                 (expect res :to-be mock-ctx)
                 (expect synced-ctx :to-be mock-ctx)
                 (expect init-skills-ctx :to-be mock-ctx)
                 (with-current-buffer orig-buf
-                  (expect macher-agent-presets :to-equal '(custom-preset))))))
+                  (expect macher-agent-presets :to-equal '(base-preset custom-preset))))))
         (kill-buffer orig-buf))))
+
+  (it "extracts target buffer and context from FSM safely"
+    (let* ((target-buf (get-buffer-create "test-fsm-target-ctx-buf"))
+           (mock-ctx (macher--make-context :contents nil))
+           (fsm1 (gptel-make-fsm :info (list :buffer target-buf :macher-agent-context mock-ctx)))
+           (fsm2 (gptel-make-fsm :info (list :buffer target-buf :macher-context mock-ctx)))
+           (fsm3 (gptel-make-fsm :info (list :buffer target-buf)))
+           (fsm-empty (gptel-make-fsm :info nil)))
+      (unwind-protect
+          (progn
+            (expect (macher-agent-gptel--fsm-target-buffer nil) :to-be nil)
+            (expect (macher-agent-gptel--fsm-target-buffer fsm-empty) :to-be nil)
+            (expect (macher-agent-gptel--fsm-target-buffer fsm1) :to-be target-buf)
+
+            (expect (macher-agent-gptel--fsm-context nil) :to-be nil)
+            (expect (macher-agent-gptel--fsm-context fsm1) :to-be mock-ctx)
+            (expect (macher-agent-gptel--fsm-context fsm2) :to-be mock-ctx)
+
+            (with-current-buffer target-buf
+              (setq-local macher-agent--persistent-context mock-ctx))
+            (expect (macher-agent-gptel--fsm-context fsm3) :to-be mock-ctx))
+        (when (buffer-live-p target-buf)
+          (kill-buffer target-buf)))))
 
   (it "validates contexts correctly with macher-agent-valid-context-p"
     (let* ((mock-ctx (macher--make-context :contents nil))
@@ -411,14 +433,15 @@
       (expect (macher-agent-valid-context-p ws) :to-be nil)))
 
   (it "extracts workspace ID from diverse formats with macher-agent-extract-workspace-id"
-    (let* ((ws (make-macher-agent-workspace :project-root "/tmp/proj"))
-           (ht (make-hash-table :test 'equal)))
-      (puthash :workspace-id "/tmp/proj-ht" ht)
+    (let* ((ws (make-macher-agent-workspace :project-root "/tmp/proj")))
       (expect (macher-agent-extract-workspace-id "/tmp/str-proj") :to-equal "/tmp/str-proj")
+      (expect (macher-agent-extract-workspace-id '(project . "/tmp/proj")) :to-equal '(project . "/tmp/proj"))
+      (expect (macher-agent-extract-workspace-id '(agent . "/tmp/proj")) :to-equal '(agent . "/tmp/proj"))
       (expect (macher-agent-extract-workspace-id ws) :to-equal ws)
       (expect (macher-agent-extract-workspace-id '(:workspace-id "/tmp/plist-proj")) :to-equal "/tmp/plist-proj")
-      (expect (macher-agent-extract-workspace-id '((:workspace-id . "/tmp/alist-proj"))) :to-equal "/tmp/alist-proj")
-      (expect (macher-agent-extract-workspace-id ht) :to-equal "/tmp/proj-ht")
+      (expect (macher-agent-extract-workspace-id '(:workspace "/tmp/ws-proj")) :to-equal "/tmp/ws-proj")
+      (expect (macher-agent-extract-workspace-id '(:target-workspace "/tmp/t-proj")) :to-equal "/tmp/t-proj")
+      (expect (macher-agent-extract-workspace-id '(:shared-state (:workspace-id "/tmp/shared-proj"))) :to-equal "/tmp/shared-proj")
       (expect (macher-agent-extract-workspace-id nil) :to-be nil)))
 
   (it "executes flush hook and clears instructions on FSM completion"

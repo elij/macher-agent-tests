@@ -149,32 +149,6 @@
                 (expect (cadr failure-called) :to-equal '(:arg1 "fail"))
                 (expect (error-message-string (caddr failure-called)) :to-equal "Failing intentionally")))
 
-          (it "extracts properties comprehensively across plists, alists, and hash-tables with varied key formats"
-              (let ((plist '(:foo-bar "val1" :baz 123 :user_name "alice"))
-                    (alist-hyphen '((:foo-bar . "val1") (:baz . 456)))
-                    (alist-str '(("foo_bar" . 1) ("baz" . 456)))
-                    (ht (make-hash-table :test 'equal)))
-                (puthash :foo-bar "val1" ht)
-                (puthash "foo_bar" 2 ht)
-                (puthash :baz 789 ht)
-                ;; Plists
-                (expect (macher-agent--extract-prop plist :foo-bar) :to-equal "val1")
-                (expect (macher-agent--extract-prop plist "foo_bar") :to-equal "val1")
-                (expect (macher-agent--extract-prop plist :foo_bar) :to-equal "val1")
-                (expect (macher-agent--extract-prop plist "user_name") :to-equal "alice")
-                (expect (macher-agent--extract-prop plist :missing) :to-equal 'macher-missing)
-                ;; Alists
-                (expect (macher-agent--extract-prop alist-hyphen :foo-bar) :to-equal "val1")
-                (expect (macher-agent--extract-prop alist-hyphen "foo_bar") :to-equal "val1")
-                (expect (macher-agent--extract-prop alist-hyphen :baz) :to-equal 456)
-                (expect (macher-agent--extract-prop alist-str "foo_bar") :to-equal 1)
-                (expect (macher-agent--extract-prop alist-str :foo_bar) :to-equal 1)
-                ;; Hash tables
-                (expect (macher-agent--extract-prop ht :foo-bar) :to-equal "val1")
-                (expect (macher-agent--extract-prop ht "foo_bar") :to-equal 2)
-                (expect (macher-agent--extract-prop ht :baz) :to-equal 789)
-                (expect (macher-agent--extract-prop ht :missing) :to-equal 'macher-missing)))
-
           (it "matches schema parameters with underscores against parsed objects with underscored keywords"
               (macher-agent-make-tool mock-underscored-schema-tool
                                       "Mock underscored tool"
@@ -188,8 +162,8 @@
                                                     (let ((profile (or (plist-get payload :user_profile)
                                                                        (plist-get payload :user-profile))))
                                                       (format "User: %s (foo_bar: %s)"
-                                                              (macher-agent--extract-prop profile "user_name")
-                                                              (macher-agent--extract-prop profile "foo_bar")))))
+                                                              (or (plist-get profile :user_name) (plist-get profile :user-name))
+                                                              (or (plist-get profile :foo_bar) (plist-get profile :foo-bar))))))
               (let ((callback-result nil))
                 (funcall (gptel-tool-function mock-underscored-schema-tool)
                          (lambda (res) (setq callback-result res))

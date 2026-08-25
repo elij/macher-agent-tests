@@ -48,7 +48,7 @@
            (list-tool-fn (gptel-tool-function macher-agent-list-buffers-in-workspace-tool)))
 
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-        (spy-on 'macher-agent-context-classify-entry :and-call-fake
+        (spy-on 'macher-agent--classify-file-path :and-call-fake
                 (lambda (path &rest _)
                   (pcase path
                     ("*pure-buffer*" 'buffer)
@@ -259,6 +259,23 @@
                                     (let ((res (funcall cmd-fn '(:pattern "unique-vfs-search-token") ctx default-directory)))
                                       (expect res :to-match "vfs-search-target\\.txt")
                                       (expect res :to-match "unique-vfs-search-token line")))))
+
+  (it "ensures search_in_workspace uses -- before the pattern in the rg CLI invocation"
+      (let* ((ws (make-macher-agent-workspace :project-root default-directory))
+             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+             (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
+                         (get 'macher-agent-tool-search-in-workspace 'command-fn)))
+             (captured-cmd nil))
+        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+        (spy-on 'macher-agent--vfs-verify-clean-merge)
+        (spy-on 'macher-agent--vfs-sync-baseline)
+        (spy-on 'shell-command-to-string :and-call-fake
+                (lambda (cmd)
+                  (setq captured-cmd cmd)
+                  "No matches found."))
+        (with-macher-agent-mock-fsm ctx
+                                    (funcall cmd-fn '(:pattern "-v --some-flag") ctx default-directory)
+                                    (expect captured-cmd :to-match "rg --line-number --color=never --max-columns=150 -- '-v --some-flag' \\."))))
 
   (it "list_available_tools filters tools to only perception, collaboration, event, execution categories and includes workspace tools"
       (let* ((global-reg (make-hash-table :test 'equal))

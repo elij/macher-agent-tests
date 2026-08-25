@@ -104,7 +104,7 @@
                             (remhash colliding-id macher-agent--pending-callbacks)
                             (kill-buffer (plist-get initial-state :child-buf)))))
 
-                    (it "extracts parent-buffer from plist, alist, and hash-table shared state in macher-agent-a2a-pipe--acquire-target"
+                    (it "extracts parent-buffer from plist shared state in macher-agent-a2a-pipe--acquire-target"
                         (let* ((mock-dir (make-temp-file "macher-a2a-acquire-target-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
                                (parent-ctx (macher--make-context :workspace workspace :contents nil))
@@ -122,31 +122,7 @@
                                   (expect (plist-get res-plist :child-buf) :to-be child-buf)
                                   (with-current-buffer child-buf
                                     (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be-truthy)
-                                    (expect (macher-agent--get-context-workspace macher-agent--persistent-context) :to-equal workspace)))
-                                (with-current-buffer child-buf
-                                  (setq-local macher-agent--persistent-context nil))
-                                (let* ((state-alist (list :a2a-msg (list :task-id "task-a1" :metadata (list :buffer_name "test-a2a-child-buf"))
-                                                          :target "test-a2a-child-buf"
-                                                          :target-name "test-a2a-child-buf"
-                                                          :shared-state `((parent-buffer . ,parent-buf))))
-                                       (res-alist (macher-agent-a2a-pipe--acquire-target state-alist)))
-                                  (expect (plist-get res-alist :child-buf) :to-be child-buf)
-                                  (with-current-buffer child-buf
-                                    (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be-truthy)
-                                    (expect (macher-agent--get-context-workspace macher-agent--persistent-context) :to-equal workspace)))
-                                (with-current-buffer child-buf
-                                  (setq-local macher-agent--persistent-context nil))
-                                (let* ((shared-ht (make-hash-table :test 'equal)))
-                                  (puthash :parent-buffer parent-buf shared-ht)
-                                  (let* ((state-ht (list :a2a-msg (list :task-id "task-h1" :metadata (list :buffer_name "test-a2a-child-buf"))
-                                                         :target "test-a2a-child-buf"
-                                                         :target-name "test-a2a-child-buf"
-                                                         :shared-state shared-ht))
-                                         (res-ht (macher-agent-a2a-pipe--acquire-target state-ht)))
-                                    (expect (plist-get res-ht :child-buf) :to-be child-buf)
-                                    (with-current-buffer child-buf
-                                      (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be-truthy)
-                                      (expect (macher-agent--get-context-workspace macher-agent--persistent-context) :to-equal workspace)))))
+                                    (expect (macher-agent--get-context-workspace macher-agent--persistent-context) :to-equal workspace))))
                             (kill-buffer parent-buf)
                             (kill-buffer child-buf)
                             (delete-directory mock-dir t)))))
@@ -212,48 +188,45 @@
                             (when (buffer-live-p target-buf) (kill-buffer target-buf))
                             (delete-directory mock-dir t))))
 
-                    (it "registers macher-agent-vfs--merge-payload and macher-agent-vfs--compose-artifact via macher-agent-vfs-install"
+                    (it "registers macher-agent-vfs--merge-payload via macher-agent-vfs-install"
                         (clrhash macher-agent-pipeline-registry)
                         (setq macher-agent-task-flush-hook nil)
                         (setq macher-agent-vfs-flush-hook nil)
                         (macher-agent-vfs-install)
-                        (let ((merge-steps (macher-agent-get-pipeline-steps 'payload-merge))
-                              (compose-steps (macher-agent-get-pipeline-steps 'artifact-compose)))
-                          (expect (member #'macher-agent-vfs--merge-payload merge-steps) :to-be-truthy)
-                          (expect (member #'macher-agent-vfs--compose-artifact compose-steps) :to-be-truthy))
-                        (let* ((entries (gethash 'artifact-compose macher-agent-pipeline-registry))
-                               (entry (cl-find #'macher-agent-vfs--compose-artifact entries
+                        (let ((merge-steps (macher-agent-get-pipeline-steps 'payload-merge)))
+                          (expect (member #'macher-agent-vfs--merge-payload merge-steps) :to-be-truthy))
+                        (let* ((entries (gethash 'payload-merge macher-agent-pipeline-registry))
+                               (entry (cl-find #'macher-agent-vfs--merge-payload entries
                                                :key (lambda (e) (plist-get e :step)))))
                           (expect (plist-get entry :priority) :to-equal 10))
                         (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy)
                         (expect (member #'macher-agent-macher-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy))
 
-                    (it "composes artifact payload with diff when context has modified files and unmodified when clean"
+                    (it "composes artifact payload with diff when context has modified files and unmodified when clean via macher-agent-prepare-upstream-payloads"
                         (let* ((mock-modified (cons "file1.txt" (cons "original" "modified")))
                                (mock-clean (cons "file1.txt" (cons "same" "same")))
                                (ctx-mod (macher--make-context :contents (list mock-modified)))
                                (ctx-clean (macher--make-context :contents (list mock-clean)))
                                (payload (list :status 'success :data "Done" :buffer-name "test-buf")))
                           (let* ((macher-agent--persistent-context ctx-mod)
-                                 (composed (macher-agent-vfs--compose-artifact payload)))
+                                 (composed (macher-agent-prepare-upstream-payloads payload)))
                             (expect (plist-get composed :diff) :not :to-be nil)
                             (expect (length (plist-get composed :diff)) :to-equal 1)
                             (expect (car (car (plist-get composed :diff))) :to-equal "file1.txt"))
                           (let* ((macher-agent--persistent-context ctx-clean)
-                                 (composed (macher-agent-vfs--compose-artifact payload)))
+                                 (composed (macher-agent-prepare-upstream-payloads payload)))
                             (expect (plist-get composed :diff) :to-be nil)
                             (expect (plist-get composed :data) :to-equal "Done"))))
 
-                    (it "resolves context comprehensively across transit keys, states, alists, hash-tables, and buffers"
+                    (it "resolves context comprehensively across transit keys, states, and buffers"
                         (let* ((mock-dir (make-temp-file "macher-transit-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
                                (ctx (macher--make-context :workspace workspace :contents nil))
-                               (buf (generate-new-buffer "*macher-buf-fallback-test*"))
-                               (ht (let ((h (make-hash-table :test 'equal))) (puthash :context ctx h) h)))
+                               (buf (generate-new-buffer "*macher-buf-fallback-test*")))
                           (unwind-protect
                               (progn
                                 (expect (macher-agent-resolve-from-transit-payload ctx) :to-be ctx)
-                                (dolist (key macher-agent-transit-context-keys)
+                                (dolist (key '(:target-context :parent-context :context))
                                   (let* ((payload (list key ctx :data "sample"))
                                          (resolved (macher-agent-resolve-from-transit-payload payload)))
                                     (expect resolved :to-be ctx)
@@ -263,11 +236,8 @@
                                 ;; Raw payloads with :resolved
                                 (expect (macher-agent-resolve-from-transit-payload (list :context ctx :resolved t)) :to-be ctx)
                                 (expect (macher-agent-resolve-from-transit-payload (list :resolved "done" :target-context ctx)) :to-be ctx)
-                                ;; Alists and hash tables
-                                (expect (macher-agent-resolve-from-transit-payload `((context . ,ctx))) :to-be ctx)
-                                (expect (macher-agent-resolve-from-transit-payload `((:context . ,ctx))) :to-be ctx)
-                                (expect (macher-agent-resolve-from-transit-payload `((shared-state . ((context . ,ctx))))) :to-be ctx)
-                                (expect (macher-agent-resolve-from-transit-payload ht) :to-be ctx)
+                                ;; Shared state plists
+                                (expect (macher-agent-resolve-from-transit-payload (list :shared-state (list :context ctx))) :to-be ctx)
                                 ;; Buffer fallbacks
                                 (with-current-buffer buf
                                   (setq-local macher-agent--persistent-context ctx))
@@ -526,7 +496,7 @@
                                        (cb (gethash task-id macher-agent--pending-callbacks)))
                                   (expect cb :not :to-be nil)
                                   (macher-agent--update-context-file child-ctx "merged-file.el" "updated-content")
-                                  (let ((composed (macher-agent-vfs--compose-artifact
+                                  (let ((composed (macher-agent-prepare-upstream-payloads
                                                    (list :target-context child-ctx :data "done" :status 'success :buffer-name (buffer-name child-buf)))))
                                     (funcall cb (list :type 'ARTIFACT_UPDATE
                                                       :task-id task-id
@@ -587,7 +557,6 @@
                         (setq macher-agent-vfs-flush-hook nil)
                         (macher-agent-install)
                         (expect (member #'macher-agent-vfs--merge-payload (macher-agent-get-pipeline-steps 'payload-merge)) :to-be-truthy)
-                        (expect (member #'macher-agent-vfs--compose-artifact (macher-agent-get-pipeline-steps 'artifact-compose)) :to-be-truthy)
                         (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
                         (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
                         (expect (member #'macher-agent-memory-pipe--inject-tool (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)

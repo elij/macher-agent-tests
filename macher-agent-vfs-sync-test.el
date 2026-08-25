@@ -44,14 +44,12 @@
 
           (it "preserves unapplied virtual edits across tool calls if the physical state has not mutated"
               (let* ((entry (macher-agent-vfs-make-entry "test-file.el" "original state" "proposed ghost state")))
-                (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "original state")
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "original state")
                 (macher-agent--sync-context-entry entry)
                 (expect (macher-agent-vfs-entry-curr entry) :to-equal "proposed ghost state")))
 
           (it "invalidates edits and prevents ghost diffs if the underlying buffer or file is destroyed"
               (let* ((entry (macher-agent-vfs-make-entry "test-file.el" "original state" "original state")))
-                (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value nil)
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value nil)
                 (macher-agent--sync-context-entry entry)
                 (expect (macher-agent-vfs-entry-orig entry) :to-be nil)
@@ -82,7 +80,6 @@
 
           (it "fast-forwards a clean virtual memory if the physical disk mutates naturally"
               (let* ((entry (macher-agent-vfs-make-entry "test.el" "original state" "original state")))
-                (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "new physical state")
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "new physical state")
                 (let ((mutated (macher-agent--sync-context-entry entry)))
                   (expect mutated :to-be t)
@@ -91,7 +88,6 @@
 
           (it "invalidates uncommitted agent edits when physical disk state changes externally"
               (let* ((entry (macher-agent-vfs-make-entry "test.el" "original state" "agent edit")))
-                (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "user physical edit")
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "user physical edit")
                 (let ((mutated (macher-agent--sync-context-entry entry)))
                   (expect mutated :to-be t)
@@ -100,7 +96,6 @@
 
           (it "fast-forwards virtual memory if the physical mutation perfectly matches the virtual delta (patch applied)"
               (let* ((entry (macher-agent-vfs-make-entry "test.el" "original state" "agent edit")))
-                (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "agent edit")
                 (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "agent edit")
                 (let ((mutated (macher-agent--sync-context-entry entry)))
                   (expect mutated :to-be t)
@@ -122,8 +117,7 @@
                             (if (equal path file-path)
                                 `(t 1 1 1 ,new-mtime ,new-mtime ,new-mtime 100 "mode" t 1 1)
                               nil)))
-                  (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "fresh disk state")
-                  (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "stale buffer state")
+                  (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "fresh disk state")
                   (let ((mutated (macher-agent--sync-context-entry entry (macher-agent-workspace-mtime-tracker workspace))))
                     (expect mutated :to-be t)
                     (expect (macher-agent-vfs-entry-orig entry) :to-equal "fresh disk state")
@@ -158,7 +152,6 @@
                             (when (equal path file-path)
                               (setq attrs-called t)
                               `(t 1 1 1 ,new-mtime ,new-mtime ,new-mtime 100 "mode" t 1 1))))
-                  (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "mock disk state")
                   (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "mock disk state")
                   (let ((mutated (macher-agent--sync-context-entry entry (macher-agent-workspace-mtime-tracker workspace))))
                     (expect attrs-called :to-be t)
@@ -186,7 +179,7 @@
                                   (if (equal path file-path)
                                       `(t 1 1 1 ,new-mtime ,new-mtime ,new-mtime 100 "mode" t 1 1)
                                     nil)))
-                        (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "new disk content")
+                        (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "new disk content")
                         (let ((mutated (macher-agent--sync-context-entry entry (macher-agent-workspace-mtime-tracker workspace))))
                           (expect mutated :to-be t)
                           (expect (macher-agent-vfs-entry-orig entry) :to-equal "new disk content")
@@ -214,7 +207,7 @@
                                   (if (equal path file-path)
                                       `(t 1 1 1 ,same-mtime ,same-mtime ,same-mtime 100 "mode" t 1 1)
                                     nil)))
-                        (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "disk content")
+                        (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "desynced live buffer content")
                         (let ((mutated (macher-agent--sync-context-entry entry (macher-agent-workspace-mtime-tracker workspace))))
                           (expect mutated :to-be t)
                           (expect (macher-agent-vfs-entry-orig entry) :to-equal "desynced live buffer content")
@@ -243,7 +236,7 @@
                                   (if (equal path file-path)
                                       `(t 1 1 1 ,new-mtime ,new-mtime ,new-mtime 100 "mode" t 1 1)
                                     nil)))
-                        (spy-on 'macher-agent--read-content-from-disk-direct :and-return-value "new disk content")
+                        (spy-on 'macher-agent--read-content-from-disk-or-buffer :and-return-value "original state")
                         (let ((mutated (macher-agent--sync-context-entry entry (macher-agent-workspace-mtime-tracker workspace))))
                           (expect mutated :to-be nil)
                           (expect (macher-agent-vfs-entry-orig entry) :to-equal "original state")
@@ -362,11 +355,11 @@
                      (live-buf-slash (generate-new-buffer "live/buffer/slash")))
                 (unwind-protect
                     (progn
-                      (expect (macher-agent-context-classify-entry asterisk-slash-buf "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent-context-classify-entry live-buf "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent-context-classify-entry live-buf-slash "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent-context-classify-entry "*scratch*" "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent-context-classify-entry "src/main.rs" "/mock/root") :to-equal 'file))
+                      (expect (macher-agent--classify-file-path asterisk-slash-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path live-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path live-buf-slash "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path "*scratch*" "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path "src/main.rs" "/mock/root") :to-equal 'file))
                   (kill-buffer live-buf)
                   (kill-buffer live-buf-slash))))
 
@@ -405,28 +398,27 @@
                 (expect (macher-context-p (macher-agent-storage--extract-context "invalid-string")) :to-be t)
                 (expect (macher-agent-storage--extract-context '(:non-context-key "foo")) :to-be nil)))
 
-          (it "ensures trailing newline before separator in macher-agent--write-vfs-entries-to-buffer"
-              (with-temp-buffer
-                (let ((entries (list (macher-agent-vfs-make-entry "file-no-newline.txt" "orig" "content without newline")
-                                     (macher-agent-vfs-make-entry "file-with-newline.txt" "orig" "content with newline\n"))))
-                  (macher-agent--write-vfs-entries-to-buffer entries)
-                  (let ((buf-str (buffer-string)))
-                    (expect buf-str :to-equal
-                            (concat "=== VFS ENTRY: file-no-newline.txt ===\n"
-                                    "content without newline\n"
-                                    "=======================\n\n"
-                                    "=== VFS ENTRY: file-with-newline.txt ===\n"
-                                    "content with newline\n"
-                                    "=======================\n\n"))))))
+          (it "ensures trailing newline before separator in macher-agent--persist-vfs-to-hidden-buffer"
+              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/persist-test/"))
+                     (entries (list (macher-agent-vfs-make-entry "file-no-newline.txt" "orig" "content without newline")
+                                    (macher-agent-vfs-make-entry "file-with-newline.txt" "orig" "content with newline\n")))
+                     (ctx (macher--make-context :workspace workspace :contents entries)))
+                (macher-agent--persist-vfs-to-hidden-buffer ctx)
+                (let* ((buf-name (format " *macher-agent-vfs-state-%s*" (md5 (expand-file-name "/mock/persist-test/"))))
+                       (vfs-buf (get-buffer buf-name)))
+                  (expect vfs-buf :not :to-be nil)
+                  (with-current-buffer vfs-buf
+                    (expect (buffer-string) :to-match "content without newline\n=======================")
+                    (expect (buffer-string) :to-match "content with newline\n======================="))
+                  (when (buffer-live-p vfs-buf)
+                    (kill-buffer vfs-buf)))))
 
-          (it "computes canonical and deterministic expressive patch buffer names"
+          (it "computes deterministic expressive patch buffer names"
               (let* ((ws (cons 'project "/mock/my-project/"))
                      (hash (macher-agent--safe-workspace-hash ws 4))
-                     (canonical (macher-agent--canonical-patch-buffer-name ws))
                      (expr-phys (macher-agent--expressive-patch-buffer-name "physical" ws "agent-france"))
                      (expr-virt (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-france"))
                      (expr-fallback (macher-agent--expressive-patch-buffer-name "physical" ws nil)))
-                (expect canonical :to-equal (format "*macher-patch:project@my-project<%s>*" hash))
                 (expect expr-phys :to-equal (format "*macher-physical-patch:project@my-project<%s>[agent-france]*" hash))
                 (expect expr-virt :to-equal (format "*macher-virtual-patch:project@my-project<%s>[agent-france]*" hash))
                 (expect expr-fallback :to-equal (format "*macher-physical-patch:project@my-project<%s>*" hash))))
@@ -536,9 +528,8 @@
                       (cl-letf (((symbol-function 'macher--build-patch)
                                  (lambda (&rest _) (error "Simulated patch build failure"))))
                         (expect (macher-agent--build-and-rename-patch ctx fsm "physical") :to-throw 'error))
-                      ;; Buffer should have been restored back to expressive name
-                      (expect (buffer-name buf) :to-equal expected-name)
-                      (expect (get-buffer (macher-agent--canonical-patch-buffer-name ws)) :to-be nil))
+                      ;; Buffer should retain expressive name
+                      (expect (buffer-name buf) :to-equal expected-name))
                   (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
                   (when-let* ((b (get-buffer expected-name))) (kill-buffer b)))))
 

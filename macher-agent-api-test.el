@@ -139,8 +139,8 @@
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
                           (spy-on 'delete-directory :and-call-through)
 
-                          (macher-agent-with-strict-vfs-pipeline ctx
-                                                                 'done)
+                          (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                      (lambda () 'done))
 
                           (expect (reverse step-order) :to-equal '(verify sync))))
 
@@ -152,8 +152,8 @@
                           (spy-on 'macher-agent--vfs-sync-baseline)
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
 
-                          (macher-agent-with-strict-vfs-pipeline ctx
-                                                                 (setq captured-dir default-directory))
+                          (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                      (lambda () (setq captured-dir default-directory)))
 
                           (expect captured-dir :not :to-equal "/mock/vfs-proj/")
                           (expect (string-match-p "macher-sandbox-" captured-dir) :to-be-truthy)))
@@ -167,9 +167,10 @@
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
 
                           (expect
-                           (macher-agent-with-strict-vfs-pipeline ctx
-                                                                  (setq created-sandbox default-directory)
-                                                                  (error "Forced pipeline failure"))
+                           (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                       (lambda ()
+                                                                         (setq created-sandbox default-directory)
+                                                                         (error "Forced pipeline failure")))
                            :to-throw 'error)
 
                           (expect created-sandbox :not :to-be nil)
