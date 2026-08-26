@@ -394,8 +394,10 @@
                 (expect (macher-agent-storage--extract-context payload-target-kw) :to-be ctx)
                 (expect (macher-agent-storage--extract-context (list :target-context ctx)) :to-be ctx)
                 (expect (macher-context-p (macher-agent-storage--extract-context '(project . "/mock/proj/"))) :to-be t)
+                (expect (macher-context-p (macher-agent-storage--extract-context '((project . "/mock/proj/")))) :to-be t)
+                (expect (macher-context-p (macher-agent-storage--extract-context '(:project "/mock/proj/"))) :to-be t)
                 (expect (macher-agent-storage--extract-context nil) :to-be nil)
-                (expect (macher-context-p (macher-agent-storage--extract-context "invalid-string")) :to-be t)
+                (expect (macher-agent-storage--extract-context "invalid-string") :to-be nil)
                 (expect (macher-agent-storage--extract-context '(:non-context-key "foo")) :to-be nil)))
 
           (it "ensures trailing newline before separator in macher-agent--persist-vfs-to-hidden-buffer"
