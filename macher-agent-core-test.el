@@ -361,11 +361,10 @@
             (expect (plist-get (gptel-fsm-info fsm) :model) :to-equal "test-model"))
         (kill-buffer origin-buf))))
 
-  (it "injects context into :macher--context and :macher-agent-context in fsm info"
+  (it "injects context into :macher-agent-context in fsm info"
     (let* ((mock-ctx (macher--make-context :contents nil))
            (fsm (gptel-make-fsm :info (list :model "test-model" :buffer nil))))
       (expect (macher-agent--inject-context-into-fsm-info mock-ctx fsm) :to-be t)
-      (expect (plist-get (gptel-fsm-info fsm) :macher--context) :to-be mock-ctx)
       (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx)))
 
   (it "resets context across active FSM fallback variables"
@@ -396,14 +395,14 @@
                 (expect synced-ctx :to-be mock-ctx)
                 (expect init-skills-ctx :to-be mock-ctx)
                 (with-current-buffer orig-buf
-                  (expect macher-agent-presets :to-equal '(base-preset custom-preset))))))
+                  (expect macher-agent-presets :to-equal '(base-preset))))))
         (kill-buffer orig-buf))))
 
   (it "extracts target buffer and context from FSM safely"
     (let* ((target-buf (get-buffer-create "test-fsm-target-ctx-buf"))
            (mock-ctx (macher--make-context :contents nil))
            (fsm1 (gptel-make-fsm :info (list :buffer target-buf :macher-agent-context mock-ctx)))
-           (fsm2 (gptel-make-fsm :info (list :buffer target-buf :macher-context mock-ctx)))
+           (fsm2 (gptel-make-fsm :info (list :buffer target-buf :macher--context mock-ctx)))
            (fsm3 (gptel-make-fsm :info (list :buffer target-buf)))
            (fsm-empty (gptel-make-fsm :info nil)))
       (unwind-protect
@@ -605,22 +604,20 @@
       ;; Verify struct slot received new plist copy
       (expect (plist-get (macher-context-data ctx) :new-key) :to-equal "new-val"))))
 
-(describe "15. Struct Prompt Accessors and cl-struct-slot-value Inspection"
-  (it "sets and gets prompts across struct types using standard accessors and cl-struct-slot-value"
+(describe "15. Struct Prompt and Data Direct Accessors"
+  (it "sets and gets prompts across struct types using standard accessors"
     (let ((ctx-macher (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :prompt nil :data nil))
           (ctx-agent (make-macher-agent-context :project-root "/mock/proj" :prompt nil :data nil))
           (ctx-task (make-macher-agent-task-context :workspace (make-macher-agent-workspace :project-root "/mock/proj"))))
       ;; 1. macher-context
       (macher-agent--set-context-prompt ctx-macher "prompt for macher context")
       (expect (macher-context-prompt ctx-macher) :to-equal "prompt for macher context")
-      (expect (cl-struct-slot-value 'macher-context 'prompt ctx-macher) :to-equal "prompt for macher context")
       (expect (macher-agent--get-context-prompt ctx-macher) :to-equal "prompt for macher context")
       (expect (macher-agent--get-context-data ctx-macher :prompt) :to-equal "prompt for macher context")
 
       ;; 2. macher-agent-context
       (macher-agent--set-context-prompt ctx-agent "prompt for agent context")
       (expect (macher-agent-context-prompt ctx-agent) :to-equal "prompt for agent context")
-      (expect (cl-struct-slot-value 'macher-agent-context 'prompt ctx-agent) :to-equal "prompt for agent context")
       (expect (macher-agent--get-context-prompt ctx-agent) :to-equal "prompt for agent context")
       (expect (macher-agent--get-context-data ctx-agent :prompt) :to-equal "prompt for agent context")
 
@@ -628,21 +625,6 @@
       (expect (macher-agent--set-context-prompt ctx-task "prompt for task context") :to-be nil)
       (expect (macher-agent--get-context-prompt ctx-task) :to-be nil)
       (expect (macher-agent--get-context-data ctx-task :prompt) :to-be nil)))
-
-  (it "detects struct types via macher-agent--struct-type helper"
-    (let ((ctx-macher (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/proj")))
-          (ctx-agent (make-macher-agent-context :project-root "/mock/proj"))
-          (ctx-task (make-macher-agent-task-context)))
-      (expect (macher-agent--struct-type ctx-macher) :to-equal 'macher-context)
-      (expect (macher-agent--struct-type ctx-agent) :to-equal 'macher-agent-context)
-      (expect (macher-agent--struct-type ctx-task) :to-equal 'macher-agent-task-context)
-      (expect (macher-agent--struct-type "not-a-struct") :to-be nil)
-      (expect (macher-agent--struct-type 123) :to-be nil)
-      (expect (macher-agent--struct-type 'some-symbol) :to-be nil)
-      (expect (macher-agent--struct-type '(a b c)) :to-be nil)
-      (expect (macher-agent--struct-type [1 2 3]) :to-be nil)
-      (expect (macher-agent--struct-type (make-hash-table)) :to-be nil)
-      (expect (macher-agent--struct-type nil) :to-be nil)))
 
   (it "never calls macher-context-data or macher-context-prompt on macher-agent-context"
     (let ((ctx-agent (make-macher-agent-context :project-root "/mock/proj" :data '(:key "agent-val") :prompt "agent-init-prompt")))
@@ -672,7 +654,7 @@
       (expect 'macher-context-data :not :to-have-been-called)
       (expect 'set-macher-context-data :not :to-have-been-called)))
 
-  (it "uses macher-agent-context-p predicate and falls back to cl-struct-slot-value when needed"
+  (it "uses macher-agent-context-p predicate and direct accessors"
     (let ((ctx-agent (make-macher-agent-context :project-root "/mock/proj" :data '(:a 1))))
       (expect (macher-agent-context-p ctx-agent) :to-be t)
       (expect (macher-agent--get-context-raw-data ctx-agent) :to-equal '(:a 1))

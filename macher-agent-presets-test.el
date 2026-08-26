@@ -20,13 +20,14 @@
           (macher-agent-test-setup-before-each)
 
           (it "applies the correct model from the skill metadata to gptel-model"
-              (spy-on 'macher-agent-resolve-context :and-return-value
-                      (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
-              (let* ((skill-name 'rust-skill)
+              (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
+                     (workspace (macher-agent--get-context-workspace mock-ctx))
+                     (skill-name 'rust-skill)
                      (skill-data '(:description "Test" :model gpt-4o :has-tools nil :context-dir nil :system "test"))
                      (execution (macher--make-action-execution :action skill-name)))
-                (let ((workspace (macher-agent--get-context-workspace (macher-agent-resolve-context))))
-                  (setf (alist-get skill-name (macher-agent-workspace-skills-alist workspace)) skill-data))
+                (macher-agent--register-active-workspace-root "/mock/proj" mock-ctx)
+                (spy-on 'macher-agent-resolve-context :and-return-value mock-ctx)
+                (setf (alist-get skill-name (macher-agent-workspace-skills-alist mock-ctx)) skill-data)
                 (with-temp-buffer
                   (let ((gptel--known-presets nil))
                     (macher-agent-initialize-skills (macher-agent-resolve-context))
@@ -35,14 +36,15 @@
                       (expect (plist-get preset-def :model) :to-equal 'gpt-4o))))))
 
           (it "does not change gptel-model if no model is specified in the skill"
-              (spy-on 'macher-agent-resolve-context :and-return-value
-                      (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
-              (let* ((skill-name 'plain-skill)
+              (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
+                     (workspace (macher-agent--get-context-workspace mock-ctx))
+                     (skill-name 'plain-skill)
                      (skill-data '(:description "Test" :model nil :has-tools nil :context-dir nil :system "test"))
                      (execution (macher--make-action-execution :action skill-name))
                      (original-model gptel-model))
-                (let ((workspace (macher-agent--get-context-workspace (macher-agent-resolve-context))))
-                  (setf (alist-get skill-name (macher-agent-workspace-skills-alist workspace)) skill-data))
+                (macher-agent--register-active-workspace-root "/mock/proj" mock-ctx)
+                (spy-on 'macher-agent-resolve-context :and-return-value mock-ctx)
+                (setf (alist-get skill-name (macher-agent-workspace-skills-alist mock-ctx)) skill-data)
                 (with-temp-buffer
                   (let ((gptel--known-presets nil))
                     (macher-agent-initialize-skills (macher-agent-resolve-context))

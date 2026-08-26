@@ -244,7 +244,40 @@
                  (lambda (val) (setq success-result val))
                  (lambda (err) (setq error-result err)))
                 (expect injected :to-be nil)
-                (expect error-result :not :to-be nil))))
+                (expect error-result :not :to-be nil)))
+
+          (it "evaluates iterative apply, condition-case, unwind-protect, catch, and throw special forms"
+              ;; Test apply
+              (expect (macher-agent-sandbox-run '(apply #'+ '(1 2 3)) '(+)) :to-equal 6)
+              ;; Test condition-case caught error
+              (expect (macher-agent-sandbox-run
+                       '(condition-case err
+                            (/ 1 0)
+                          (error (car err)))
+                       '(/))
+                      :to-equal 'arith-error)
+              ;; Test condition-case normal path
+              (expect (macher-agent-sandbox-run
+                       '(condition-case err
+                            (+ 10 5)
+                          (error -1))
+                       '(+))
+                      :to-equal 15)
+              ;; Test unwind-protect
+              (expect (macher-agent-sandbox-run
+                       '(let ((cleanup nil))
+                          (unwind-protect
+                              (+ 20 30)
+                            (setq cleanup t)))
+                       '(+))
+                      :to-equal 50)
+              ;; Test catch and throw
+              (expect (macher-agent-sandbox-run
+                       '(catch 'done
+                          (throw 'done 99)
+                          100)
+                       nil)
+                      :to-equal 99)))
 
 (provide 'macher-agent-ptc-test)
 ;;; macher-agent-ptc-test.el ends here

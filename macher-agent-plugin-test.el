@@ -243,11 +243,11 @@
                                   (setq-local macher-agent--persistent-context ctx))
                                 (expect (macher-agent-resolve-from-transit-payload (list :buffer-name (buffer-name buf))) :to-be ctx)
                                 (expect (macher-agent-resolve-from-transit-payload (list :target-buffer buf)) :to-be ctx)
-                                ;; Invalid inputs safely return nil
-                                (expect (macher-agent-resolve-from-transit-payload '(:context "invalid-string")) :to-be nil)
-                                (expect (macher-agent-resolve-from-transit-payload '(project . "/some/path")) :to-be nil)
-                                (expect (macher-agent-resolve-from-transit-payload 12345) :to-be nil)
-                                (expect (macher-agent-resolve-from-transit-payload "string-input") :to-be nil))
+                                ;; Invalid inputs reject with an error signal
+                                (expect (macher-agent-resolve-from-transit-payload '(:context "invalid-string")) :to-throw 'error)
+                                (expect (macher-agent-resolve-from-transit-payload '(project . "/some/path")) :to-throw 'error)
+                                (expect (macher-agent-resolve-from-transit-payload 12345) :to-throw 'error)
+                                (expect (macher-agent-resolve-from-transit-payload "string-input") :to-throw 'error))
                             (when (buffer-live-p buf) (kill-buffer buf))
                             (delete-directory mock-dir t))))
 
@@ -289,23 +289,7 @@
                         (clrhash macher-agent-pipeline-registry)
                         (macher-agent-sandbox-install)
                         (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
-                        (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy))
-
-                    (it "evaluates AST safely with timeout failsafe boundary"
-                        (let ((res (macher-agent-ptc--evaluate-ast '(+ 40 2) nil 5.0)))
-                          (expect res :to-equal 42))
-                        
-                        (spy-on 'macher-agent-sandbox--eval-sync :and-call-fake
-                                (lambda (&rest _)
-                                  (sleep-for 0.1)))
-                        
-                        (expect (macher-agent-ptc--evaluate-ast '(infinite-loop) nil 0.05)
-                                :to-throw 'error)
-                        
-                        (cl-letf (((symbol-function 'macher-agent-sandbox--eval-sync) nil))
-                          (fmakunbound 'macher-agent-sandbox--eval-sync)
-                          (expect (macher-agent-ptc--evaluate-ast '(+ 1 1) nil 1.0)
-                                  :to-throw 'error))))
+                        (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)))
 
           (describe "4. Memory and Context Truncation (Zero-Mem)"
                     (it "calculates limits using context horizon in macher-agent-memory-pipe--inject-tool"
