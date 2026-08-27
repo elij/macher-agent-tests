@@ -147,15 +147,21 @@
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                      (ctx (macher--make-context :workspace workspace :contents nil))
                      (fsm (gptel-make-fsm))
-                     (_gptel--fsm-last fsm))
+                     (mock-backend (gptel-make-openai "MockBackend"))
+                     (mock-data (list :messages [])))
 
-                (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
+                (setf (gptel-fsm-info fsm)
+                      (list :macher-agent-context ctx
+                            :backend mock-backend
+                            :data mock-data))
                 (macher-agent--set-context-data ctx :pending-media "mockbase64")
 
+                (spy-on 'gptel--inject-media :and-return-value nil)
                 (spy-on 'gptel--inject-prompt :and-return-value nil)
 
                 (macher-agent--inject-media-fsm-logic fsm)
 
+                (expect 'gptel--inject-media :to-have-been-called)
                 (expect 'gptel--inject-prompt :to-have-been-called)
                 (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil))))
 
