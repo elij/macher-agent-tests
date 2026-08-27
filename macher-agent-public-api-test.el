@@ -1,0 +1,175 @@
+;;; macher-agent-public-api-test.el --- Tests for public API -*- lexical-binding: t; -*-
+
+(require 'buttercup)
+(require 'cl-lib)
+(require 'macher-agent-api)
+(require 'macher-agent)
+(require 'macher-agent-core)
+
+(describe "Macher-Agent Public API Suite"
+
+          (describe "API Contract"
+                    (it "ensures all public API bridge functions are defined"
+                        (expect (fboundp 'macher-agent-context-update) :to-be t)
+                        (expect (fboundp 'macher-agent-scope-add-file) :to-be t)
+                        (expect (fboundp 'macher-agent-a2a-dispatch) :to-be t)
+                        (expect (fboundp 'macher-agent-sandbox-run) :to-be t)
+                        (expect (fboundp 'macher-agent-api-register-skills-in-directory) :to-be t)
+                        (expect (fboundp 'macher-agent-ui-show) :to-be t)))
+
+          (describe "Sandboxed Evaluator Basic Features"
+                    (it "evaluates basic expressions safely"
+                        (expect (macher-agent-sandbox-run 42 nil) :to-equal 42)
+                        (expect (macher-agent-sandbox-run "test" nil) :to-equal "test")
+                        (expect (macher-agent-sandbox-run t nil) :to-equal t)
+                        (expect (macher-agent-sandbox-run nil nil) :to-be nil)
+                        (expect (macher-agent-sandbox-run '(quote (1 2 3)) nil) :to-equal '(1 2 3))
+                        (expect (macher-agent-sandbox-run '(progn 1 2 3) nil) :to-equal 3)
+                        (expect (macher-agent-sandbox-run '(if t 'yes 'no) nil) :to-equal 'yes)
+                        (expect (macher-agent-sandbox-run '(if nil 'yes 'no) nil) :to-equal 'no)
+                        (expect (macher-agent-sandbox-run '(let ((x 10) (y 20)) (progn (setq x 15) (+ x y))) '(+)) :to-equal 35)
+                        (expect (macher-agent-sandbox-run '(funcall (lambda (x) (* x x)) 5) '(*)) :to-equal 25)))
+
+          (describe "Sandboxed Evaluator Comprehensive Features"
+                    (it "evaluates newly implemented sandboxed features safely"
+                        ;; Keyword self-evaluation
+                        (expect (macher-agent-sandbox-run ':foo nil) :to-equal :foo)
+                        (expect (macher-agent-sandbox-run '(let ((x :bar)) x) nil) :to-equal :bar)
+
+                        ;; Built-in and whitelisted functions
+                        (expect (macher-agent-sandbox-run '(not nil) nil) :to-equal t)
+                        (expect (macher-agent-sandbox-run '(not t) nil) :to-be nil)
+                        (expect (macher-agent-sandbox-run '(reverse '(1 2 3)) nil) :to-equal '(3 2 1))
+                        (expect (macher-agent-sandbox-run '(split-string "foo bar" " ") nil) :to-equal '("foo" "bar"))
+                        (expect (macher-agent-sandbox-run '(plist-get '(:a 1 :b 2) :b) nil) :to-equal 2)
+
+                        ;; Functional application
+                        (expect (macher-agent-sandbox-run '(apply '+ 1 2 '(3 4)) '(+)) :to-equal 10)
+                        (expect (macher-agent-sandbox-run '(apply '+ '(1 2 3)) '(+)) :to-equal 6)
+                        (expect (macher-agent-sandbox-run '(mapcar (lambda (x) (* x 2)) '(1 2 3)) '(*)) :to-equal '(2 4 6))
+
+                        ;; Control flow and Error handling
+                        (expect (macher-agent-sandbox-run '(condition-case err (/ 1 0) (error 'caught)) '(/)) :to-equal 'caught)
+                        (expect (macher-agent-sandbox-run '(unwind-protect 1 2) nil) :to-equal 1)
+                        (expect (macher-agent-sandbox-run '(catch 'tag (throw 'tag 42)) nil) :to-equal 42)
+
+                        ;; Introspection
+                        (expect (macher-agent-sandbox-run '(fboundp 'car) nil) :to-equal t)
+                        (expect (macher-agent-sandbox-run '(fboundp 'nonexistent) nil) :to-be nil)
+                        (expect (macher-agent-sandbox-run '(let ((x 1)) (boundp 'x)) nil) :to-equal t)
+                        (expect (macher-agent-sandbox-run '(boundp 'nonexistent) nil) :to-be nil)
+
+                        ;; Macros
+                        (expect (macher-agent-sandbox-run '(progn
+                                                             (defalias 'my-when '(macro lambda (cond &rest body)
+                                                                                        (list 'if cond (cons 'progn body))))
+                                                             (my-when t 42))
+                                                          nil)
+                                :to-equal 42)))
+
+          (describe "Context Resolution Regression"
+                    (before-each
+                     (setq macher-agent--persistent-context nil)
+                     (clrhash macher-agent-active-workspaces))
+
+                    (it "short-circuits waterfall pipeline when explicit context is passed"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/explicit-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                          (expect (macher-agent-resolve-context ctx) :to-be ctx)))
+
+                    (it "extracts context from FSM payload when FSM object is supplied"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/fsm-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (fsm (gptel-make-fsm)))
+                          (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
+                          (expect (macher-agent-resolve-context fsm) :to-be ctx)))
+
+                    (it "resolves context cleanly via workspace identifiers and direct lookup"
+                        (let* ((macher-agent-active-workspaces (make-hash-table :test 'equal))
+                               (root-dir "/mock/ws-registry-proj/")
+                               (sub-dir "/mock/ws-registry-proj/nested/dir/")
+                               (ws (make-macher-agent-workspace :project-root root-dir))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (debug-lookups nil))
+                          (puthash (expand-file-name root-dir) ctx macher-agent-active-workspaces)
+
+                          (push (macher-agent-context-lookup root-dir) debug-lookups)
+                          (push (macher-agent-context-lookup sub-dir) debug-lookups)
+                          (push (macher-agent-context-lookup ws) debug-lookups)
+                          (push (macher-agent-context-lookup (cons 'agent root-dir)) debug-lookups)
+                          
+                          (push (macher-agent-resolve-context root-dir) debug-lookups)
+                          (push (macher-agent-resolve-context sub-dir) debug-lookups)
+                          (push (macher-agent-resolve-context (list :workspace-id sub-dir)) debug-lookups)
+                          (push (macher-agent-resolve-context (list :workspace ws)) debug-lookups)
+
+                          ;; Assert all 8 resolution strategies successfully returned the context
+                          (dolist (res debug-lookups)
+                            (expect res :to-be ctx))))
+
+                    (it "returns nil when context resolution fails across all steps"
+                        (let ((macher-agent-active-workspaces (make-hash-table :test 'equal))
+                              (macher-agent--persistent-context nil))
+                          (spy-on 'macher-agent--resolve-context-lazy-init :and-return-value nil)
+                          (expect (macher-agent-resolve-context) :to-be nil)))
+
+                    (it "reads and updates files via context API functions"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/api-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (file "src/main.el"))
+                          (macher-agent-context-update ctx file "(message \"hello\")")
+                          (expect (macher-agent--read-context-file ctx file) :to-equal "(message \"hello\")")
+                          (macher-agent-context-update ctx file "(message \"updated\")")
+                          (expect (macher-agent--read-context-file ctx file) :to-equal "(message \"updated\")"))))
+
+          (describe "Strict VFS Pipeline Regression"
+
+                    (it "executes pipeline steps in strict sequential order"
+                        (let* ((step-order nil)
+                               (ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents '(("mock-file.txt" . "content")))))
+                          (spy-on 'macher-agent--vfs-verify-clean-merge :and-call-fake (lambda (&rest _) (push 'verify step-order)))
+                          (spy-on 'macher-agent--vfs-sync-baseline :and-call-fake (lambda (&rest _) (push 'sync step-order)))
+                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
+                          (spy-on 'delete-directory :and-call-through)
+
+                          (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                      (lambda () 'done))
+
+                          (expect (reverse step-order) :to-equal '(verify sync))))
+
+                    (it "binds default-directory to isolated temporary sandbox directory during body execution"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (captured-dir nil))
+                          (spy-on 'macher-agent--vfs-verify-clean-merge)
+                          (spy-on 'macher-agent--vfs-sync-baseline)
+                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
+
+                          (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                      (lambda () (setq captured-dir default-directory)))
+
+                          (expect captured-dir :not :to-equal "/mock/vfs-proj/")
+                          (expect (string-match-p "macher-sandbox-" captured-dir) :to-be-truthy)))
+
+                    (it "guarantees sandbox directory cleanup even when body signals an error"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (created-sandbox nil))
+                          (spy-on 'macher-agent--vfs-verify-clean-merge)
+                          (spy-on 'macher-agent--vfs-sync-baseline)
+                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
+
+                          (expect
+                           (macher-agent-call-with-strict-vfs-pipeline ctx
+                                                                       (lambda ()
+                                                                         (setq created-sandbox default-directory)
+                                                                         (error "Forced pipeline failure")))
+                           :to-throw 'error)
+
+                          (expect created-sandbox :not :to-be nil)
+                          (expect (file-exists-p created-sandbox) :to-be nil)))
+                    ))
+
+(provide 'macher-agent-public-api-test)
+;;; macher-agent-public-api-test.el ends here
