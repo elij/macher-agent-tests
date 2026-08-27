@@ -107,7 +107,7 @@
                     (it "extracts parent-buffer from plist shared state in macher-agent-a2a-pipe--acquire-target"
                         (let* ((mock-dir (make-temp-file "macher-a2a-acquire-target-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (parent-ctx (macher--make-context :workspace workspace :contents nil))
+                               (parent-ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (parent-buf (generate-new-buffer "test-a2a-parent-buf"))
                                (child-buf (generate-new-buffer "test-a2a-child-buf")))
                           (unwind-protect
@@ -131,7 +131,7 @@
                     (it "executes within Virtual File System awareness scope using macher-agent-with-vfs-scope"
                         (let* ((mock-dir (make-temp-file "macher-vfs-scope-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (executed-dir nil)
                                (executed-ctx nil)
                                (eval-count 0)
@@ -153,8 +153,8 @@
                     (it "merges payload diffs, handles deletions, and extracts context via macher-agent-vfs--merge-payload"
                         (let* ((mock-dir (make-temp-file "macher-vfs-merge-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
-                               (ambient-ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/unrelated") :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
+                               (ambient-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/unrelated") :contents nil))
                                (target-buf (generate-new-buffer "*macher-vfs-merge-target*")))
                           (unwind-protect
                               (progn
@@ -200,13 +200,13 @@
                                                :key (lambda (e) (plist-get e :step)))))
                           (expect (plist-get entry :priority) :to-equal 10))
                         (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy)
-                        (expect (member #'macher-agent-macher-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy))
+                        (expect (member #'macher-agent-vfs-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy))
 
                     (it "composes artifact payload with diff when context has modified files and unmodified when clean via macher-agent-prepare-upstream-payloads"
                         (let* ((mock-modified (cons "file1.txt" (cons "original" "modified")))
                                (mock-clean (cons "file1.txt" (cons "same" "same")))
-                               (ctx-mod (macher--make-context :contents (list mock-modified)))
-                               (ctx-clean (macher--make-context :contents (list mock-clean)))
+                               (ctx-mod (macher-agent--make-vfs-context :contents (list mock-modified)))
+                               (ctx-clean (macher-agent--make-vfs-context :contents (list mock-clean)))
                                (payload (list :status 'success :data "Done" :buffer-name "test-buf")))
                           (let* ((macher-agent--persistent-context ctx-mod)
                                  (composed (macher-agent-prepare-upstream-payloads payload)))
@@ -221,7 +221,7 @@
                     (it "resolves context comprehensively across transit keys, states, and buffers"
                         (let* ((mock-dir (make-temp-file "macher-transit-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (buf (generate-new-buffer "*macher-buf-fallback-test*")))
                           (unwind-protect
                               (progn
@@ -254,7 +254,7 @@
                     (it "extracts context from FSM using macher-agent--extract-fsm-context"
                         (let* ((mock-dir (make-temp-file "macher-fsm-ctx-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil)))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
                           (unwind-protect
                               (progn
                                 (expect (macher-agent--extract-fsm-context nil) :to-be nil)
@@ -409,7 +409,7 @@
                     (it "executes dynamically registered steps during payload-merge in bind closure"
                         (let* ((mock-dir (make-temp-file "macher-merge-dyn-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (parent-ctx (macher--make-context :workspace workspace :contents nil))
+                               (parent-ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (parent-buf (generate-new-buffer "test-parent-merge-buf"))
                                (child-buf (generate-new-buffer "test-child-merge-buf"))
                                (dyn-merge-called nil)
@@ -450,9 +450,9 @@
                     (it "correctly merges child diffs into parent context even when child buffer is live"
                         (let* ((mock-dir (make-temp-file "macher-child-merge-test" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (parent-ctx (macher--make-context :workspace workspace :contents nil))
-                               (child-ctx (macher--make-context :workspace workspace
-                                                                :contents (list (macher-agent-vfs-make-entry "merged-file.el" "initial" "initial"))))
+                               (parent-ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
+                               (child-ctx (macher-agent--make-vfs-context :workspace workspace
+                                                                          :contents (list (macher-agent-vfs-make-entry "merged-file.el" "initial" "initial"))))
                                (parent-buf (generate-new-buffer "test-parent-live-buf"))
                                (child-buf (generate-new-buffer "test-child-live-buf"))
                                (task-id "task-live-merge"))
@@ -546,7 +546,7 @@
                         (expect (member #'macher-agent-resolve-from-transit-payload (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
                         (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
                         (expect (member #'macher-agent-vfs-handle-flush macher-agent-task-flush-hook) :to-be-truthy)
-                        (expect (member #'macher-agent-macher-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy)
+                        (expect (member #'macher-agent-vfs-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy)
                         (expect (member #'macher-agent--mutation-dispatcher macher-agent-context-mutated-hook) :to-be-truthy))
 
                     (it "invokes Level 3 bridge and Level 1 plugin loaders dynamically when bound"

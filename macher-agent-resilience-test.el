@@ -116,7 +116,7 @@
   (it "extracts orig-buf context from FSM inside temporary transmission buffer"
       (let* ((temp-dir (file-name-as-directory (file-truename (make-temp-file "macher-resilience-ctx-" t))))
              (workspace (make-macher-agent-workspace :project-root temp-dir))
-             (ctx (macher--make-context :workspace workspace :contents nil))
+             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
              (orig-buf (generate-new-buffer "test-resilience-orig-buf"))
              (trans-buf (generate-new-buffer "test-resilience-trans-buf"))
              (fsm (gptel-make-fsm))
@@ -138,7 +138,7 @@
         (write-region initial-text nil file-path nil 'silent)
         (let* ((file-buf (find-file-noselect file-path))
                (workspace (make-macher-agent-workspace :project-root temp-dir))
-               (ctx (macher--make-context :workspace workspace :contents nil)))
+               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
           (puthash (expand-file-name temp-dir) ctx macher-agent-active-workspaces)
           (macher-agent--update-context-file ctx file-path updated-text)
           (expect (macher-agent--get-context-dirty-p ctx) :to-be t)

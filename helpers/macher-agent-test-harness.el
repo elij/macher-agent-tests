@@ -17,7 +17,7 @@
 
     (when (and target-buf (buffer-live-p target-buf))
       (with-current-buffer target-buf
-        (setq-local macher--fsm-latest fsm)))
+        (setq-local macher-agent--active-fsm fsm)))
 
     (let* ((prompt-start
             (if (or (bound-and-true-p gptel-mode) 
@@ -41,8 +41,7 @@
             (when (fboundp 'macher-agent--set-context-prompt)
               (macher-agent--set-context-prompt ctx raw-prompt))
             (when (fboundp 'macher-agent--set-context-data)
-              (macher-agent--set-context-data ctx :prompt raw-prompt))
-            (ignore-errors (setf (macher-context-prompt ctx) raw-prompt))))))
+              (macher-agent--set-context-data ctx :prompt raw-prompt))))))
 
     (let ((cb (or orig-cb #'ignore)))
       (setq info
@@ -89,7 +88,7 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
   (declare (indent 2))
   `(let* ((queues (copy-tree ,routing-alist))
           (ws (make-macher-agent-workspace :project-root default-directory))
-          (ctx (macher--make-context :workspace ws :contents nil)))
+          (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
 
      (setq-local macher-agent--persistent-context ctx)
      (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)

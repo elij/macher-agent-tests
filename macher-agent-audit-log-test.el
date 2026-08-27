@@ -17,7 +17,7 @@
  (describe
   "macher-agent-log-tool-intent"
   (it "appends entries with timestamp buffer preset type target args into context data audit log"
-      (let ((ctx (macher--make-context))
+      (let ((ctx (macher-agent--make-context))
             (macher-agent--active-skill-sym 'alpha-preset))
         (macher-agent-log-tool-intent ctx "gptel-tool" "tool-one" '(:key "value-one"))
         (let* ((log (macher-agent--get-context-data ctx :audit-log))
@@ -34,7 +34,7 @@
 
  (describe "macher-agent--log-gptel-pre-tool"
            (it "logs standard gptel tool calls into active context audit log"
-               (let ((ctx (macher--make-context)))
+               (let ((ctx (macher-agent--make-context)))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (macher-agent--log-gptel-pre-tool 'test-gptel-tool nil :param "val")
                  (let* ((log (macher-agent--get-context-data ctx :audit-log))
@@ -46,7 +46,7 @@
 
  (describe "macher-agent-sandbox-run"
            (it "logs PTC tool yields into active context audit log"
-               (let ((ctx (macher--make-context))
+               (let ((ctx (macher-agent--make-context))
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (macher-agent-sandbox-run '(test-ptc-tool :path "file.txt") nil)
@@ -59,7 +59,7 @@
 
  (describe "macher-agent-read-context-audit-log-tool"
            (it "filters audit log by preset and limit returning JSON string of entries"
-               (let ((ctx (macher--make-context))
+               (let ((ctx (macher-agent--make-context))
                      (callback-result nil))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (let ((macher-agent--active-skill-sym 'PresetAlpha))

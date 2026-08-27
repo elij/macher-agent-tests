@@ -21,7 +21,7 @@
 
           (it "executes a PTC script, yielding for subagents and resuming with results"
               (let* ((macher-agent--active-ptc-primitives '(spawn-subagent delegate-tasks-to-subagents read-file))
-                     (ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+                     (ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
                      (script "(let* ((a1 (spawn-subagent \"agent-alpha\" nil))
                              (a2 (spawn-subagent \"agent-beta\" nil))
                              (tasks (list (list :buffer_name a1 :instructions \"task1\")
@@ -211,7 +211,7 @@
                   (expect err-res :to-be nil))))
 
           (it "executes a PTC script containing multiple top-level forms"
-              (let* ((ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+              (let* ((ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
                      (script "(setq x 10)\n(setq y 20)\n(+ x y)")
                      (success-result nil)
                      (error-result nil))
@@ -226,14 +226,14 @@
 
           (it "validates and resolves paths with bounds checking in macher-agent--read-file-vfs-aware"
               (let* ((ws (make-macher-agent-workspace :project-root "/mock/ptc/"))
-                     (ctx (macher--make-context :workspace ws :contents (list (macher-agent-vfs-make-entry "/mock/ptc/file.txt" "orig" "vfs content")))))
+                     (ctx (macher-agent--make-vfs-context :workspace ws :contents (list (macher-agent-vfs-make-entry "/mock/ptc/file.txt" "orig" "vfs content")))))
                 ;; 1. VFS content prioritized
                 (expect (macher-agent--read-file-vfs-aware "/mock/ptc/file.txt" ctx) :to-equal "vfs content")
                 ;; 2. Path traversal blocked
                 (expect (macher-agent--read-file-vfs-aware "../../etc/passwd" ctx) :to-throw 'error)))
 
           (it "prevents #. code injection by binding read-eval to nil in macher-agent-execute-ptc-script"
-              (let* ((ctx (macher--make-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
+              (let* ((ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
                      (injected nil)
                      (success-result nil)
                      (error-result nil)

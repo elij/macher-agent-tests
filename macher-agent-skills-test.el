@@ -41,7 +41,7 @@
   (it "guarantees list_buffers_in_workspace output perfectly matches context-tree buffer categorisation"
       (let*
           ((ctx
-            (macher--make-context
+            (macher-agent--make-vfs-context
              :contents (list (macher-agent-vfs-make-entry "pure-worker-buf" "" "")
                              (macher-agent-vfs-make-entry "/external/path.txt" "" "")
                              (macher-agent-vfs-make-entry "/root/internal.txt" "" ""))))
@@ -62,24 +62,24 @@
                                       (expect result :to-match "internal\\.txt")))))
   (it "commit_buffer registers virtual edits cleanly without destructive live buffer mutation"
       (let* ((buf (generate-new-buffer "live-commit-buf"))
-             (ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "live-commit-buf" "original content" "original content"))))
+             (ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "live-commit-buf" "original content" "original content"))))
              (tool-fn (gptel-tool-function macher-agent-commit-buffer-tool)))
         (with-current-buffer buf
           (insert "original content"))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
-          (let ((response (funcall tool-fn nil "live-commit-buf" "committed virtual content")))
-            (expect response :to-match "SUCCESS")
-            (expect (with-current-buffer buf (buffer-string)) :to-equal "original content")
-            (expect (macher-context-dirty-p ctx) :to-be t)
-            (let ((entry (cl-find "live-commit-buf" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-              (expect entry :not :to-be nil)
-              (expect (macher-agent-vfs-entry-curr entry) :to-equal "committed virtual content")
-              (expect (macher-agent-vfs-entry-orig entry) :to-equal "original content"))))
+                                    (let ((response (funcall tool-fn nil "live-commit-buf" "committed virtual content")))
+                                      (expect response :to-match "SUCCESS")
+                                      (expect (with-current-buffer buf (buffer-string)) :to-equal "original content")
+                                      (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
+                                      (let ((entry (cl-find "live-commit-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                        (expect entry :not :to-be nil)
+                                        (expect (macher-agent-vfs-entry-curr entry) :to-equal "committed virtual content")
+                                        (expect (macher-agent-vfs-entry-orig entry) :to-equal "original content"))))
         (kill-buffer buf)))
   (it "properly parses a JSON string into a vector for task delegation"
-      (let* ((ctx (macher--make-context))
+      (let* ((ctx (macher-agent--make-context))
              (callback-called nil)
              (callback (lambda (res) (setq callback-called res)))
              (json-tasks (vector (list :buffer_name "test-sub" :instructions "do work")))
@@ -102,7 +102,7 @@
              (callback-called nil)
              (callback (lambda (msg) (setq callback-called msg))))
 
-        (spy-on 'macher-agent-resolve-context :and-return-value (macher--make-context :contents nil))
+        (spy-on 'macher-agent-resolve-context :and-return-value (macher-agent--make-vfs-context :contents nil))
         ;; Simulate gptel-send firing and instantly triggering the post-response hook
         (spy-on 'gptel-send :and-call-fake
                 (lambda ()
@@ -128,7 +128,7 @@
              (callback-called nil)
              (callback (lambda (msg) (setq callback-called msg))))
         
-        (spy-on 'macher-agent-resolve-context :and-return-value (macher--make-context))
+        (spy-on 'macher-agent-resolve-context :and-return-value (macher-agent--make-context))
         ;; Mock the dispatcher to instantly return a success payload rather than firing the network
         (cl-letf (((symbol-function 'gptel-send)
                    (lambda ()
@@ -155,21 +155,21 @@
         (kill-buffer buf2)))
 
   (it "ensures target buffer exists when using write_buffer_in_workspace to support patch UI"
-      (let* ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "dummy" "dummy" "dummy"))))
+      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "dummy" "dummy" "dummy"))))
              (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (unwind-protect
             (progn
               (with-macher-agent-mock-fsm ctx
-                (funcall tool-fn nil "*new-virtual-asset*" "Ghost content"))
-              (expect (cl-find "*new-virtual-asset*" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :not :to-be nil)
-              (let ((contents (cl-find "*new-virtual-asset*" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                          (funcall tool-fn nil "*new-virtual-asset*" "Ghost content"))
+              (expect (cl-find "*new-virtual-asset*" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :not :to-be nil)
+              (let ((contents (cl-find "*new-virtual-asset*" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                 (expect (macher-agent-vfs-entry-curr contents) :to-equal "Ghost content")))
           (when-let* ((b (get-buffer "*new-virtual-asset*")))
             (kill-buffer b)))))
   
   (it "rejects fuzzy security matching in read_buffer_in_workspace"
-      (let* ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "*scratch*" "" "content"))))
+      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "*scratch*" "" "content"))))
              (tool-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (with-macher-agent-mock-fsm ctx
@@ -177,7 +177,7 @@
                                       (expect result :to-match "SECURITY ERROR.*scratch.*")))))
 
   (it "submit_task_result triggers callback from registry and flags completion"
-      (let* ((ctx (macher--make-context))
+      (let* ((ctx (macher-agent--make-context))
              (buf (generate-new-buffer "worker-buf"))
              (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
              (task-id "skill-submit-task-1")
@@ -198,18 +198,18 @@
         (kill-buffer buf)))
   
   (it "write_buffer_in_workspace registers a virtual edit safely"
-      (let* ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "test-buf" "orig" "orig"))))
+      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-buf" "orig" "orig"))))
              (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         
         (with-macher-agent-mock-fsm ctx
                                     (let* ((response (funcall tool-fn nil "test-buf" "New virtual content")))
                                       (expect response :to-match "SUCCESS")
-                                      (expect (macher-context-dirty-p ctx) :to-be t)
-                                      (expect (macher-agent-vfs-entry-curr (cl-find "test-buf" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)) :to-equal "New virtual content")))))
+                                      (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
+                                      (expect (macher-agent-vfs-entry-curr (cl-find "test-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)) :to-equal "New virtual content")))))
 
   (it "multi_edit_buffer_in_workspace uses a decoupled deterministic scratchpad"
-      (let* ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "test-file.rs" "line1\nline2" "line1\nline2"))))
+      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-file.rs" "line1\nline2" "line1\nline2"))))
              (tool-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         
@@ -217,12 +217,12 @@
                                     (let* ((edits (vector (list :old_text "line2" :new_text "line3")))
                                            (response (funcall tool-fn nil "test-file.rs" edits)))
                                       (expect response :to-match "SUCCESS")
-                                      (let ((contents (cl-find "test-file.rs" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                      (let ((contents (cl-find "test-file.rs" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                                         (expect (macher-agent-vfs-entry-curr contents) :to-equal "line1\nline3"))))))
 
   (it "allows multi_edit_buffer_in_workspace after reading a live buffer"
       (let* ((buf (generate-new-buffer "read-then-edit.txt"))
-             (ctx (macher--make-context :contents nil))
+             (ctx (macher-agent--make-vfs-context :contents nil))
              (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool))
              (edit-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
         (with-current-buffer buf
@@ -235,7 +235,7 @@
                                     (let* ((edits (vector (list :old_text "hello" :new_text "goodbye")))
                                            (response (funcall edit-fn nil "read-then-edit.txt" edits)))
                                       (expect response :to-match "SUCCESS")
-                                      (let ((contents (cl-find "read-then-edit.txt" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                      (let ((contents (cl-find "read-then-edit.txt" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                                         (expect contents :not :to-be nil)
                                         (when contents
                                           (expect (macher-agent-vfs-entry-curr contents) :to-equal "goodbye world")))))
@@ -243,43 +243,43 @@
 
   (it "ensures untouched scoped buffer produces zero diff after read_buffer_in_workspace"
       (let* ((buf (generate-new-buffer "unmodified-scoped-buf"))
-             (ctx (macher--make-context :contents nil))
+             (ctx (macher-agent--make-vfs-context :contents nil))
              (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
         (with-current-buffer buf
           (insert "initial unchanged content"))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
-          (let ((res (funcall read-fn nil "unmodified-scoped-buf")))
-            (expect res :to-equal "initial unchanged content")
-            (let ((entry (cl-find "unmodified-scoped-buf" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-              (expect entry :not :to-be nil)
-              (expect (macher-agent-vfs-entry-orig entry) :to-equal "initial unchanged content")
-              (expect (macher-agent-vfs-entry-curr entry) :to-equal "initial unchanged content")
-              (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil))))
+                                    (let ((res (funcall read-fn nil "unmodified-scoped-buf")))
+                                      (expect res :to-equal "initial unchanged content")
+                                      (let ((entry (cl-find "unmodified-scoped-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                        (expect entry :not :to-be nil)
+                                        (expect (macher-agent-vfs-entry-orig entry) :to-equal "initial unchanged content")
+                                        (expect (macher-agent-vfs-entry-curr entry) :to-equal "initial unchanged content")
+                                        (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil))))
         (kill-buffer buf)))
 
   (it "picks up external live buffer modifications on subsequent read_buffer_in_workspace calls"
       (let* ((buf (generate-new-buffer "live-mod-buf"))
-             (ctx (macher--make-context :contents nil))
+             (ctx (macher-agent--make-vfs-context :contents nil))
              (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
         (with-current-buffer buf
           (insert "initial buffer text"))
         (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
-          (let ((res1 (funcall read-fn nil "live-mod-buf")))
-            (expect res1 :to-equal "initial buffer text")
-            ;; Externally modify the live buffer
-            (with-current-buffer buf
-              (erase-buffer)
-              (insert "externally updated buffer text"))
-            ;; Subsequent read must synchronise and return the updated content
-            (let ((res2 (funcall read-fn nil "live-mod-buf")))
-              (expect res2 :to-equal "externally updated buffer text")
-              (let ((entry (cl-find "live-mod-buf" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                (expect (macher-agent-vfs-entry-curr entry) :to-equal "externally updated buffer text")
-                (expect (macher-agent-vfs-entry-orig entry) :to-equal "externally updated buffer text")))))
+                                    (let ((res1 (funcall read-fn nil "live-mod-buf")))
+                                      (expect res1 :to-equal "initial buffer text")
+                                      ;; Externally modify the live buffer
+                                      (with-current-buffer buf
+                                        (erase-buffer)
+                                        (insert "externally updated buffer text"))
+                                      ;; Subsequent read must synchronise and return the updated content
+                                      (let ((res2 (funcall read-fn nil "live-mod-buf")))
+                                        (expect res2 :to-equal "externally updated buffer text")
+                                        (let ((entry (cl-find "live-mod-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                                          (expect (macher-agent-vfs-entry-curr entry) :to-equal "externally updated buffer text")
+                                          (expect (macher-agent-vfs-entry-orig entry) :to-equal "externally updated buffer text")))))
         (kill-buffer buf)))
 
   (it "synchronises context seamlessly when interleaving macher-agent and macher tools"
@@ -288,16 +288,21 @@
         (make-directory proj-dir t)
         (with-temp-file file-path (insert "Initial file text"))
         (let* ((ws (cons 'directory proj-dir))
-               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+               (ctx (make-macher-agent-context
+                     :project-root proj-dir
+                     :plugins (list :vfs (list :contents nil))))
                (agent-write-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool))
                (agent-read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
           (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-          (with-macher-agent-mock-fsm ctx
-                                      (funcall agent-write-fn nil "interleave.txt" "VFS Step 1: Agent Write")
-                                      (macher--tool-write-file ctx "interleave.txt" "VFS Step 2: Macher Write")
-                                      (let ((res (funcall agent-read-fn nil "interleave.txt")))
-                                        (expect res :to-equal "VFS Step 2: Macher Write")
-                                        (expect (length (macher-agent--get-context-contents ctx)) :to-equal 1)))
+          (cl-letf (((symbol-function 'macher--tool-write-file)
+                     (lambda (_c p cont)
+                       (macher-agent-context-update ctx p cont))))
+            (with-macher-agent-mock-fsm ctx
+                                        (funcall agent-write-fn nil "interleave.txt" "VFS Step 1: Agent Write")
+                                        (macher--tool-write-file ctx "interleave.txt" "VFS Step 2: Macher Write")
+                                        (let ((res (funcall agent-read-fn nil "interleave.txt")))
+                                          (expect res :to-equal "VFS Step 2: Macher Write")
+                                          (expect (length (macher-agent--get-context-contents ctx)) :to-equal 1))))
           (delete-file file-path)
           (delete-directory proj-dir))))
 
@@ -359,14 +364,14 @@
         (puthash "tool-workspace" tool-ws (macher-agent-workspace-tools-registry ctx))
         (let ((macher-agent-tools-registry global-reg))
           (with-macher-agent-mock-fsm ctx
-            (let ((res (funcall list-fn nil)))
-              (expect res :to-match "tool-perc")
-              (expect res :to-match "tool-collab")
-              (expect res :to-match "tool-event")
-              (expect res :to-match "tool-exec")
-              (expect res :to-match "tool-workspace")
-              (expect res :not :to-match "tool-other")
-              (expect res :not :to-match "tool-none"))))))
+                                      (let ((res (funcall list-fn nil)))
+                                        (expect res :to-match "tool-perc")
+                                        (expect res :to-match "tool-collab")
+                                        (expect res :to-match "tool-event")
+                                        (expect res :to-match "tool-exec")
+                                        (expect res :to-match "tool-workspace")
+                                        (expect res :not :to-match "tool-other")
+                                        (expect res :not :to-match "tool-none"))))))
 
   (it "searches conversation history via glob search"
       (let ((buf (generate-new-buffer "test-conv-glob")))
@@ -428,7 +433,7 @@
 
   (it "executes search_conversation_history tool via dispatcher without inline loops or persistent global mutation"
       (let* ((buf (generate-new-buffer "test-conv-tool"))
-             (ctx (macher--make-context))
+             (ctx (macher-agent--make-context))
              (mock-fsm (if (fboundp 'gptel-make-fsm)
                            (gptel-make-fsm :info (list :buffer buf :macher-agent-context ctx))
                          (list :buffer buf :macher-agent-context ctx)))

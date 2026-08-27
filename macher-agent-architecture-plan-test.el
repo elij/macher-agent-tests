@@ -74,7 +74,7 @@
                     (it "guarantees single-evaluation of the context expression"
                         (let* ((mock-dir (make-temp-file "macher-macro-single-eval-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (eval-count 0)
                                (context-fn (lambda ()
                                              (setq eval-count (1+ eval-count))
@@ -98,7 +98,7 @@
                     (it "properly binds `macher-agent--persistent-context` and sets `default-directory`"
                         (let* ((mock-dir (make-temp-file "macher-macro-bind-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil)))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
                           (unwind-protect
                               (macher-agent-with-vfs-scope ctx
                                 (expect macher-agent--persistent-context :to-be ctx)
@@ -113,7 +113,7 @@
                     (it "constructs and validates tagged A2A transit property lists"
                         (let* ((mock-dir (make-temp-file "macher-a2a-test-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (payload (macher-agent-make-a2a-payload
                                          :transit-type :root-to-subagent
                                          :task-id "task-a2a-001"
@@ -148,9 +148,9 @@
                     (it "extracts target, parent, and child contexts using structured transit keys"
                         (let* ((mock-dir (make-temp-file "macher-a2a-extract-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx-target (macher--make-context :workspace workspace :contents nil))
-                               (ctx-parent (macher--make-context :workspace workspace :contents nil))
-                               (ctx-child (macher--make-context :workspace workspace :contents nil)))
+                               (ctx-target (macher-agent--make-vfs-context :workspace workspace :contents nil))
+                               (ctx-parent (macher-agent--make-vfs-context :workspace workspace :contents nil))
+                               (ctx-child (macher-agent--make-vfs-context :workspace workspace :contents nil)))
                           (unwind-protect
                               (progn
                                 (expect (macher-agent-resolve-from-transit-payload
@@ -180,7 +180,7 @@
                     (it "resolves context deterministically via `macher-agent-context-lookup`"
                         (let* ((mock-dir (make-temp-file "macher-ws-lookup-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil)))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
                           (unwind-protect
                               (progn
                                 (puthash (expand-file-name mock-dir) ctx macher-agent-active-workspaces)
@@ -224,7 +224,7 @@
                     (it "pure workspace setters do not mutate ambient global variables"
                         (let* ((mock-dir (make-temp-file "macher-ws-pure-setter-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (orig-global-skills macher-agent-global-skills-alist)
                                (orig-tools-reg (copy-hash-table macher-agent-tools-registry))
                                (custom-skills '((my-skill . (:description "test"))))
@@ -250,7 +250,7 @@
                     (it "captures process failures in structured error envelopes with exit codes"
                         (let* ((mock-dir (make-temp-file "macher-async-fail-" t))
                                (workspace (make-macher-agent-workspace :project-root mock-dir))
-                               (ctx (macher--make-context :workspace workspace :contents nil))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
                                (error-result nil)
                                (success-result nil))
                           (unwind-protect

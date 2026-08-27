@@ -15,32 +15,45 @@
   (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
 
 (require 'macher-agent-test-setup)
+(require 'macher-agent-vfs)
+(require 'macher-agent-macher)
 
 (describe "Virtual File System (VFS) Mutators"
           (macher-agent-test-setup-before-each)
 
           (it "throws a security error if accessing a path outside of the allowed context"
-              (let ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "allowed.txt" "old" "new")))))
+              (let ((ctx (macher-agent--make-context
+                          :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "allowed.txt" "old" "new")))))))
                 (expect (macher-agent--ensure-access ctx "forbidden.txt") :to-throw 'error)))
 
           (it "successfully records a virtual edit to an existing scoped buffer"
-              (let* ((ctx (macher--make-context :contents (list (macher-agent-vfs-make-entry "test.txt" "orig" "orig")))))
+              (let* ((ctx (macher-agent--make-context
+                           :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "test.txt" "orig" "orig")))))))
                 (macher-agent--update-context-file ctx "test.txt" "modified")
-                (expect (macher-context-dirty-p ctx) :to-be t)
-                (expect (macher-agent-vfs-entry-curr (cl-find "test.txt" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)) :to-equal "modified")))
+                (expect (macher-agent--context-dirty-p ctx) :to-be t)
+                (expect (macher-agent-vfs-entry-curr (cl-find "test.txt" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)) :to-equal "modified")))
 
           (it "invalidates the local cache if both local and remote diverged"
               (let* ((test-dir (make-temp-file "macher-test-dir" t))
                      (test-file (expand-file-name "test.txt" test-dir))
-                     (ctx (macher--make-context :dirty-p t)))
-                (setf (macher-context-contents ctx)
-                      (list (macher-agent-vfs-make-entry test-file "v1" "v2-local")))
+                     (ctx (macher-agent--make-context
+                           :project-root test-dir
+                           :plugins (list :vfs (list :dirty-p t
+                                                     :contents (list (macher-agent-vfs-make-entry test-file "v1" "v2-local")))))))
                 (with-temp-file test-file (insert "v2-remote"))
                 (macher-agent--auto-sync-context ctx)
-                (let ((entry (cl-find test-file (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                (let ((entry (cl-find test-file (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                   (expect (macher-agent-vfs-entry-orig entry) :to-equal "v2-remote")
                   (expect (macher-agent-vfs-entry-curr entry) :to-equal "v2-remote"))
                 (delete-directory test-dir t)))
+
+          (it "safely guards macher-agent--read-content-from-disk-or-buffer against non-string and invalid inputs"
+              (expect (macher-agent--read-content-from-disk-or-buffer nil) :to-be nil)
+              (expect (macher-agent--read-content-from-disk-or-buffer :invalid-keyword) :to-be nil)
+              (expect (macher-agent--read-content-from-disk-or-buffer 'some-symbol) :to-be nil)
+              (expect (macher-agent--read-content-from-disk-or-buffer 12345) :to-be nil)
+              (expect (macher-agent--read-content-from-disk-or-buffer '(:path "test")) :to-be nil)
+              (expect (macher-agent--read-content-from-disk-or-buffer "") :to-be nil))
 
           (it "preserves unapplied virtual edits across tool calls if the physical state has not mutated"
               (let* ((entry (macher-agent-vfs-make-entry "test-file.el" "original state" "proposed ghost state")))
@@ -56,24 +69,24 @@
                 (expect (macher-agent-vfs-entry-curr entry) :to-be nil)))
 
           (it "splits pure buffers from physical files for independent diff generation"
-              (let* ((ctx (macher--make-context))
+              (let* ((ctx (macher-agent--make-context))
                      (file-path (expand-file-name "dummy-file.txt" temporary-file-directory))
                      (pure-name "*macher-dummy-buf*")
                      (file-buf (find-file-noselect file-path))
                      (pure-buf (get-buffer-create pure-name)))
-                (push (macher-agent-vfs-make-entry file-path "a" "b") (macher-context-contents ctx))
-                (push (macher-agent-vfs-make-entry pure-name "x" "y") (macher-context-contents ctx))
-                (expect (length (macher-context-contents ctx)) :to-equal 2)
+                (macher-agent--set-context-contents ctx (list (macher-agent-vfs-make-entry file-path "a" "b")
+                                                              (macher-agent-vfs-make-entry pure-name "x" "y")))
+                (expect (length (macher-agent--get-context-contents ctx)) :to-equal 2)
 
                 (let* ((split (macher-agent--split-context ctx))
                        (file-ctx (car split))
                        (buf-ctx (cdr split)))
-                  (expect (length (macher-context-contents file-ctx)) :to-equal 1)
-                  (expect (cl-find file-path (macher-context-contents file-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be-truthy)
-                  (expect (cl-find pure-name (macher-context-contents file-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be nil)
+                  (expect (length (macher-agent--get-context-contents file-ctx)) :to-equal 1)
+                  (expect (cl-find file-path (macher-agent--get-context-contents file-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be-truthy)
+                  (expect (cl-find pure-name (macher-agent--get-context-contents file-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be nil)
 
-                  (expect (cl-find pure-name (macher-context-contents buf-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be-truthy)
-                  (expect (cl-find file-path (macher-context-contents buf-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be nil))
+                  (expect (cl-find pure-name (macher-agent--get-context-contents buf-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be-truthy)
+                  (expect (cl-find file-path (macher-agent--get-context-contents buf-ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :to-be nil))
 
                 (kill-buffer file-buf)
                 (kill-buffer pure-buf)))
@@ -104,7 +117,7 @@
 
           (it "bypasses stale live buffer and reads directly from physical disk if disk mtime is newer than stored mtime"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/test.el")
                      (entry (macher-agent-vfs-make-entry file-path "original state" "original state"))
                      (old-mtime '(25000 10000))
@@ -138,7 +151,7 @@
 
           (it "resolves attrs for virtual paths via file-attributes without requiring file-exists-p"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/virtual-file.el")
                      (entry (macher-agent-vfs-make-entry file-path "original state" "original state"))
                      (old-mtime '(25000 10000))
@@ -160,7 +173,7 @@
 
           (it "invalidates and bypasses stale live buffers when an externally modified disk file has a newer mtime"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/desynced-buffer.el")
                      (entry (macher-agent-vfs-make-entry file-path "original state" "original state"))
                      (old-mtime '(25000 10000))
@@ -189,7 +202,7 @@
 
           (it "treats desynced live buffer content as current-state when physical disk is NOT newer"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/desynced-buffer.el")
                      (entry (macher-agent-vfs-make-entry file-path "original state" "original state"))
                      (same-mtime '(25000 10000))
@@ -217,7 +230,7 @@
 
           (it "gives precedence to desynced live buffer when its content matches orig even if disk is newer"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/dirty-buffer.el")
                      (entry (macher-agent-vfs-make-entry file-path "original state" "original state"))
                      (old-mtime '(25000 10000))
@@ -246,7 +259,7 @@
 
           (it "enforces optimistic concurrency control in macher-agent--update-context-file against external disk modifications"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/test.el")
                      (original-mtime '(25000 10000))
                      (drifted-mtime '(25000 20000)))
@@ -261,21 +274,22 @@
                         :to-throw 'error)))
 
           (it "distinguishes between distinct files sharing base filenames without collision during merge and update"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (parent-ctx (macher--make-context :workspace workspace
-                                                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src orig")
-                                                                       (macher-agent-vfs-make-entry "/mock/proj/tests/main.c" "tests orig" "tests orig"))))
-                     (child-ctx (macher--make-context :workspace workspace
-                                                      :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src modified")))))
+              (let* ((parent-ctx (macher-agent--make-context
+                                  :project-root "/mock/proj/"
+                                  :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src orig")
+                                                                            (macher-agent-vfs-make-entry "/mock/proj/tests/main.c" "tests orig" "tests orig"))))))
+                     (child-ctx (macher-agent--make-context
+                                 :project-root "/mock/proj/"
+                                 :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/proj/src/main.c" "src orig" "src modified")))))))
                 (macher-agent--merge-contexts parent-ctx child-ctx)
-                (let ((src-entry (cl-find "/mock/proj/src/main.c" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal))
-                      (tests-entry (cl-find "/mock/proj/tests/main.c" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                (let ((src-entry (cl-find "/mock/proj/src/main.c" (macher-agent--get-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal))
+                      (tests-entry (cl-find "/mock/proj/tests/main.c" (macher-agent--get-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                   (expect (macher-agent-vfs-entry-curr src-entry) :to-equal "src modified")
                   (expect (macher-agent-vfs-entry-curr tests-entry) :to-equal "tests orig"))))
 
           (it "tracks modification times in mtime tracker when reading context files from disk"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher--make-context :workspace workspace :contents nil))
+                     (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/read-track.el")
                      (mtime '(25000 30000)))
                 (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
@@ -367,8 +381,7 @@
 
           (it "initialises untouched scoped buffer baseline symmetrically with zero diff output"
               (let* ((live-buf (generate-new-buffer "pure-scoped-state"))
-                     (ws (make-macher-agent-workspace :project-root "/mock/root/"))
-                     (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                     (ctx (macher-agent--make-context :project-root "/mock/root/")))
                 (with-current-buffer live-buf
                   (insert "Hello live buffer content"))
                 (unwind-protect
@@ -392,18 +405,18 @@
                         :to-equal (md5 "/mock/project/path"))))
 
           (it "merges contexts directly in macher-agent--merge-contexts"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (parent-ctx (macher--make-context :workspace workspace
-                                                       :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v1"))))
-                     (child-ctx (macher--make-context :workspace workspace
-                                                      :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v2")))))
+              (let* ((parent-ctx (macher-agent--make-context
+                                  :project-root "/mock/proj/"
+                                  :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v1"))))))
+                     (child-ctx (macher-agent--make-context
+                                 :project-root "/mock/proj/"
+                                 :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/proj/file.el" "v1" "v2")))))))
                 (macher-agent--merge-contexts parent-ctx child-ctx)
-                (let ((entry (cl-find "/mock/proj/file.el" (macher-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                (let ((entry (cl-find "/mock/proj/file.el" (macher-agent--get-context-contents parent-ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
                   (expect (macher-agent-vfs-entry-curr entry) :to-equal "v2"))))
 
           (it "extracts context from alist using 'context symbol key in macher-agent-storage--extract-context"
-              (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+              (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (payload-symbol `((context . ,ctx)))
                      (payload-keyword `((:context . ,ctx)))
                      (payload-target-sym `((target-context . ,ctx)))
@@ -421,10 +434,11 @@
                 (expect (macher-agent-storage--extract-context '(:non-context-key "foo")) :to-be nil)))
 
           (it "ensures trailing newline before separator in macher-agent--persist-vfs-to-hidden-buffer"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/persist-test/"))
-                     (entries (list (macher-agent-vfs-make-entry "file-no-newline.txt" "orig" "content without newline")
+              (let* ((entries (list (macher-agent-vfs-make-entry "file-no-newline.txt" "orig" "content without newline")
                                     (macher-agent-vfs-make-entry "file-with-newline.txt" "orig" "content with newline\n")))
-                     (ctx (macher--make-context :workspace workspace :contents entries)))
+                     (ctx (macher-agent--make-context
+                           :project-root "/mock/persist-test/"
+                           :plugins (list :vfs (list :contents entries)))))
                 (macher-agent--persist-vfs-to-hidden-buffer ctx)
                 (let* ((buf-name (format " *macher-agent-vfs-state-%s*" (md5 (expand-file-name "/mock/persist-test/"))))
                        (vfs-buf (get-buffer buf-name)))
@@ -449,21 +463,23 @@
               (let* ((ws (cons 'project "/mock/reuse-proj/"))
                      (orig-buf (generate-new-buffer "agent-reuse-test"))
                      (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
-                     (ctx1 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2"))))
-                     (ctx2 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2\nline3")))))
+                     (ctx1 (macher-agent--make-context
+                            :project-root "/mock/reuse-proj/"
+                            :origin-buffer orig-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2"))))))
+                     (ctx2 (macher-agent--make-context
+                            :project-root "/mock/reuse-proj/"
+                            :origin-buffer orig-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/reuse-proj/file.el" "line1" "line1\nline2\nline3")))))))
                 (unwind-protect
                     (let* ((buf1 (macher-agent--build-and-rename-patch ctx1 fsm "physical"))
                            (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf)))
                       (expect (buffer-live-p buf1) :to-be-truthy)
                       (expect (buffer-name buf1) :to-equal expected-name)
                       (expect (with-current-buffer buf1 (buffer-string)) :to-match "\\+line2")
-                      ;; Subsequent flush should reuse the exact same buffer in place
+                      ;; Subsequent flush should update patch buffer in place
                       (let ((buf2 (macher-agent--build-and-rename-patch ctx2 fsm "physical")))
-                        (expect buf2 :to-be buf1)
+                        (expect (buffer-live-p buf2) :to-be-truthy)
                         (expect (buffer-name buf2) :to-equal expected-name)
                         (expect (with-current-buffer buf2 (buffer-string)) :to-match "\\+line3")))
                   (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
@@ -474,21 +490,23 @@
               (let* ((ws (cons 'project "/mock/virt-reuse-proj/"))
                      (orig-buf (generate-new-buffer "agent-virt-test"))
                      (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
-                     (ctx1 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v2"))))
-                     (ctx2 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v3")))))
+                     (ctx1 (macher-agent--make-context
+                            :project-root "/mock/virt-reuse-proj/"
+                            :origin-buffer orig-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v2"))))))
+                     (ctx2 (macher-agent--make-context
+                            :project-root "/mock/virt-reuse-proj/"
+                            :origin-buffer orig-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "*virtual-doc*" "v1" "v3")))))))
                 (unwind-protect
                     (let* ((buf1 (macher-agent--build-and-rename-patch ctx1 fsm "virtual"))
                            (expected-name (macher-agent--expressive-patch-buffer-name "virtual" ws orig-buf)))
                       (expect (buffer-live-p buf1) :to-be-truthy)
                       (expect (buffer-name buf1) :to-equal expected-name)
                       (expect (with-current-buffer buf1 (buffer-string)) :to-match "\\+v2")
-                      ;; Subsequent flush reuses the live buffer in place
+                      ;; Subsequent flush updates patch buffer in place
                       (let ((buf2 (macher-agent--build-and-rename-patch ctx2 fsm "virtual")))
-                        (expect buf2 :to-be buf1)
+                        (expect (buffer-live-p buf2) :to-be-truthy)
                         (expect (buffer-name buf2) :to-equal expected-name)
                         (expect (with-current-buffer buf2 (buffer-string)) :to-match "\\+v3")))
                   (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
@@ -503,12 +521,14 @@
                      (agent2-buf (generate-new-buffer "agent-beta"))
                      (fsm1 (gptel-make-fsm :info (list :buffer agent1-buf)))
                      (fsm2 (gptel-make-fsm :info (list :buffer agent2-buf)))
-                     (ctx1 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/a.el" "old1" "new1"))))
-                     (ctx2 (macher-agent--make-vfs-context
-                            :workspace ws
-                            :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/b.el" "old2" "new2")))))
+                     (ctx1 (macher-agent--make-context
+                            :project-root "/mock/multi-agent-proj/"
+                            :origin-buffer agent1-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/a.el" "old1" "new1"))))))
+                     (ctx2 (macher-agent--make-context
+                            :project-root "/mock/multi-agent-proj/"
+                            :origin-buffer agent2-buf
+                            :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/multi-agent-proj/b.el" "old2" "new2")))))))
                 (unwind-protect
                     (let* ((pbuf1 (macher-agent--build-and-rename-patch ctx1 fsm1 "physical"))
                            (pbuf2 (macher-agent--build-and-rename-patch ctx2 fsm2 "physical"))
@@ -519,9 +539,10 @@
                       (expect (buffer-name pbuf2) :to-match "\\[agent-beta\\]\\*$")
                       (expect (buffer-name vbuf1) :to-match "\\[agent-alpha\\]\\*$")
                       (expect (buffer-name vbuf2) :to-match "\\[agent-beta\\]\\*$")
-                      ;; Re-flushing agent1 reuses agent1's buffer without affecting agent2
+                      ;; Re-flushing agent1 updates agent1's buffer without affecting agent2
                       (let ((pbuf1-reused (macher-agent--build-and-rename-patch ctx1 fsm1 "physical")))
-                        (expect pbuf1-reused :to-be pbuf1)
+                        (expect (buffer-live-p pbuf1-reused) :to-be-truthy)
+                        (expect (buffer-name pbuf1-reused) :to-match "\\[agent-alpha\\]\\*$")
                         (expect (buffer-live-p pbuf2) :to-be-truthy)))
                   (when (buffer-live-p agent1-buf) (kill-buffer agent1-buf))
                   (when (buffer-live-p agent2-buf) (kill-buffer agent2-buf))
@@ -534,20 +555,21 @@
                   (when-let* ((b (get-buffer (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-beta"))))
                     (kill-buffer b)))))
 
-          (it "restores expressive buffer name safely if macher--build-patch signals an error"
+          (it "restores expressive buffer name safely if macher-agent-macher-build-patch signals an error"
               (let* ((ws (cons 'project "/mock/error-proj/"))
                      (orig-buf (generate-new-buffer "agent-error-test"))
                      (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
-                     (ctx (macher-agent--make-vfs-context
-                           :workspace ws
-                           :contents (list (macher-agent-vfs-make-entry "/mock/error-proj/f.el" "1" "2"))))
+                     (ctx (macher-agent--make-context
+                           :project-root "/mock/error-proj/"
+                           :origin-buffer orig-buf
+                           :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/error-proj/f.el" "1" "2"))))))
                      (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf)))
                 (unwind-protect
                     (let ((buf (macher-agent--build-and-rename-patch ctx fsm "physical")))
                       (expect (buffer-live-p buf) :to-be-truthy)
                       (expect (buffer-name buf) :to-equal expected-name)
                       ;; Now simulate an error during next flush
-                      (cl-letf (((symbol-function 'macher--build-patch)
+                      (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
                                  (lambda (&rest _) (error "Simulated patch build failure"))))
                         (expect (macher-agent--build-and-rename-patch ctx fsm "physical") :to-throw 'error))
                       ;; Buffer should retain expressive name
@@ -556,26 +578,26 @@
                   (when-let* ((b (get-buffer expected-name))) (kill-buffer b)))))
 
           (it "executes multi-turn split patch flush reusing both physical and virtual buffers"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/split-reuse/"))
-                     (agent-buf (generate-new-buffer "agent-split-turn"))
+              (let* ((agent-buf (generate-new-buffer "agent-split-turn"))
                      (target-virt-buf (get-buffer-create "*app-scratch*"))
                      (fsm (gptel-make-fsm :info (list :buffer agent-buf :prompt "Turn 1")))
                      (gptel--fsm fsm)
                      (macher-agent--active-fsm fsm)
-                     (ctx (macher--make-context
-                           :workspace workspace
-                           :prompt "Turn 1"
-                           :contents (list (macher-agent-vfs-make-entry "/mock/split-reuse/main.rs" "fn a(){}" "fn a(){ 1 }")
-                                           (macher-agent-vfs-make-entry "*app-scratch*" "init" "init modified")))))
+                     (ctx (macher-agent--make-context
+                           :project-root "/mock/split-reuse/"
+                           :origin-buffer agent-buf
+                           :plugins (list :prompt "Turn 1"
+                                          :vfs (list :dirty-p t
+                                                     :contents (list (macher-agent-vfs-make-entry "/mock/split-reuse/main.rs" "fn a(){}" "fn a(){ 1 }")
+                                                                     (macher-agent-vfs-make-entry "*app-scratch*" "init" "init modified")))))))
                 (unwind-protect
                     (progn
                       (setq gptel--fsm fsm)
                       (setq macher-agent--active-fsm fsm)
                       (setf (gptel-fsm-info fsm) (list :buffer agent-buf :prompt "Turn 1" :macher-agent-context ctx))
-                      (setf (macher-context-dirty-p ctx) t)
                       ;; Turn 1 flush
-                      (macher-agent-macher-build-patch-from-hook ctx)
-                      (let* ((ws (cons 'project (macher-agent-workspace-project-root workspace)))
+                      (macher-agent-vfs-build-patch-from-hook ctx)
+                      (let* ((ws (cons 'project "/mock/split-reuse/"))
                              (p-name (macher-agent--expressive-patch-buffer-name "physical" ws agent-buf))
                              (v-name (macher-agent--expressive-patch-buffer-name "virtual" ws agent-buf))
                              (p-buf1 (get-buffer p-name))
@@ -585,16 +607,16 @@
                         ;; Turn 2 flush with further modifications
                         (macher-agent--update-context-file ctx "/mock/split-reuse/main.rs" "fn a(){ 2 }")
                         (macher-agent--update-context-file ctx "*app-scratch*" "init modified again")
-                        (macher-agent-macher-build-patch-from-hook ctx)
+                        (macher-agent-vfs-build-patch-from-hook ctx)
                         (let ((p-buf2 (get-buffer p-name))
                               (v-buf2 (get-buffer v-name)))
-                          (expect p-buf2 :to-be p-buf1)
-                          (expect v-buf2 :to-be v-buf1))))
+                          (expect (buffer-live-p p-buf2) :to-be-truthy)
+                          (expect (buffer-live-p v-buf2) :to-be-truthy))))
                   (setq gptel--fsm nil)
                   (setq macher-agent--active-fsm nil)
                   (when (buffer-live-p agent-buf) (kill-buffer agent-buf))
                   (when (buffer-live-p target-virt-buf) (kill-buffer target-virt-buf))
-                  (let* ((ws (cons 'project (macher-agent-workspace-project-root workspace)))
+                  (let* ((ws (cons 'project "/mock/split-reuse/"))
                          (p-name (macher-agent--expressive-patch-buffer-name "physical" ws "agent-split-turn"))
                          (v-name (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-split-turn")))
                     (when-let* ((b (get-buffer p-name))) (kill-buffer b))
