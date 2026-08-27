@@ -259,6 +259,29 @@
               (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil))))
         (kill-buffer buf)))
 
+  (it "picks up external live buffer modifications on subsequent read_buffer_in_workspace calls"
+      (let* ((buf (generate-new-buffer "live-mod-buf"))
+             (ctx (macher--make-context :contents nil))
+             (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
+        (with-current-buffer buf
+          (insert "initial buffer text"))
+        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+        (spy-on 'macher-agent--ensure-access)
+        (with-macher-agent-mock-fsm ctx
+          (let ((res1 (funcall read-fn nil "live-mod-buf")))
+            (expect res1 :to-equal "initial buffer text")
+            ;; Externally modify the live buffer
+            (with-current-buffer buf
+              (erase-buffer)
+              (insert "externally updated buffer text"))
+            ;; Subsequent read must synchronise and return the updated content
+            (let ((res2 (funcall read-fn nil "live-mod-buf")))
+              (expect res2 :to-equal "externally updated buffer text")
+              (let ((entry (cl-find "live-mod-buf" (macher-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
+                (expect (macher-agent-vfs-entry-curr entry) :to-equal "externally updated buffer text")
+                (expect (macher-agent-vfs-entry-orig entry) :to-equal "externally updated buffer text")))))
+        (kill-buffer buf)))
+
   (it "synchronises context seamlessly when interleaving macher-agent and macher tools"
       (let* ((proj-dir (file-name-as-directory (expand-file-name "tests/fixtures/interleave-proj")))
              (file-path (concat proj-dir "interleave.txt")))
