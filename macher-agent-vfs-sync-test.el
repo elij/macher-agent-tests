@@ -349,19 +349,39 @@
                 (expect (gethash resource macher-agent--vfs-lock-table) :to-equal (cons "task-2" 1))
                 (expect cb-result :to-equal "Resource lock acquired.")))
 
-          (it "classifies live buffers and asterisk buffers before slash-based file matching"
-              (let* ((asterisk-slash-buf "*worker/subagent*")
+          (it "classifies live buffers purely on runtime buffer state without asterisk heuristics"
+              (let* ((pure-buf (generate-new-buffer "worker-subagent"))
                      (live-buf (generate-new-buffer "live-no-file-buffer"))
                      (live-buf-slash (generate-new-buffer "live/buffer/slash")))
                 (unwind-protect
                     (progn
-                      (expect (macher-agent--classify-file-path asterisk-slash-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path pure-buf "/mock/root") :to-equal 'buffer)
+                      (expect (macher-agent--classify-file-path "worker-subagent" "/mock/root") :to-equal 'buffer)
                       (expect (macher-agent--classify-file-path live-buf "/mock/root") :to-equal 'buffer)
                       (expect (macher-agent--classify-file-path live-buf-slash "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent--classify-file-path "*scratch*" "/mock/root") :to-equal 'buffer)
-                      (expect (macher-agent--classify-file-path "src/main.rs" "/mock/root") :to-equal 'file))
+                      (expect (macher-agent--classify-file-path "src/main.rs" "/mock/root") :to-equal 'file)
+                      (expect (macher-agent--classify-file-path "/mock/external/file.txt" "/mock/root") :to-equal 'external))
+                  (kill-buffer pure-buf)
                   (kill-buffer live-buf)
                   (kill-buffer live-buf-slash))))
+
+          (it "initialises untouched scoped buffer baseline symmetrically with zero diff output"
+              (let* ((live-buf (generate-new-buffer "pure-scoped-state"))
+                     (ws (make-macher-agent-workspace :project-root "/mock/root/"))
+                     (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                (with-current-buffer live-buf
+                  (insert "Hello live buffer content"))
+                (unwind-protect
+                    (progn
+                      (macher-agent--update-context-file ctx "pure-scoped-state" "Hello live buffer content")
+                      (let ((entry (cl-find "pure-scoped-state" (macher-agent--get-context-contents ctx) :key #'car :test #'equal)))
+                        (expect entry :not :to-be nil)
+                        (expect (macher-agent-vfs-entry-orig entry) :to-equal "Hello live buffer content")
+                        (expect (macher-agent-vfs-entry-curr entry) :to-equal "Hello live buffer content")
+                        (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil)
+                        (let ((payload (list :context ctx :child-context ctx)))
+                          (expect (plist-get (macher-agent-prepare-upstream-payloads payload) :diff) :to-be nil))))
+                  (kill-buffer live-buf))))
 
           (it "computes safe workspace hash inspecting unwrapped project cons cells"
               (let ((ws-cons '(agent project . "/mock/project/path"))
@@ -538,6 +558,7 @@
           (it "executes multi-turn split patch flush reusing both physical and virtual buffers"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/split-reuse/"))
                      (agent-buf (generate-new-buffer "agent-split-turn"))
+                     (target-virt-buf (get-buffer-create "*app-scratch*"))
                      (fsm (gptel-make-fsm :info (list :buffer agent-buf :prompt "Turn 1")))
                      (gptel--fsm fsm)
                      (macher-agent--active-fsm fsm)
@@ -572,6 +593,7 @@
                   (setq gptel--fsm nil)
                   (setq macher-agent--active-fsm nil)
                   (when (buffer-live-p agent-buf) (kill-buffer agent-buf))
+                  (when (buffer-live-p target-virt-buf) (kill-buffer target-virt-buf))
                   (let* ((ws (cons 'project (macher-agent-workspace-project-root workspace)))
                          (p-name (macher-agent--expressive-patch-buffer-name "physical" ws "agent-split-turn"))
                          (v-name (macher-agent--expressive-patch-buffer-name "virtual" ws "agent-split-turn")))
