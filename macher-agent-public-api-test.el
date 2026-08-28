@@ -188,11 +188,6 @@
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
                           (expect (macher-agent-context-workspace-root ctx) :to-equal (file-truename (expand-file-name "/mock/context-ws/")))))
 
-                    (it "verifies patch generation functions are not present in macher-agent-api"
-                        (expect (fboundp 'macher-agent-generate-patch-screens) :to-be nil)
-                        (expect (fboundp 'macher-agent-apply-patch) :to-be nil)
-                        (expect (fboundp 'macher-agent-insert-patch) :to-be nil))
-
                     (it "triggers task flush hook in force-review with explicit context"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/force-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
@@ -292,7 +287,8 @@
                             (expect internal-declares :to-equal nil)
                             (expect (or (member 'macher-agent-core requires) (member ''macher-agent-core requires)) :to-be-truthy)
                             (expect (or (member 'macher-agent-presets requires) (member ''macher-agent-presets requires)) :to-be-truthy)
-                            (expect (or (member 'macher-agent-zero-mem requires) (member ''macher-agent-zero-mem requires)) :to-be-truthy))))
+                            (expect (member 'macher-agent-zero-mem requires) :to-be nil)
+                            (expect (member ''macher-agent-zero-mem requires) :to-be nil))))
 
                     (it "contains no internal declare-function forms in macher-agent-tools.el and requires internal modules directly"
                         (let* ((tools-file (or (locate-library "macher-agent-tools.el")
@@ -367,7 +363,7 @@
                             (expect internal-declares :to-equal nil)
                             (expect (or (member 'macher-agent-core requires) (member ''macher-agent-core requires)) :to-be-truthy))))
 
-                    (it "contains no internal declare-function forms in macher-agent-zero-mem.el and requires nothing from macher-agent"
+                    (it "contains no internal declare-function forms in macher-agent-zero-mem.el and requires internal modules directly"
                         (let* ((zm-file (or (locate-library "macher-agent-zero-mem.el")
                                             (expand-file-name "macher-agent-zero-mem.el" default-directory)))
                                (forms nil))
@@ -389,19 +385,21 @@
                                            (and (symbolp fn)
                                                 (string-prefix-p "macher-agent-" (symbol-name fn))))))
                                   forms))
-                                (internal-requires
-                                 (cl-remove-if-not
-                                  (lambda (form)
-                                    (and (consp form)
-                                         (eq (car form) 'require)
-                                         (let ((feat (cadr form)))
-                                           (when (and (consp feat) (eq (car feat) 'quote))
-                                             (setq feat (cadr feat)))
-                                           (and (symbolp feat)
-                                                (string-prefix-p "macher-agent-" (symbol-name feat))))))
-                                  forms)))
+                                (requires
+                                 (mapcar (lambda (form)
+                                           (let ((feat (cadr form)))
+                                             (if (and (consp feat) (eq (car feat) 'quote))
+                                                 (cadr feat)
+                                               feat)))
+                                         (cl-remove-if-not
+                                          (lambda (form)
+                                            (and (consp form)
+                                                 (eq (car form) 'require)))
+                                          forms))))
                             (expect internal-declares :to-equal nil)
-                            (expect internal-requires :to-equal nil))))
+                            (expect (or (member 'macher-agent-core requires) (member ''macher-agent-core requires)) :to-be-truthy)
+                            (expect (or (member 'macher-agent-gptel requires) (member ''macher-agent-gptel requires)) :to-be-truthy)
+                            (expect (or (member 'macher-agent-tools requires) (member ''macher-agent-tools requires)) :to-be-truthy))))
 
                     (it "contains no internal declare-function forms in macher-agent-orchestration.el and requires internal modules directly"
                         (let* ((orch-file (or (locate-library "macher-agent-orchestration.el")

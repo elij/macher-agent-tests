@@ -436,7 +436,241 @@ Populates TARGET-BUFFER with raw text and returns a list of raw trace plists."
                           
                           ;; Assert the test concludes successfully
                           (expect (buffer-live-p test-buf) :to-be t)
-                          (kill-buffer test-buf)))))
+                          (kill-buffer test-buf))))
+
+          (describe "7. Non-Destructive Wire Pruning"
+                    (it "truncates transmission buffer without modifying live orig-buf"
+                        (let* ((orig-buf (generate-new-buffer " *test-live-orig-buf*"))
+                               (tx-buf (generate-new-buffer " *test-ephemeral-tx-buf*"))
+                               (initial-text "---\nkey: val\n---\nPrompt 1\n")
+                               (resp-text "Response from model 1\n")
+                               (query-text "Latest user query content\n"))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer orig-buf
+                                  (insert initial-text)
+                                  (let ((start (point)))
+                                    (insert resp-text)
+                                    (put-text-property start (point) 'gptel 'response))
+                                  (insert query-text))
+                                (let ((orig-content (with-current-buffer orig-buf (buffer-string))))
+                                  ;; Populate transmission wire buffer with same content
+                                  (with-current-buffer tx-buf
+                                    (insert orig-content))
+                                  ;; Run wire pruning in transmission buffer context with tight limit
+                                  (with-current-buffer tx-buf
+                                    (let ((macher-agent-max-context-chars '((nil . 25))))
+                                      (macher-agent-memory-pipe--truncate-buffer nil orig-buf nil nil nil)))
+                                  ;; Transmission wire buffer is truncated with alert
+                                  (expect (with-current-buffer tx-buf (buffer-string))
+                                          :to-match "SYSTEM ALERT: macher-agent truncated")
+                                  (expect (with-current-buffer tx-buf (buffer-string))
+                                          :to-match "Latest user query content")
+                                  ;; Live orig-buf is completely unmodified and intact
+                                  (expect (with-current-buffer orig-buf (buffer-string))
+                                          :to-equal orig-content)))
+                            (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                            (when (buffer-live-p tx-buf) (kill-buffer tx-buf))))))
+
+          (describe "8. Event Horizon Query Filtering and Turn Demarcation"
+                    (it "demarcates prompt and response turns and records line and offset metadata"
+                        (let ((buf (generate-new-buffer " *test-turn-demarcate*")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer buf
+                                  (insert "User turn 1 line\n")
+                                  (let ((p (point)))
+                                    (insert "Assistant response line\n")
+                                    (put-text-property p (point) 'gptel 'response))
+                                  (insert "User turn 2 line\n"))
+                                (let ((traces (macher-agent-zero-mem--buffer-to-traces buf)))
+                                  (expect (length traces) :to-equal 3)
+                                  (let ((t1 (nth 0 traces))
+                                        (t2 (nth 1 traces))
+                                        (t3 (nth 2 traces)))
+                                    (expect (plist-get (plist-get t1 :metadata) :type) :to-equal :prompt)
+                                    (expect (plist-get (plist-get t2 :metadata) :type) :to-equal :response)
+                                    (expect (plist-get (plist-get t3 :metadata) :type) :to-equal :prompt)
+                                    (expect (plist-get (plist-get t1 :metadata) :turn) :to-equal 1)
+                                    (expect (plist-get (plist-get t2 :metadata) :turn) :to-equal 2)
+                                    (expect (plist-get (plist-get t3 :metadata) :turn) :to-equal 3)
+                                    (expect (plist-get (plist-get t1 :metadata) :line) :to-equal 1)
+                                    (expect (plist-get (plist-get t2 :metadata) :line) :to-equal 2)
+                                    (expect (plist-get (plist-get t3 :metadata) :line) :to-equal 3)
+                                    (expect (plist-get (plist-get t1 :metadata) :offset) :to-equal 1)
+                                    (expect (> (plist-get (plist-get t2 :metadata) :offset) 1) :to-be t)
+                                    (expect (> (plist-get (plist-get t3 :metadata) :offset)
+                                               (plist-get (plist-get t2 :metadata) :offset)) :to-be t))))
+                            (when (buffer-live-p buf) (kill-buffer buf)))))
+
+                    (it "filters search_conversation_history to only return traces before event horizon"
+                        (let* ((orig-buf (generate-new-buffer " *test-horizon-filter*"))
+                               (tx-buf (generate-new-buffer " *test-tx-horizon*")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer orig-buf
+                                  (insert "Early historical trace with UniqueTokenAlpha\n")
+                                  (let ((p (point)))
+                                    (insert "Previous response boundary with UniqueTokenBeta\n")
+                                    (put-text-property p (point) 'gptel 'response))
+                                  (insert "Active context window with UniqueTokenGamma\n"))
+                                ;; Truncate tx-buf to establish event horizon on orig-buf
+                                (with-current-buffer tx-buf
+                                  (insert (with-current-buffer orig-buf (buffer-string))))
+                                (with-current-buffer tx-buf
+                                  (let ((macher-agent-max-context-chars '((nil . 45))))
+                                    (macher-agent-memory-pipe--truncate-buffer nil orig-buf nil nil nil)))
+                                ;; Search for earlier token before event horizon
+                                (let ((res-early (macher-agent-memory-search-zero-mem "UniqueTokenAlpha" orig-buf 2)))
+                                  (expect res-early :to-match "Match near line 1")
+                                  (expect res-early :to-match "UniqueTokenAlpha"))
+                                ;; Search for active window token located past event horizon -> filtered out
+                                (let ((res-active (macher-agent-memory-search-zero-mem "UniqueTokenGamma" orig-buf 2)))
+                                  (expect res-active :to-match "^No matches found in history for:"))
+                                ;; Verify search dispatch backend routing
+                                (let ((macher-agent-search-backend-function #'macher-agent-memory-search-zero-mem))
+                                  (expect (macher-agent-search-dispatch "UniqueTokenAlpha" orig-buf 2) :to-match "UniqueTokenAlpha")
+                                  (expect (macher-agent-search-dispatch "UniqueTokenGamma" orig-buf 2) :to-match "^No matches found in history for:")))
+                            (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                            (when (buffer-live-p tx-buf) (kill-buffer tx-buf))))))
+
+          (describe "9. Stationary Calculated Parent Graph Snapshot"
+                    (it "uses stationary parent graph snapshot at delegation time without re-indexing parent buffer"
+                        (let* ((parent-buf (generate-new-buffer " *test-parent-snapshot-buf*"))
+                               (child-buf (generate-new-buffer " *test-child-snapshot-buf*")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer parent-buf
+                                  (insert "Turn 1: Database credentials stored under DB_SECRET_KEY\n")
+                                  (insert "Turn 2: Service discovery on port 8080\n"))
+                                ;; Persist parent interaction at delegation time
+                                (let ((parent-graph (macher-agent-memory--persist-interaction parent-buf)))
+                                  (expect parent-graph :not :to-be nil)
+                                  (with-current-buffer child-buf
+                                    (macher-agent--push-routing "task-snapshot-101" (buffer-name parent-buf)))
+                                  ;; Modify parent buffer after delegation
+                                  (with-current-buffer parent-buf
+                                    (insert "Turn 3: Post-delegation live buffer modification\n"))
+                                  ;; Child searching parent uses stationary snapshot directly
+                                  (spy-on 'macher-agent-zero-mem--buffer-to-traces :and-call-through)
+                                  (let ((res (macher-agent-memory-search-zero-mem "DB_SECRET_KEY" parent-buf 2)))
+                                    (expect res :to-match "DB_SECRET_KEY")
+                                    ;; Does not re-index the parent live buffer
+                                    (expect 'macher-agent-zero-mem--buffer-to-traces :not :to-have-been-called))))
+                            (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+                            (when (buffer-live-p child-buf) (kill-buffer child-buf))))))
+
+          (describe "10. Autonomous Plugin Registration and Agnostic Core"
+                    (it "registers and unregisters pipeline steps dynamically"
+                        (let ((saved-registry (copy-hash-table macher-agent-pipeline-registry)))
+                          (unwind-protect
+                              (progn
+                                (clrhash macher-agent-pipeline-registry)
+                                (macher-agent-zero-mem-install)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be-truthy))
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
+                                (macher-agent-zero-mem-uninstall)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
+                                  (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be nil)
+                                  (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be nil))
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
+                            (setq macher-agent-pipeline-registry saved-registry))))
+
+          (describe "11. Plugin State Isolation in Context Plugins"
+                    (it "verifies macher-agent-context has no dedicated zero-mem slot and accessor is unbound"
+                        (expect (fboundp 'macher-agent-context-zero-mem) :to-be nil)
+                        (let ((ctx (make-macher-agent-context :id "test-slotless-ctx")))
+                          (expect (macher-agent-context-p ctx) :to-be t)
+                          (expect (macher-agent-context-plugins ctx) :to-be nil)
+                          (expect (macher-agent-zero-mem-get-state ctx) :to-be nil)))
+
+                    (it "reads and writes zero-mem state strictly inside context plugins plist"
+                        (let ((ctx (make-macher-agent-context :id "test-ctx" :plugins '(:existing-key "val"))))
+                          ;; Initial state
+                          (expect (macher-agent-zero-mem-get-state ctx) :to-be nil)
+                          ;; Set state via helper
+                          (macher-agent-zero-mem-set-state ctx '(:traces ((:id 1 :text "node1"))))
+                          ;; Verify getter retrieves the state
+                          (expect (macher-agent-zero-mem-get-state ctx) :to-equal '(:traces ((:id 1 :text "node1"))))
+                          ;; Verify state is stored under :zero-mem in plugins plist
+                          (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem)
+                                  :to-equal '(:traces ((:id 1 :text "node1"))))
+                          ;; Verify other plugin keys remain intact
+                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key)
+                                  :to-equal "val")
+                          ;; Update state again
+                          (let ((graph (macher-agent-zero-mem-build-graph
+                                        (list '(:id 1 :text "Alpha node")
+                                              '(:id 2 :text "Beta node")))))
+                            (macher-agent-zero-mem-set-state ctx graph)
+                            (expect (macher-agent-zero-mem-get-state ctx) :to-equal graph)
+                            (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal graph))))
+
+                    (it "handles raw plist contexts seamlessly with get-state and set-state"
+                        (let ((raw-ctx (list :id "raw-ctx-1" :zero-mem '(:graph "raw-graph"))))
+                          (expect (macher-agent-zero-mem-get-state raw-ctx) :to-equal '(:graph "raw-graph"))
+                          (let ((updated (macher-agent-zero-mem-set-state raw-ctx '(:graph "new-graph"))))
+                            (expect updated :to-equal '(:graph "new-graph")))))
+
+                    (it "persists interaction graph directly into context plugins via persist-interaction"
+                        (let* ((buf (generate-new-buffer " *test-persist-plugins*"))
+                               (ctx (make-macher-agent-context :id "persist-ctx")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer buf
+                                  (setq-local macher-agent--persistent-context ctx)
+                                  (insert "Turn 1: Server running on port 9000\n"))
+                                (let ((graph (macher-agent-memory--persist-interaction buf)))
+                                  (expect graph :not :to-be nil)
+                                  ;; State must be in context plugins :zero-mem
+                                  (expect (macher-agent-zero-mem-get-state ctx) :to-equal graph)
+                                  (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal graph)))
+                            (when (buffer-live-p buf) (kill-buffer buf)))))
+
+                    (it "retrieves stationary graph from parent context plugins during subagent parent context injection"
+                        (let* ((parent-buf (generate-new-buffer " *test-parent-plugins-buf*"))
+                               (child-buf (generate-new-buffer " *test-child-plugins-buf*"))
+                               (parent-ctx (make-macher-agent-context :id "parent-ctx"))
+                               (child-ctx (make-macher-agent-context :id "child-ctx")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer parent-buf
+                                  (setq-local macher-agent--persistent-context parent-ctx)
+                                  (insert "Turn 1: Database credentials stored under PROD_DB_SECRET\n")
+                                  (insert "Turn 2: API gateway configuration\n"))
+                                ;; Persist parent interaction to initialize parent context state
+                                (let ((parent-graph (macher-agent-memory--persist-interaction parent-buf)))
+                                  (expect (macher-agent-zero-mem-get-state parent-ctx) :to-equal parent-graph)
+                                  (with-current-buffer child-buf
+                                    (setq-local macher-agent--persistent-context child-ctx)
+                                    (macher-agent--push-routing "task-plugins-101" (buffer-name parent-buf))
+                                    (insert "Retrieve PROD_DB_SECRET from parent."))
+                                  (let* ((state (make-macher-agent-transmission-state
+                                                 :target-buffer child-buf
+                                                 :directives nil))
+                                         (updated-state (macher-agent-pipe--inject-parent-context
+                                                         state child-buf nil nil nil))
+                                         (dirs (macher-agent-transmission-state-directives updated-state)))
+                                    (expect (length dirs) :to-be-greater-than 0)
+                                    (let ((text (string-join dirs "\n\n")))
+                                      (expect text :to-match "<parent_conversation_context>")
+                                      (expect text :to-match "PROD_DB_SECRET")))))
+                            (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+                            (when (buffer-live-p child-buf) (kill-buffer child-buf))))))))
 
 (provide 'macher-agent-zero-mem-test)
 ;;; macher-agent-zero-mem-test.el ends here

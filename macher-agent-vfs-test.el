@@ -29,27 +29,11 @@
                           (expect (macher-agent-vfs--get-state ctx) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
                           (expect (plist-get (macher-agent-context-plugins ctx) :vfs) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))))
 
-                    (it "reads and writes contents, dirty flag, shadow buffers, and origin buffer via VFS state accessors"
-                        (let ((ctx (macher-agent--make-context :id "ctx-env-2" :project-root "/mock/env-proj/"))
-                              (test-buf (generate-new-buffer "origin-buf-test")))
-                          (unwind-protect
-                              (progn
-                                (expect (macher-agent--get-context-contents ctx) :to-be nil)
-                                (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)
-                                (expect (macher-agent-context-shadow-buffers ctx) :to-be nil)
-
-                                (macher-agent--set-context-contents ctx (list (macher-agent-vfs-make-entry "file.txt" "orig" "mod")))
-                                (macher-agent--set-context-dirty-p ctx t)
-                                (macher-agent--set-context-shadow-buffers ctx '(shadow-buf-1))
-                                (macher-agent-vfs--set-origin-buffer ctx test-buf)
-
-                                (expect (length (macher-agent--get-context-contents ctx)) :to-equal 1)
-                                (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
-                                (expect (macher-agent--context-dirty-p ctx) :to-be t)
-                                (expect (macher-agent-context-shadow-buffers ctx) :to-equal '(shadow-buf-1))
-                                (expect (macher-agent-vfs--get-origin-buffer ctx) :to-be test-buf)
-                                (expect (macher-agent--get-context-workspace ctx) :to-equal (cons 'project (expand-file-name "/mock/env-proj/"))))
-                            (when (buffer-live-p test-buf) (kill-buffer test-buf))))))
+                    (it "handles raw plist contexts seamlessly with get-state and set-state"
+                        (let ((raw-ctx (list :id "raw-ctx-1" :vfs '(:contents (("a.el" . "code")) :dirty-p t))))
+                          (expect (macher-agent-vfs--get-state raw-ctx) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
+                          (let ((updated (macher-agent-vfs--set-state raw-ctx '(:contents (("b.el" . "code2")) :dirty-p nil))))
+                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))))))
 
           (describe "macher-agent-vfs-flush-hook"
                     (it "is cleanly defined with proper documentation and defaults to nil"

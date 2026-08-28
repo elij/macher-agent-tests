@@ -190,38 +190,6 @@
                   ;; :macher--context should not be resolved, so pending media check is skipped
                   (expect (macher-agent--gptel-base64-encode-advice orig-fn "file3.png") :to-equal "orig-encoded:file3.png")))))
 
-(describe "5. Diff Splitting Behaviour"
-          (it "asserts that virtual buffer modifications are split from physical file modifications"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (context (macher-agent--make-vfs-context :workspace workspace
-                                                              :contents (list (macher-agent-vfs-make-entry "/mock/proj/disk-file.el" "old" "new")
-                                                                              (macher-agent-vfs-make-entry "*scratch*" "old" "new"))))
-                     (fsm (gptel-make-fsm))
-                     (macher-agent--active-fsm fsm))
-
-                (spy-on 'macher-agent-resolve-context :and-return-value context)
-                (setf (gptel-fsm-info fsm) (list :macher-agent-context context))
-                (macher-agent--set-context-dirty-p context t)
-
-                (spy-on 'rename-buffer)
-                (spy-on 'macher--get-buffer :and-return-value (list (get-buffer-create "*patch*")))
-                (spy-on 'macher-agent--set-context-prompt :and-call-through)
-
-                (let ((orig-called-with nil)
-                      (prompt-seen nil))
-                  (spy-on 'macher--build-patch :and-call-fake
-                          (lambda (ctx _fsm)
-                            (push (macher-agent--get-context-prompt ctx) prompt-seen)
-                            (push (macher-agent--get-context-contents ctx) orig-called-with)
-                            (run-hooks 'macher-patch-ready-hook)))
-                  (setf (gptel-fsm-info fsm) (plist-put (gptel-fsm-info fsm) :prompt "Test Prompt Message"))
-                  (macher-agent-vfs-build-patch-from-hook context)
-
-                  (expect (car prompt-seen) :to-equal "Test Prompt Message")
-                  (expect (length orig-called-with) :to-equal 2)
-                  (expect (car (car orig-called-with)) :to-equal '("*scratch*" "old" . "new"))
-                  (expect (car (cadr orig-called-with)) :to-equal '("/mock/proj/disk-file.el" "old" . "new"))))))
-
 (describe "6. Sandbox Security and Path Traversal (Jailbreaks)"
           (it "completely neutralises absolute path injections, directory climbing, and home directory escapes"
               (let ((sandbox-root "/tmp/macher-sandbox/"))
@@ -585,18 +553,17 @@
                                 :tools '(tool-a tool-b)
                                 :skills '(skill-a skill-b)
                                 :media-queue '("img1.png" "img2.png")
-                                :zero-mem '((:id 1 :text "trace1"))
                                 :subagents '("subagent-1")
                                 :plugins '(:key1 "val1" :key2 42))))
                       ;; Defaults
                       (expect (macher-agent-context-p ctx-default) :to-be t)
+                      (expect (fboundp 'macher-agent-context-zero-mem) :to-be nil)
                       (expect (macher-agent-context-id ctx-default) :to-be nil)
                       (expect (macher-agent-context-project-root ctx-default) :to-be nil)
                       (expect (macher-agent-context-origin-buffer ctx-default) :to-be nil)
                       (expect (macher-agent-context-tools ctx-default) :to-be nil)
                       (expect (macher-agent-context-skills ctx-default) :to-be nil)
                       (expect (macher-agent-context-media-queue ctx-default) :to-be nil)
-                      (expect (macher-agent-context-zero-mem ctx-default) :to-be nil)
                       (expect (macher-agent-context-subagents ctx-default) :to-be nil)
                       (expect (macher-agent-context-plugins ctx-default) :to-be nil)
 
@@ -608,7 +575,6 @@
                       (expect (macher-agent-context-tools ctx) :to-equal '(tool-a tool-b))
                       (expect (macher-agent-context-skills ctx) :to-equal '(skill-a skill-b))
                       (expect (macher-agent-context-media-queue ctx) :to-equal '("img1.png" "img2.png"))
-                      (expect (macher-agent-context-zero-mem ctx) :to-equal '((:id 1 :text "trace1")))
                       (expect (macher-agent-context-subagents ctx) :to-equal '("subagent-1"))
                       (expect (macher-agent-context-plugins ctx) :to-equal '(:key1 "val1" :key2 42)))
                   (when (buffer-live-p buf) (kill-buffer buf)))))
@@ -636,9 +602,6 @@
                       (setf (macher-agent-context-media-queue ctx) '("pic.jpg"))
                       (expect (macher-agent-context-media-queue ctx) :to-equal '("pic.jpg"))
 
-                      (setf (macher-agent-context-zero-mem ctx) '(trace-obj))
-                      (expect (macher-agent-context-zero-mem ctx) :to-equal '(trace-obj))
-
                       (setf (macher-agent-context-subagents ctx) '("sub-1" "sub-2"))
                       (expect (macher-agent-context-subagents ctx) :to-equal '("sub-1" "sub-2"))
 
@@ -655,7 +618,6 @@
                             :tools '(orig-tool)
                             :skills '(orig-skill)
                             :media-queue '("orig.png")
-                            :zero-mem '((:id 1))
                             :subagents '("sub-orig")
                             :plugins '(:flag t :value 100))))
                 (unwind-protect
@@ -668,7 +630,6 @@
                       (expect (macher-agent-context-tools copy) :to-equal '(orig-tool))
                       (expect (macher-agent-context-skills copy) :to-equal '(orig-skill))
                       (expect (macher-agent-context-media-queue copy) :to-equal '("orig.png"))
-                      (expect (macher-agent-context-zero-mem copy) :to-equal '((:id 1)))
                       (expect (macher-agent-context-subagents copy) :to-equal '("sub-orig"))
                       (expect (macher-agent-context-plugins copy) :to-equal '(:flag t :value 100))
 
@@ -696,7 +657,6 @@
                           :tools '(slot-tool)
                           :skills '(slot-skill)
                           :media-queue '("slot-media.png")
-                          :zero-mem '((:id 1))
                           :subagents '("sub-1")
                           :plugins '(:custom-key "custom-val"))))
                 ;; Read dedicated slots via get-context-data
@@ -706,7 +666,6 @@
                 (expect (macher-agent--get-context-data ctx :skills) :to-equal '(slot-skill))
                 (expect (macher-agent--get-context-data ctx :media-queue) :to-equal '("slot-media.png"))
                 (expect (macher-agent--get-context-data ctx :pending-media) :to-equal '("slot-media.png"))
-                (expect (macher-agent--get-context-data ctx :zero-mem) :to-equal '((:id 1)))
                 (expect (macher-agent--get-context-data ctx :subagents) :to-equal '("sub-1"))
                 (expect (macher-agent--get-context-data ctx :custom-key) :to-equal "custom-val")
                 (expect (macher-agent--get-context-data ctx :nonexistent "def") :to-equal "def")

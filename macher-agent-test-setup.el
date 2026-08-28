@@ -19,6 +19,7 @@
 (require 'macher-agent-macher)
 (require 'macher-agent)
 (require 'macher-agent-vfs)
+(require 'macher-agent-zero-mem)
 (require 'macher-agent-gptel)
 (require 'macher-agent-orchestration)
 (require 'macher-agent-test-harness)
