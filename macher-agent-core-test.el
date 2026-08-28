@@ -92,7 +92,7 @@
                                            (t
                                             (buffer-substring-no-properties (point-min) (point-max))))))))
 
-                        (macher-agent-sandbox-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers workspace) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
+                        (macher-agent-vfs-scratch-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers workspace) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
                         (expect written-to-sandbox :to-equal "VFS Overlay Content")))
                   (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
 

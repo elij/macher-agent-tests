@@ -30,10 +30,14 @@
           (after-each
            (when (fboundp 'macher-agent-zero-mem-uninstall)
              (macher-agent-zero-mem-uninstall))
+           (when (fboundp 'macher-agent-sandbox-uninstall)
+             (macher-agent-sandbox-uninstall))
            (setq macher-agent-search-backend-function #'macher-agent-search-glob))
           (after-all
            (when (fboundp 'macher-agent-zero-mem-uninstall)
              (macher-agent-zero-mem-uninstall))
+           (when (fboundp 'macher-agent-sandbox-uninstall)
+             (macher-agent-sandbox-uninstall))
            (setq macher-agent-search-backend-function #'macher-agent-search-glob))
 
           (describe "1. Core Routing and Pipeline Registry"
@@ -285,11 +289,44 @@
                                (updated (macher-agent-ptc--inject-tool state nil)))
                           (expect (plist-get updated :tools) :to-equal (list 'search_in_workspace))))
 
-                    (it "registers PTC steps to preset-composition and transmission pipelines via sandbox-install"
+                    (it "registers PTC steps to preset-composition and transmission pipelines via sandbox-install and unregisters via sandbox-uninstall"
                         (clrhash macher-agent-pipeline-registry)
                         (macher-agent-sandbox-install)
                         (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
-                        (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)))
+                        (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+                        (when (fboundp 'macher-agent-sandbox-uninstall)
+                          (macher-agent-sandbox-uninstall)
+                          (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be nil)
+                          (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be nil)))
+
+                    (it "properly reads and writes sandbox state on context structs via macher-agent-sandbox-get-state and set-state"
+                        (let ((ctx (make-macher-agent-context :id "test-sandbox-ctx" :plugins '(:existing-key "val"))))
+                          (expect (macher-agent-sandbox-get-state ctx) :to-be nil)
+                          (macher-agent-sandbox-set-state ctx '(:active-primitives (spawn-subagent)))
+                          (expect (macher-agent-sandbox-get-state ctx) :to-equal '(:active-primitives (spawn-subagent)))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal '(:active-primitives (spawn-subagent)))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val")))
+
+                    (it "handles raw plist and alist contexts polymorphically in sandbox get-state and set-state"
+                        ;; Raw plist
+                        (let ((raw-plist (list :id "raw-p-1" :sandbox '(:active-primitives (spawn-subagent)))))
+                          (expect (macher-agent-sandbox-get-state raw-plist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (macher-agent-sandbox-set-state raw-plist '(:active-primitives (read-file)))
+                          (expect (macher-agent-sandbox-get-state raw-plist) :to-equal '(:active-primitives (read-file))))
+                        ;; Nested plist
+                        (let ((nested-plist (list :id "raw-n-1" :plugins '(:sandbox (:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state nested-plist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (macher-agent-sandbox-set-state nested-plist '(:active-primitives (delegate-tasks-to-subagents)))
+                          (expect (macher-agent-sandbox-get-state nested-plist) :to-equal '(:active-primitives (delegate-tasks-to-subagents))))
+                        ;; Alist
+                        (let ((raw-alist (list (cons :sandbox '(:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state raw-alist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (macher-agent-sandbox-set-state raw-alist '(:active-primitives (read-file)))
+                          (expect (macher-agent-sandbox-get-state raw-alist) :to-equal '(:active-primitives (read-file))))
+                        (let ((sym-alist (list (cons 'sandbox '(:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state sym-alist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (macher-agent-sandbox-set-state sym-alist '(:active-primitives (read-file)))
+                          (expect (macher-agent-sandbox-get-state sym-alist) :to-equal '(:active-primitives (read-file))))))
 
           (describe "4. Memory and Context Truncation (Zero-Mem)"
                     (it "calculates limits using context horizon in macher-agent-memory-pipe--inject-tool"
@@ -573,7 +610,80 @@
                           (fmakunbound 'macher-agent-sandbox-install)
                           (fmakunbound 'macher-agent-zero-mem-install)
                           (fmakunbound 'macher-agent-vfs-install)
-                          (expect (macher-agent-install) :not :to-throw)))))
+                          (expect (macher-agent-install) :not :to-throw))))
+
+          (describe "6. Decoupling and Module Independence Invariants"
+                    (it "contains zero internal declare-function forms in macher-agent-sandbox.el"
+                        (let* ((file (or (locate-library "macher-agent-sandbox.el")
+                                         (expand-file-name "macher-agent-sandbox.el" default-directory)))
+                               (forms nil))
+                          (with-temp-buffer
+                            (insert-file-contents file)
+                            (goto-char (point-min))
+                            (condition-case nil
+                                (while t
+                                  (push (read (current-buffer)) forms))
+                              (end-of-file nil)))
+                          (let ((internal-declares
+                                 (cl-remove-if-not
+                                  (lambda (form)
+                                    (and (consp form)
+                                         (eq (car form) 'declare-function)
+                                         (let ((fn (cadr form)))
+                                           (when (and (consp fn) (eq (car fn) 'quote))
+                                             (setq fn (cadr fn)))
+                                           (and (symbolp fn)
+                                                (string-prefix-p "macher-agent-" (symbol-name fn))))))
+                                  forms)))
+                            (expect internal-declares :to-equal nil))))
+
+                    (it "contains zero internal declare-function forms in macher-agent-api.el"
+                        (let* ((file (or (locate-library "macher-agent-api.el")
+                                         (expand-file-name "macher-agent-api.el" default-directory)))
+                               (forms nil))
+                          (with-temp-buffer
+                            (insert-file-contents file)
+                            (goto-char (point-min))
+                            (condition-case nil
+                                (while t
+                                  (push (read (current-buffer)) forms))
+                              (end-of-file nil)))
+                          (let ((internal-declares
+                                 (cl-remove-if-not
+                                  (lambda (form)
+                                    (and (consp form)
+                                         (eq (car form) 'declare-function)
+                                         (let ((fn (cadr form)))
+                                           (when (and (consp fn) (eq (car fn) 'quote))
+                                             (setq fn (cadr fn)))
+                                           (and (symbolp fn)
+                                                (string-prefix-p "macher-agent-" (symbol-name fn))))))
+                                  forms)))
+                            (expect internal-declares :to-equal nil))))
+
+                    (it "contains zero internal declare-function forms in macher-agent-orchestration.el"
+                        (let* ((file (or (locate-library "macher-agent-orchestration.el")
+                                         (expand-file-name "macher-agent-orchestration.el" default-directory)))
+                               (forms nil))
+                          (with-temp-buffer
+                            (insert-file-contents file)
+                            (goto-char (point-min))
+                            (condition-case nil
+                                (while t
+                                  (push (read (current-buffer)) forms))
+                              (end-of-file nil)))
+                          (let ((internal-declares
+                                 (cl-remove-if-not
+                                  (lambda (form)
+                                    (and (consp form)
+                                         (eq (car form) 'declare-function)
+                                         (let ((fn (cadr form)))
+                                           (when (and (consp fn) (eq (car fn) 'quote))
+                                             (setq fn (cadr fn)))
+                                           (and (symbolp fn)
+                                                (string-prefix-p "macher-agent-" (symbol-name fn))))))
+                                  forms)))
+                            (expect internal-declares :to-equal nil))))))
 
 (provide 'macher-agent-plugin-test)
 ;;; macher-agent-plugin-test.el ends here

@@ -33,7 +33,37 @@
                         (let ((raw-ctx (list :id "raw-ctx-1" :vfs '(:contents (("a.el" . "code")) :dirty-p t))))
                           (expect (macher-agent-vfs--get-state raw-ctx) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
                           (let ((updated (macher-agent-vfs--set-state raw-ctx '(:contents (("b.el" . "code2")) :dirty-p nil))))
-                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))))))
+                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil)))))
+
+                    (it "handles raw alist contexts seamlessly with get-state and set-state"
+                        (let ((raw-alist (list (cons :vfs '(:contents (("a.el" . "code")) :dirty-p t)))))
+                          (expect (macher-agent-vfs--get-state raw-alist) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
+                          (let ((updated (macher-agent-vfs--set-state raw-alist '(:contents (("b.el" . "code2")) :dirty-p nil))))
+                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))
+                            (expect (macher-agent-vfs--get-state raw-alist) :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))))))
+
+          (describe "macher-agent-vfs-scratch-inflate"
+                    (it "inflates VFS contents into its physical scratchpad directory"
+                        (let* ((temp-dir (make-temp-file "macher-vfs-scratch-test" t))
+                               (ws-root "/mock/scratch-ws/")
+                               (vfs-tbl (make-hash-table :test 'equal))
+                               (inflate-fn (if (fboundp 'macher-agent-vfs-scratch-inflate)
+                                               #'macher-agent-vfs-scratch-inflate
+                                             #'macher-agent-sandbox-inflate)))
+                          (puthash "/mock/scratch-ws/nested/file.txt" "nested scratch content" vfs-tbl)
+                          (puthash "/mock/scratch-ws/root-file.txt" "root scratch content" vfs-tbl)
+                          (unwind-protect
+                              (progn
+                                (funcall inflate-fn temp-dir vfs-tbl ws-root nil)
+                                (expect (file-exists-p (expand-file-name "nested/file.txt" temp-dir)) :to-be-truthy)
+                                (expect (file-exists-p (expand-file-name "root-file.txt" temp-dir)) :to-be-truthy)
+                                (with-temp-buffer
+                                  (insert-file-contents (expand-file-name "nested/file.txt" temp-dir))
+                                  (expect (buffer-string) :to-equal "nested scratch content"))
+                                (with-temp-buffer
+                                  (insert-file-contents (expand-file-name "root-file.txt" temp-dir))
+                                  (expect (buffer-string) :to-equal "root scratch content")))
+                            (delete-directory temp-dir t)))))
 
           (describe "macher-agent-vfs-flush-hook"
                     (it "is cleanly defined with proper documentation and defaults to nil"

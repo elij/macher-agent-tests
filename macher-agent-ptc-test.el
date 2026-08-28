@@ -277,7 +277,88 @@
                           (throw 'done 99)
                           100)
                        nil)
-                      :to-equal 99)))
+                      :to-equal 99))
+
+          (describe "Plugin State Isolation and Polymorphic Accessors"
+                    (it "reads and writes sandbox state on context structs via get-state and set-state"
+                        (let ((ctx (make-macher-agent-context :id "ctx-ptc-struct" :plugins '(:existing-key "value"))))
+                          (expect (macher-agent-sandbox-get-state ctx) :to-be nil)
+                          (macher-agent-sandbox-set-state ctx '(:active-primitives (spawn-subagent) :eval-mode safe))
+                          (expect (macher-agent-sandbox-get-state ctx) :to-equal '(:active-primitives (spawn-subagent) :eval-mode safe))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal '(:active-primitives (spawn-subagent) :eval-mode safe))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "value")))
+
+                    (it "handles raw plist contexts seamlessly with get-state and set-state"
+                        (let ((raw-ctx (list :id "raw-ptc-1" :sandbox '(:active-primitives (spawn-subagent)))))
+                          (expect (macher-agent-sandbox-get-state raw-ctx) :to-equal '(:active-primitives (spawn-subagent)))
+                          (let ((updated (macher-agent-sandbox-set-state raw-ctx '(:active-primitives (spawn-subagent read-file)))))
+                            (expect updated :to-equal '(:active-primitives (spawn-subagent read-file)))
+                            (expect (macher-agent-sandbox-get-state raw-ctx) :to-equal '(:active-primitives (spawn-subagent read-file)))))
+                        (let ((raw-nested (list :id "raw-nested-1" :plugins '(:sandbox (:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state raw-nested) :to-equal '(:active-primitives (spawn-subagent)))
+                          (macher-agent-sandbox-set-state raw-nested '(:active-primitives (delegate-tasks-to-subagents)))
+                          (expect (macher-agent-sandbox-get-state raw-nested) :to-equal '(:active-primitives (delegate-tasks-to-subagents)))))
+
+                    (it "handles raw alist contexts seamlessly with get-state and set-state"
+                        (let ((raw-alist (list (cons :sandbox '(:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state raw-alist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (let ((updated (macher-agent-sandbox-set-state raw-alist '(:active-primitives (read-file)))))
+                            (expect updated :to-equal '(:active-primitives (read-file)))
+                            (expect (macher-agent-sandbox-get-state raw-alist) :to-equal '(:active-primitives (read-file)))))
+                        (let ((sym-alist (list (cons 'sandbox '(:active-primitives (spawn-subagent))))))
+                          (expect (macher-agent-sandbox-get-state sym-alist) :to-equal '(:active-primitives (spawn-subagent)))
+                          (let ((updated (macher-agent-sandbox-set-state sym-alist '(:active-primitives (read-file)))))
+                            (expect updated :to-equal '(:active-primitives (read-file)))
+                            (expect (macher-agent-sandbox-get-state sym-alist) :to-equal '(:active-primitives (read-file)))))))
+
+          (describe "Lifecycle Hooks: Install and Uninstall"
+                    (it "installs and uninstalls sandbox pipeline steps via sandbox-install and sandbox-uninstall"
+                        (let ((saved-registry (copy-hash-table macher-agent-pipeline-registry)))
+                          (unwind-protect
+                              (progn
+                                (clrhash macher-agent-pipeline-registry)
+                                (macher-agent-sandbox-install)
+                                (expect (member #'macher-agent-ptc--inject-tool
+                                                (macher-agent-get-pipeline-steps 'preset-composition))
+                                        :to-be-truthy)
+                                (expect (member #'macher-agent-sandbox-append-ptc-directive
+                                                (macher-agent-get-pipeline-steps 'transmission))
+                                        :to-be-truthy)
+                                (when (fboundp 'macher-agent-sandbox-uninstall)
+                                  (macher-agent-sandbox-uninstall)
+                                  (expect (member #'macher-agent-ptc--inject-tool
+                                                  (macher-agent-get-pipeline-steps 'preset-composition))
+                                          :to-be nil)
+                                  (expect (member #'macher-agent-sandbox-append-ptc-directive
+                                                  (macher-agent-get-pipeline-steps 'transmission))
+                                          :to-be nil)))
+                            (setq macher-agent-pipeline-registry saved-registry)))))
+
+          (describe "Decoupling and Module Invariants"
+                    (it "contains zero internal declare-function forms across macher-agent-sandbox.el, macher-agent-api.el, and macher-agent-orchestration.el"
+                        (dolist (file '("macher-agent-sandbox.el" "macher-agent-api.el" "macher-agent-orchestration.el"))
+                          (let* ((filepath (or (locate-library file)
+                                               (expand-file-name file default-directory)))
+                                 (forms nil))
+                            (with-temp-buffer
+                              (insert-file-contents filepath)
+                              (goto-char (point-min))
+                              (condition-case nil
+                                  (while t
+                                    (push (read (current-buffer)) forms))
+                                (end-of-file nil)))
+                            (let ((internal-declares
+                                   (cl-remove-if-not
+                                    (lambda (form)
+                                      (and (consp form)
+                                           (eq (car form) 'declare-function)
+                                           (let ((fn (cadr form)))
+                                             (when (and (consp fn) (eq (car fn) 'quote))
+                                               (setq fn (cadr fn)))
+                                             (and (symbolp fn)
+                                                  (string-prefix-p "macher-agent-" (symbol-name fn))))))
+                                    forms)))
+                              (expect internal-declares :to-equal nil)))))))
 
 (provide 'macher-agent-ptc-test)
 ;;; macher-agent-ptc-test.el ends here
