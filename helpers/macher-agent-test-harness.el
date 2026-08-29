@@ -17,7 +17,7 @@
 
     (when (and target-buf (buffer-live-p target-buf))
       (with-current-buffer target-buf
-        (setq-local macher-agent--active-fsm fsm)))
+        (setq macher-agent--active-fsm fsm)))
 
     (let* ((prompt-start
             (if (or (bound-and-true-p gptel-mode) 

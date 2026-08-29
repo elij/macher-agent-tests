@@ -349,6 +349,24 @@
                       (expect (plist-get (gptel-fsm-info fsm) :model) :to-equal "test-model"))
                   (kill-buffer origin-buf))))
 
+          (it "injects originating buffer context when macher-agent--active-fsm is let-bound"
+              (let* ((origin-buf (get-buffer-create "test-origin-buf-letbound"))
+                     (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
+                     (fsm (gptel-make-fsm :info (list :buffer origin-buf :model "test-model")))
+                     (parent-fsm (gptel-make-fsm :info (list :model "parent-model")))
+                     (called nil))
+                (unwind-protect
+                    (progn
+                      (with-current-buffer origin-buf
+                        (setq-local macher-agent--persistent-context mock-ctx))
+                      (let ((macher-agent--active-fsm parent-fsm))
+                        (macher-agent--transform-inject-context (lambda () (setq called t)) fsm))
+                      (expect called :to-be t)
+                      (with-current-buffer origin-buf
+                        (expect (bound-and-true-p macher-agent--active-fsm) :to-be fsm))
+                      (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx))
+                  (kill-buffer origin-buf))))
+
           (it "extracts context from FSM using macher-agent--extract-fsm-context"
               (let* ((mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (fsm-agent (gptel-make-fsm :info (list :macher-agent-context mock-ctx)))
