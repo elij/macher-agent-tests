@@ -350,7 +350,16 @@
                                 (expect (member target-file '("gptel" "mailcap" "macher" gptel mailcap macher))
                                         :to-be-truthy)))
                             (expect (or (member 'macher-agent-core requires) (member ''macher-agent-core requires)) :to-be-truthy)
-                            (expect (or (member 'macher-agent-macher requires) (member ''macher-agent-macher requires)) :to-be-truthy))))))
+                            (expect (or (member 'macher-agent-macher requires) (member ''macher-agent-macher requires)) :to-be-truthy))))
+
+                    (it "ensures confirmed dead functions are absent from macher-agent-vfs"
+                        (expect (fboundp 'macher-agent-vfs--set-origin-buffer) :to-be nil)
+                        (expect (fboundp 'macher-agent-vfs-get-node) :to-be nil)
+                        (expect (fboundp 'macher-agent-vfs-set-node) :to-be nil)
+                        (expect (fboundp 'macher-agent-vfs-read) :to-be nil)
+                        (expect (fboundp 'macher-agent--hydrate-vfs-entry) :to-be nil)
+                        (expect (fboundp 'macher-agent--filter-safe-files) :to-be nil)
+                        (expect (fboundp 'macher-agent-prepare-upstream-payloads) :to-be nil))))
 
 (provide 'macher-agent-vfs-test)
 ;;; macher-agent-vfs-test.el ends here

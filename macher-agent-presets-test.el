@@ -233,7 +233,10 @@
                 (expect (plist-get composed :system) :to-match "Child prompt")
                 (expect (plist-get composed :ptc-primitives) :to-equal '(p1 p2))
                 (expect (plist-get composed :boot-directive) :to-equal "Boot child")
-                (expect (plist-get composed :temperature) :to-equal 0.3))))
+                (expect (plist-get composed :temperature) :to-equal 0.3)))
+
+          (it "confirms dead function macher-agent--evaluate-and-cache-tool is removed"
+              (expect (fboundp 'macher-agent--evaluate-and-cache-tool) :to-be nil)))
 
 (provide 'macher-agent-presets-test)
 ;;; macher-agent-presets-test.el ends here

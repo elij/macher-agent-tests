@@ -448,7 +448,9 @@
                             (expect (member ''macher-agent-vfs requires) :to-be nil)
                             (expect (member 'macher-agent-macher requires) :to-be nil)
                             (expect (member ''macher-agent-macher requires) :to-be nil)
-                            (expect (string-match-p "macher-agent-vfs" file-str) :to-be nil))))
+                            (expect (string-match-p "macher-agent-vfs" file-str) :to-be nil)
+                            (expect (string-match-p "defun macher-agent--push-context-to-parent" file-str) :to-be nil)
+                            (expect (string-match-p "defun macher-agent--pop-routing" file-str) :to-be nil))))
 
                     (it "contains no internal declare-function forms in macher-agent-sandbox.el and requires internal modules directly"
                         (let* ((sandbox-file (or (locate-library "macher-agent-sandbox.el")

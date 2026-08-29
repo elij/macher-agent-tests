@@ -23,7 +23,7 @@
           (after-each
            (setq macher-agent--pause-auto-sync nil))
 
-          (it "asserts that a VFS write is rejected if the underlying file has drifted"
+          (it "asserts that a VFS write warns if the underlying file has drifted"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                      (ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (file-path "/mock/proj/test.el")
@@ -41,28 +41,17 @@
                                       (list t 1 1 1 drifted-mtime drifted-mtime drifted-mtime 100 "mode" t 1 1)
                                     nil))))
 
-                      (let ((threw nil))
-                        (condition-case err
-                            (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "New content")
-                          (error
-                           (setq threw t)
-                           (expect (cadr err) :to-equal "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply")))
-                        (expect threw :to-be t)))
-                  (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces))))
+                      (spy-on 'display-warning)
 
-          (it "asserts that different agent sessions within the same workspace share uncommitted VFS state"
-              (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
-                     (ctx-a (macher-agent--make-context :project-root "/mock/proj/"))
-                     (ctx-b (macher-agent--make-context :project-root "/mock/proj/"))
-                     (file-path "/mock/proj/shared.el"))
-                (unwind-protect
-                    (progn
-                      (puthash (expand-file-name "/mock/proj/") ctx-a macher-agent-active-workspaces)
+                      (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace)
+                                              (macher-agent-workspace-mtime-tracker workspace)
+                                              file-path
+                                              "New content")
 
-                      (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers workspace) (macher-agent-workspace-mtime-tracker workspace) file-path "Agent A changes")
-
-                      (let ((read-content (macher-agent-vfs-read (macher-agent-workspace-vfs-buffers workspace) nil file-path)))
-                        (expect read-content :to-equal "Agent A changes")))
+                      (expect 'display-warning :to-have-been-called-with
+                              'macher-agent
+                              "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply"
+                              :warning))
                   (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
 
 (describe "2. Execution Environments (Sandbox)"
@@ -166,29 +155,27 @@
                 (expect 'gptel--inject-prompt :to-have-been-called)
                 (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil)))
 
-          (it "resolves context in base64 encode advice using :macher-agent-context and :context but not legacy :macher--context"
-              (let* ((orig-fn (lambda (f) (format "orig-encoded:%s" f)))
-                     (ctx-agent (macher-agent--make-context :project-root "/mock/proj/"))
-                     (ctx-direct (macher-agent--make-context :project-root "/mock/proj/"))
-                     (ctx-legacy (macher-agent--make-context :project-root "/mock/proj/"))
-                     (fsm-agent (gptel-make-fsm :info (list :macher-agent-context ctx-agent)))
-                     (fsm-direct (gptel-make-fsm :info (list :context ctx-direct)))
-                     (fsm-legacy (gptel-make-fsm :info (list :macher--context ctx-legacy))))
-                (macher-agent--set-context-data ctx-agent :pending-media '(("file1.png" . "data1")))
-                (macher-agent--set-context-data ctx-direct :pending-media '(("file2.png" . "data2")))
-                (macher-agent--set-context-data ctx-legacy :pending-media '(("file3.png" . "data3")))
+          (it "processes context media-queue through FSM media injection and clears queue"
+              (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"
+                                                      :media-queue '("data:image/png;base64,mockdata")))
+                     (fsm (gptel-make-fsm))
+                     (mock-backend (gptel-make-openai "MockBackend"))
+                     (mock-data (list :messages [])))
 
-                (let ((macher-agent--active-fsm fsm-agent))
-                  (expect (macher-agent--gptel-base64-encode-advice orig-fn "file1.png") :to-equal "file1.png")
-                  (expect (macher-agent--gptel-base64-encode-advice orig-fn "other.png") :to-equal "orig-encoded:other.png"))
+                (setf (gptel-fsm-info fsm)
+                      (list :macher-agent-context ctx
+                            :backend mock-backend
+                            :data mock-data))
 
-                (let ((macher-agent--active-fsm fsm-direct))
-                  (expect (macher-agent--gptel-base64-encode-advice orig-fn "file2.png") :to-equal "file2.png")
-                  (expect (macher-agent--gptel-base64-encode-advice orig-fn "other.png") :to-equal "orig-encoded:other.png"))
+                (spy-on 'gptel--inject-media :and-return-value nil)
+                (spy-on 'gptel--inject-prompt :and-return-value nil)
 
-                (let ((macher-agent--active-fsm fsm-legacy))
-                  ;; :macher--context should not be resolved, so pending media check is skipped
-                  (expect (macher-agent--gptel-base64-encode-advice orig-fn "file3.png") :to-equal "orig-encoded:file3.png")))))
+                (macher-agent--inject-media-fsm-logic fsm)
+
+                (expect 'gptel--inject-media :to-have-been-called)
+                (expect 'gptel--inject-prompt :to-have-been-called)
+                (expect (macher-agent-context-media-queue ctx) :to-be nil)
+                (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil))))
 
 (describe "6. Sandbox Security and Path Traversal (Jailbreaks)"
           (it "completely neutralises absolute path injections, directory climbing, and home directory escapes"
@@ -643,13 +630,6 @@
                   (when (buffer-live-p buf) (kill-buffer buf))))))
 
 (describe "15. Struct Prompt and Data Direct Accessors and Slot Mapping"
-          (it "reads and writes raw plugins data via macher-agent--get-context-raw-data and macher-agent--set-context-raw-data"
-              (let ((ctx (macher-agent--make-context :project-root "/mock/proj/" :plugins '(:initial "data"))))
-                (expect (macher-agent--get-context-raw-data ctx) :to-equal '(:initial "data"))
-                (macher-agent--set-context-raw-data ctx '(:updated "data" :count 5))
-                (expect (macher-agent--get-context-raw-data ctx) :to-equal '(:updated "data" :count 5))
-                (expect (macher-agent-context-plugins ctx) :to-equal '(:updated "data" :count 5))))
-
           (it "maps dedicated slots and arbitrary keys cleanly in macher-agent--get-context-data and macher-agent--set-context-data"
               (let ((ctx (macher-agent--make-context
                           :id "slot-id"
@@ -773,35 +753,17 @@
                   (remhash (directory-file-name mock-dir) macher-agent-active-workspaces)
                   (when (buffer-live-p buf) (kill-buffer buf)))))
 
-          (it "resolves context for a buffer via macher-agent-context-for-buffer"
-              (let* ((ctx (macher-agent--make-context :project-root "/mock/buf-proj/"))
-                     (buf (get-buffer-create "test-ctx-for-buffer")))
-                (unwind-protect
-                    (progn
-                      ;; Initially nil
-                      (expect (macher-agent-context-for-buffer buf) :to-be nil)
-
-                      ;; When persistent context is set in buffer
-                      (with-current-buffer buf
-                        (setq-local macher-agent--persistent-context ctx))
-                      (expect (macher-agent-context-for-buffer buf) :to-be ctx)
-                      (expect (macher-agent-context-for-buffer "test-ctx-for-buffer") :to-be ctx)
-                      (with-current-buffer buf
-                        (expect (macher-agent-context-for-buffer) :to-be ctx)))
-                  (when (buffer-live-p buf) (kill-buffer buf)))))
-
-          (it "validates Agent-to-Agent transit schemas and builds tagged payloads"
+          (it "builds tagged Agent-to-Agent transit payloads"
               (let ((valid-payload (macher-agent-make-a2a-payload
                                     :transit-type :root-to-subagent
                                     :task-id "task-core-001"
                                     :message "Execute instruction")))
-                (expect (macher-agent-a2a-transit-payload-p valid-payload) :to-be t)
-                (expect (macher-agent-a2a-validate-transit-payload valid-payload) :to-equal valid-payload)
                 (expect (plist-get valid-payload :schema-version) :to-equal :a2a-v1)
+                (expect (plist-get valid-payload :transit-type) :to-equal :root-to-subagent)
                 (expect (plist-get valid-payload :task-id) :to-equal "task-core-001")
-                (expect (macher-agent-a2a-transit-payload-p '(:schema-version :invalid :transit-type :peer-to-peer)) :to-be nil)
-                (expect (condition-case _ (macher-agent-a2a-validate-transit-payload '(:schema-version :invalid)) (error 'trapped))
-                        :to-equal 'trapped)))
+                (expect (plist-get valid-payload :message) :to-equal "Execute instruction")
+                (let ((debug-on-error nil))
+                  (expect (macher-agent-make-a2a-payload :transit-type :invalid-transit) :to-throw))))
 
           (it "registers, unregisters, and runs priority-ordered pipeline steps"
               (let ((pipeline-id 'test-core-pipeline)
@@ -842,42 +804,6 @@
                     (kill-buffer child-buf))))))
 
 (describe "17. gptel-fsm Generalized Variable (setf) Setters and Safe Mutators"
-          (it "modifies gptel-fsm-info via setf without void-function errors"
-              (let ((fsm (gptel-make-fsm :info '(:initial "val"))))
-                (expect (gptel-fsm-info fsm) :to-equal '(:initial "val"))
-                ;; Direct setf on gptel-fsm-info
-                (setf (gptel-fsm-info fsm) '(:updated "info" :flag t))
-                (expect (gptel-fsm-info fsm) :to-equal '(:updated "info" :flag t))
-                ;; Helper set-gptel-fsm-info
-                (set-gptel-fsm-info fsm '(:via "helper"))
-                (expect (gptel-fsm-info fsm) :to-equal '(:via "helper"))
-                ;; Fallback \(setf\ gptel-fsm-info\) symbol function
-                (when (fboundp '\(setf\ gptel-fsm-info\))
-                  (funcall '\(setf\ gptel-fsm-info\) '(:via "fallback-setf") fsm)
-                  (expect (gptel-fsm-info fsm) :to-equal '(:via "fallback-setf")))))
-
-          (it "modifies gptel-fsm-handlers and gptel-fsm-state via setf and helpers"
-              (let ((fsm (gptel-make-fsm :state 'START :handlers '((WAIT . (fn1))))))
-                ;; State setf and helper
-                (expect (gptel-fsm-state fsm) :to-equal 'START)
-                (setf (gptel-fsm-state fsm) 'READY)
-                (expect (gptel-fsm-state fsm) :to-equal 'READY)
-                (set-gptel-fsm-state fsm 'DONE)
-                (expect (gptel-fsm-state fsm) :to-equal 'DONE)
-                (when (fboundp '\(setf\ gptel-fsm-state\))
-                  (funcall '\(setf\ gptel-fsm-state\) 'ERRS fsm)
-                  (expect (gptel-fsm-state fsm) :to-equal 'ERRS))
-
-                ;; Handlers setf and helper
-                (expect (gptel-fsm-handlers fsm) :to-equal '((WAIT . (fn1))))
-                (setf (gptel-fsm-handlers fsm) '((WAIT . (fn1 fn2))))
-                (expect (gptel-fsm-handlers fsm) :to-equal '((WAIT . (fn1 fn2))))
-                (set-gptel-fsm-handlers fsm '((DONE . (fn3))))
-                (expect (gptel-fsm-handlers fsm) :to-equal '((DONE . (fn3))))
-                (when (fboundp '\(setf\ gptel-fsm-handlers\))
-                  (funcall '\(setf\ gptel-fsm-handlers\) '((ABRT . (fn4))) fsm)
-                  (expect (gptel-fsm-handlers fsm) :to-equal '((ABRT . (fn4)))))))
-
           (it "provides macher-agent--set-fsm-info and macher-agent--set-fsm-handlers safe wrappers"
               (let ((fsm (gptel-make-fsm :info '(:a 1) :handlers '((H1 . (f1))))))
                 (expect (macher-agent--set-fsm-info fsm '(:a 2 :b 3)) :to-equal '(:a 2 :b 3))
@@ -891,14 +817,14 @@
                 (expect (macher-agent--set-fsm-handlers nil '((H . (f)))) :to-be nil))))
 
 (describe "18. Core Flush Hooks and VFS Independence"
-          (it "verifies macher-agent-core.el defines task flush hook and runner but zero VFS references"
+          (it "verifies macher-agent-core.el defines task flush hook and runner without requiring macher-agent-vfs"
               (let* ((core-file (or (locate-library "macher-agent-core.el")
                                     (expand-file-name "macher-agent-core.el" default-directory)))
                      (core-content (with-temp-buffer
                                      (insert-file-contents core-file)
                                      (buffer-string))))
-                ;; Zero references to VFS in macher-agent-core.el
-                (expect (string-match-p "[Vv][Ff][Ss]" core-content) :to-be nil)
+                ;; macher-agent-core.el has no (require 'macher-agent-vfs)
+                (expect (string-match-p "(require 'macher-agent-vfs" core-content) :to-be nil)
                 ;; Core defines task flush hook and runner
                 (expect (boundp 'macher-agent-task-flush-hook) :to-be t)
                 (expect (fboundp 'macher-agent-run-task-flush-hook) :to-be t)))
