@@ -21,7 +21,7 @@
 
           (it "applies the correct model from the skill metadata to gptel-model"
               (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
-                     (workspace (macher-agent--get-context-workspace mock-ctx))
+                     (workspace (macher-agent-context-workspace mock-ctx))
                      (skill-name 'rust-skill)
                      (skill-data '(:description "Test" :model gpt-4o :has-tools nil :context-dir nil :system "test"))
                      (execution (macher--make-action-execution :action skill-name)))
@@ -37,7 +37,7 @@
 
           (it "does not change gptel-model if no model is specified in the skill"
               (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
-                     (workspace (macher-agent--get-context-workspace mock-ctx))
+                     (workspace (macher-agent-context-workspace mock-ctx))
                      (skill-name 'plain-skill)
                      (skill-data '(:description "Test" :model nil :has-tools nil :context-dir nil :system "test"))
                      (execution (macher--make-action-execution :action skill-name))
@@ -243,7 +243,23 @@
                                                              :curr "---\nname: vfs-skill\n---\nVFS Skill Body"))
                      (ctx (macher-agent--make-vfs-context :contents (list vfs-entry))))
                 (expect (macher-agent--resolve-skill-vfs-content '("/mock/skills/my-skill/SKILL.md") ctx)
-                        :to-equal "---\nname: vfs-skill\n---\nVFS Skill Body"))))
+                        :to-equal "---\nname: vfs-skill\n---\nVFS Skill Body")))
+
+          (it "contains no calls or references to obsolete context helpers in macher-agent-presets.el"
+              (let* ((presets-file (or (locate-library "macher-agent-presets.el")
+                                       (expand-file-name "macher-agent-presets.el" default-directory)))
+                     (content (with-temp-buffer
+                                (insert-file-contents presets-file)
+                                (buffer-string))))
+                (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil)
+                (expect (string-match-p "macher-agent--get-context-data" content) :to-be nil)
+                (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
+                (expect (string-match-p "macher-agent--get-context-prompt" content) :to-be nil)))
+
+          (it "resolves workspace via specialised accessor macher-agent-context-workspace in mutation and resolution"
+              (let* ((mock-ws (make-macher-agent-workspace :project-root "/mock/ws-root/"))
+                     (mock-ctx (macher-agent--make-vfs-context :workspace mock-ws :contents nil)))
+                (expect (macher-agent-context-workspace mock-ctx) :to-equal mock-ws))))
 
 (provide 'macher-agent-presets-test)
 ;;; macher-agent-presets-test.el ends here

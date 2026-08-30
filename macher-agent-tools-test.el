@@ -620,7 +620,56 @@
                                        :ping "pong")
                               (expect res :to-equal "pong")
                               (expect received-ctx :to-be nil)
-                              (expect received-root :to-equal default-directory)))))))
+                              (expect received-root :to-equal default-directory)))))
+
+                    (it "contains no calls to obsolete context data and prompt helpers in macher-agent-tools.el"
+                        (let* ((tools-file (or (locate-library "macher-agent-tools.el")
+                                               (expand-file-name "macher-agent-tools.el" default-directory)))
+                               (content (with-temp-buffer
+                                          (insert-file-contents tools-file)
+                                          (buffer-string))))
+                          (expect (string-match-p "macher-agent--get-context-data" content) :to-be nil)
+                          (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
+                          (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil)
+                          (expect (string-match-p "macher-agent--get-context-prompt" content) :to-be nil)
+                          (expect (string-match-p "macher-agent--set-context-prompt" content) :to-be nil)))
+
+                    (it "supports direct slot access and direct plist operations on macher-agent-context-plugins in tools"
+                        (let* ((mock-ctx (make-macher-agent-context
+                                          :id "ctx-direct-plugins"
+                                          :project-root "/mock/direct-root"
+                                          :plugins '(:custom-setting "active-val" :prompt "Tool Context Prompt")))
+                               (extracted-prompt nil)
+                               (extracted-ws nil)
+                               (extracted-plugin-val nil)
+                               (modified-plugin-val nil))
+                          (macher-agent-make-tool mock-direct-context-tool
+                                                  "Tool manipulating context plugins directly"
+                                                  :category "test-tools"
+                                                  :args '((:name "action" :type string))
+                                                  :command-fn (lambda (payload ctx _root)
+                                                                (setq extracted-prompt (macher-agent-context-prompt ctx))
+                                                                (setq extracted-ws (macher-agent-context-workspace ctx))
+                                                                (setq extracted-plugin-val
+                                                                      (plist-get (macher-agent-context-plugins ctx) :custom-setting))
+                                                                (setf (macher-agent-context-plugins ctx)
+                                                                      (plist-put (copy-sequence (macher-agent-context-plugins ctx))
+                                                                                 :mutated-key (plist-get payload :action)))
+                                                                (setq modified-plugin-val
+                                                                      (plist-get (macher-agent-context-plugins ctx) :mutated-key))
+                                                                "done"))
+                          (let ((res nil))
+                            (funcall (gptel-tool-function mock-direct-context-tool)
+                                     mock-ctx
+                                     (lambda (r) (setq res r))
+                                     :action "execute-mutation")
+                            (expect res :to-equal "done")
+                            (expect extracted-prompt :to-equal "Tool Context Prompt")
+                            (expect extracted-ws :to-equal (cons 'project (expand-file-name "/mock/direct-root")))
+                            (expect extracted-plugin-val :to-equal "active-val")
+                            (expect modified-plugin-val :to-equal "execute-mutation")
+                            (expect (plist-get (macher-agent-context-plugins mock-ctx) :mutated-key)
+                                    :to-equal "execute-mutation"))))))
 
 (provide 'macher-agent-tools-test)
 ;;; macher-agent-tools-test.el ends here

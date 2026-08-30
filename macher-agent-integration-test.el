@@ -1,14 +1,25 @@
 ;;; macher-agent-integration-test.el --- Tests for macher-agent-skills -*- lexical-binding: t; -*-
 
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   (expand-file-name default-directory))
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir)))
+  (add-to-list 'load-path (expand-file-name test-dir))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
 (require 'buttercup)
-(require 'macher-agent-macher)
+(require 'macher-agent-test-setup)
 (require 'macher-agent)
+(require 'macher-agent-macher nil t)
 (require 'macher-agent-orchestration)
 (require 'macher-agent-vfs)
-
-(let ((current-dir (file-name-directory (or load-file-name buffer-file-name))))
-  (add-to-list 'load-path (expand-file-name "helpers" current-dir)))
-
 (require 'macher-agent-test-harness)
 
 (defvar macher-agent--garbage-queue nil)
@@ -55,7 +66,7 @@
                           ((string-match-p "agent-france" name)
                            (with-current-buffer buf
                              (setq-local macher-agent--ready-to-reap t))
-                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent--get-context-workspace (macher-agent-resolve-context))))
+                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
                                             macher-agent-submit-task-result-tool))
                                   (submit-fn (gptel-tool-function tool)))
                              (funcall submit-fn (lambda (_) nil) :final_answer "The capital of France is Paris.")))
@@ -63,7 +74,7 @@
                           ((string-match-p "agent-spain" name)
                            (with-current-buffer buf
                              (setq-local macher-agent--ready-to-reap t))
-                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent--get-context-workspace (macher-agent-resolve-context))))
+                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
                                             macher-agent-submit-task-result-tool))
                                   (submit-fn (gptel-tool-function tool)))
                              (funcall submit-fn (lambda (_) nil) :final_answer "The capital of Spain is Madrid.")))
@@ -87,10 +98,10 @@
                   
                   ;; --- A. Setup the Master Orchestrator Context ---
                   (let ((macher-agent--allow-lazy-init t))
-                    (let* ((spawn-tool (or (gethash "spawn_subagent" (macher-agent-workspace-tools-registry (macher-agent--get-context-workspace (macher-agent-resolve-context))))
+                    (let* ((spawn-tool (or (gethash "spawn_subagent" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
                                            (bound-and-true-p macher-agent-spawn-subagent-tool)))
-                           (delegate-tool (or (gethash "delegate_tasks" (macher-agent-workspace-tools-registry (macher-agent--get-context-workspace (macher-agent-resolve-context))))
-                                              (gethash "delegate_tasks_to_subagents" (macher-agent-workspace-tools-registry (macher-agent--get-context-workspace (macher-agent-resolve-context))))
+                           (delegate-tool (or (gethash "delegate_tasks" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
+                                              (gethash "delegate_tasks_to_subagents" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
                                               (bound-and-true-p macher-agent-delegate-tasks-tool)
                                               (bound-and-true-p macher-agent-delegate-tasks-to-subagents-tool))))
                       
@@ -173,7 +184,7 @@
                      (resource-path "src/semaphore-test.el")
                      (sem-tool (or (gethash "wait_for_vfs_semaphore"
                                             (macher-agent-workspace-tools-registry
-                                             (macher-agent--get-context-workspace (macher-agent-resolve-context))))
+                                             (macher-agent-context-workspace (macher-agent-resolve-context))))
                                    (bound-and-true-p macher-agent-wait-for-vfs-semaphore)))
                      (tool-fn (gptel-tool-function sem-tool)))
                 (funcall tool-fn

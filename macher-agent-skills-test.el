@@ -1,14 +1,25 @@
 ;;; macher-agent-skills-test.el --- Tests for macher-agent-skills -*- lexical-binding: t; -*-
 
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   (expand-file-name default-directory))
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir)))
+  (add-to-list 'load-path (expand-file-name test-dir))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
 (require 'buttercup)
-(require 'macher-agent-macher)
+(require 'macher-agent-test-setup)
 (require 'macher-agent)
+(require 'macher-agent-macher nil t)
 (require 'macher-agent-vfs)
 (require 'macher-agent-zero-mem)
-(let* ((file-name (or load-file-name buffer-file-name))
-       (current-dir (if file-name (file-name-directory file-name) default-directory)))
-  (add-to-list 'load-path (expand-file-name "helpers" current-dir)))
-
 (require 'macher-agent-test-harness)
 
 (describe
@@ -465,7 +476,8 @@
              (macher-agent--active-fsm nil))
         (with-current-buffer buf
           (insert "Line 1: foo\nLine 2: context-buffer-match\nLine 3: bar\n"))
-        (macher-agent--set-context-data ctx :fsm mock-fsm)
+        (setf (macher-agent-context-plugins ctx)
+              (plist-put (copy-sequence (macher-agent-context-plugins ctx)) :fsm mock-fsm))
         (let ((res (funcall cmd-fn '(:query "context-buffer-match" :context_lines 1) ctx default-directory)))
           (expect res :to-match "context-buffer-match"))
         (kill-buffer buf)))
@@ -514,7 +526,7 @@
 
            (it "persists boot-directive into gptel--known-presets and sets buffer-local macher-agent--boot-directive when applying preset"
                (let* ((ctx (macher-agent-resolve-context))
-                      (workspace (macher-agent--get-context-workspace ctx)))
+                      (workspace (macher-agent-context-workspace ctx)))
                  (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
                  (macher-agent-initialize-skills ctx)
@@ -531,7 +543,7 @@
 
            (it "sets buffer-local macher-agent--boot-directive via macher-agent-use-skill, macher-agent-add-subagent, and macher-agent--apply-payload-locally"
                (let* ((ctx (macher-agent-resolve-context))
-                      (workspace (macher-agent--get-context-workspace ctx)))
+                      (workspace (macher-agent-context-workspace ctx)))
                  (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
                  (macher-agent-initialize-skills ctx)
@@ -585,7 +597,7 @@
                  ;; Test workspace parsing logic
                  (let ((ctx (macher-agent-resolve-context)))
                    (macher-agent--load-skill-from-path "tests/fixtures/skills/workspace/" ctx)
-                   (let* ((workspace (macher-agent--get-context-workspace ctx))
+                   (let* ((workspace (macher-agent-context-workspace ctx))
                           (skill-meta (alist-get 'workspace-skill (macher-agent-workspace-skills-alist workspace))))
                      (expect (plist-get skill-meta :context-dir) :to-be nil)))
                  
@@ -615,7 +627,7 @@
                  
                  ;; Clear registry
                  (let* ((ctx (macher-agent-resolve-context))
-                        (ws (macher-agent--get-context-workspace ctx)))
+                        (ws (macher-agent-context-workspace ctx)))
                    (clrhash (macher-agent-workspace-tools-registry ws)))
                  
                  ;; Resolve pkg first, then workspace shadows
@@ -636,7 +648,7 @@
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
                  (let* ((ctx (macher-agent-resolve-context))
-                        (workspace (macher-agent--get-context-workspace ctx)))
+                        (workspace (macher-agent-context-workspace ctx)))
                    (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
                    (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))
                          (list :description "test" :system "test system" :tools (list mock-tool-obj) :context-dir nil))
@@ -658,7 +670,7 @@
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
                  (let* ((ctx (macher-agent-resolve-context))
-                        (workspace (macher-agent--get-context-workspace ctx)))
+                        (workspace (macher-agent-context-workspace ctx)))
                    (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
                    (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))
                          (list :description "test" :system "test system" :tools (list mock-tool-obj) :context-dir nil))
@@ -738,6 +750,100 @@
                          (expect (macher-agent-media-file-p "image.png") :to-be-truthy)
                          (expect (macher-agent-media-file-p "photo.jpg") :to-be-truthy)
                          (expect (macher-agent-media-file-p "code.el") :to-be nil))))
+
+  (describe "Canonical Context and Direct Plugin Access in Skills Scripts"
+    (it "verifies all skills/scripts and presets files contain no occurrences of obsolete context helpers"
+      (let* ((file-name (or load-file-name buffer-file-name))
+             (test-dir (if file-name (file-name-directory file-name) default-directory))
+             (root-dir (or (locate-dominating-file test-dir "skills") test-dir))
+             (scripts-dir (expand-file-name "skills/scripts" root-dir))
+             (script-files (directory-files scripts-dir t "\\.el$"))
+             (preset-file (expand-file-name "macher-agent-presets.el" root-dir))
+             (all-files (cons preset-file script-files)))
+        (dolist (file all-files)
+          (when (file-exists-p file)
+            (let ((content (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))))
+              (expect (string-match-p "macher-agent--get-context-data" content) :to-be nil)
+              (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
+              (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil))))))
+
+    (it "reads audit log from macher-agent-context-plugins via read_context_audit_log"
+      (let* ((ctx (macher-agent--make-context))
+             (audit-entries '(((preset . "AuditPreset") (type . "gptel-tool") (target . "test_tool") (args . (:param "val")))))
+             (tool-fn (gptel-tool-function macher-agent-read-context-audit-log-tool)))
+        (setf (macher-agent-context-plugins ctx) (list :audit-log audit-entries))
+        (let ((result (funcall tool-fn ctx nil :limit 5)))
+          (expect result :to-match "SUCCESS: Audit log retrieved.")
+          (expect result :to-match "AuditPreset")
+          (expect result :to-match "test_tool"))))
+
+    (it "suppresses patch by mutating macher-agent-context-plugins via submit_task_result"
+      (let* ((ctx (macher-agent--make-context))
+             (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
+             (macher-agent--suppress-patch t)
+             (macher-agent-task-finished nil))
+        (spy-on 'macher-agent-a2a-dispatch)
+        (funcall tool-fn ctx nil :final_answer "Done with work")
+        (expect (plist-get (macher-agent-context-plugins ctx) :suppress-patch) :to-be t)))
+
+    (it "executes submit_task_result safely when macher-agent--routing-stack is unbound"
+      (let* ((ctx (macher-agent--make-context))
+             (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
+             (macher-agent-task-finished nil)
+             (stack-bound (boundp 'macher-agent--routing-stack))
+             (saved-val (when (boundp 'macher-agent--routing-stack)
+                          (default-value 'macher-agent--routing-stack))))
+        (spy-on 'macher-agent-a2a-dispatch)
+        (unwind-protect
+            (progn
+              (makunbound 'macher-agent--routing-stack)
+              (let ((res (funcall tool-fn ctx nil :final_answer "Unbound stack work")))
+                (expect res :to-equal "SUCCESS: Result submitted. STOP NOW.")))
+          (when stack-bound
+            (set-default 'macher-agent--routing-stack saved-val)))))
+
+    (it "resolves fsm and buffer from macher-agent-context-plugins in search_conversation_history"
+      (let* ((buf (generate-new-buffer "*macher-test: search-history-direct*"))
+             (ctx (macher-agent--make-context :origin-buffer buf))
+             (mock-fsm (if (fboundp 'gptel-make-fsm)
+                           (gptel-make-fsm :info (list :buffer buf))
+                         (list :buffer buf)))
+             (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
+                         (get 'macher-agent-tool-search-conversation-history 'command-fn)))
+             (macher-agent-search-backend-function #'macher-agent-search-glob))
+        (with-current-buffer buf
+          (insert "Line 1: test-keyword\nLine 2: bar\n"))
+        (setf (macher-agent-context-plugins ctx) (list :fsm mock-fsm :buffer buf))
+        (let ((res (funcall cmd-fn '(:query "test-keyword" :context_lines 1) ctx default-directory)))
+          (expect res :to-match "test-keyword"))
+        (kill-buffer buf)))
+
+    (it "resolves parent buffer from macher-agent-context-plugins and handles unbound routing stack in search_parent_conversation_history"
+      (let* ((parent-buf (generate-new-buffer "*macher-test: parent-direct*"))
+             (child-buf (generate-new-buffer "*macher-test: child-direct*"))
+             (ctx (macher-agent--make-context :origin-buffer child-buf))
+             (cmd-fn (or (get 'macher-agent-search-parent-conversation-history-tool 'command-fn)
+                         (get 'macher-agent-tool-search-parent-conversation-history 'command-fn)))
+             (macher-agent-search-backend-function #'macher-agent-search-glob)
+             (stack-bound (boundp 'macher-agent--routing-stack))
+             (saved-val (when (boundp 'macher-agent--routing-stack)
+                          (default-value 'macher-agent--routing-stack))))
+        (with-current-buffer parent-buf
+          (insert "Line 1: parent-info-target\nLine 2: summary\n"))
+        (setf (macher-agent-context-plugins ctx)
+              (list :originator-name (buffer-name parent-buf) :buffer child-buf))
+        (unwind-protect
+            (progn
+              (makunbound 'macher-agent--routing-stack)
+              (with-current-buffer child-buf
+                (let ((res (funcall cmd-fn '(:query "parent-info-target" :context_lines 1) ctx default-directory)))
+                  (expect res :to-match "parent-info-target"))))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+          (when (buffer-live-p child-buf) (kill-buffer child-buf))
+          (when stack-bound
+            (set-default 'macher-agent--routing-stack saved-val))))))
 
  )
 

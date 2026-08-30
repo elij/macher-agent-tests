@@ -1,12 +1,24 @@
 ;;; macher-agent-audit-log-test.el --- Tests for macher-agent audit logging -*- lexical-binding: t; -*-
 
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   (expand-file-name default-directory))
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir)))
+  (add-to-list 'load-path (expand-file-name test-dir))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
 (require 'buttercup)
 (require 'json)
 (require 'cl-lib)
+(require 'macher-agent-test-setup)
 (require 'macher-agent)
-(let ((current-dir (file-name-directory (or load-file-name buffer-file-name))))
-  (add-to-list 'load-path (expand-file-name "helpers" current-dir)))
-
 (require 'macher-agent-test-harness)
 
 (load (expand-file-name "skills/scripts/read_context_audit_log.el") nil t)
@@ -20,7 +32,7 @@
       (let ((ctx (macher-agent--make-context))
             (macher-agent--active-skill-sym 'alpha-preset))
         (macher-agent-log-tool-intent ctx "gptel-tool" "tool-one" '(:key "value-one"))
-        (let* ((log (macher-agent--get-context-data ctx :audit-log))
+        (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                (entry (car log)))
           (expect (length log) :to-equal 1)
           (expect (cdr (assoc 'buffer entry)) :to-equal (buffer-name))
@@ -30,14 +42,14 @@
           (expect (cdr (assoc 'args entry)) :to-equal '(:key "value-one"))
           (expect (stringp (cdr (assoc 'timestamp entry))) :to-be t))
         (macher-agent-log-tool-intent ctx "gptel-tool" "tool-two" '(:key "value-two"))
-        (expect (length (macher-agent--get-context-data ctx :audit-log)) :to-equal 2))))
+        (expect (length (plist-get (macher-agent-context-plugins ctx) :audit-log)) :to-equal 2))))
 
  (describe "macher-agent--log-gptel-pre-tool"
            (it "logs standard gptel tool calls into active context audit log"
                (let ((ctx (macher-agent--make-context)))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (macher-agent--log-gptel-pre-tool 'test-gptel-tool nil :param "val")
-                 (let* ((log (macher-agent--get-context-data ctx :audit-log))
+                 (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "gptel-tool")
@@ -50,7 +62,7 @@
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (macher-agent-sandbox-run '(test-ptc-tool :path "file.txt") nil)
-                 (let* ((log (macher-agent--get-context-data ctx :audit-log))
+                 (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "ptc")
@@ -61,7 +73,7 @@
                (let ((ctx (macher-agent--make-context))
                      (macher-agent--active-ptc-primitives '(custom-ptc-tool)))
                  (macher-agent-sandbox-run '(custom-ptc-tool :name "foo" :count 42) nil ctx)
-                 (let* ((log (macher-agent--get-context-data ctx :audit-log))
+                 (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "ptc")
@@ -73,7 +85,7 @@
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
                  (spy-on 'macher-agent-resolve-context :and-return-value ctx)
                  (macher-agent-sandbox-run '(+ 1 2) '(+))
-                 (let ((log (macher-agent--get-context-data ctx :audit-log)))
+                 (let ((log (plist-get (macher-agent-context-plugins ctx) :audit-log)))
                    (expect (length log) :to-equal 0)))))
 
  (describe "macher-agent-read-context-audit-log-tool"

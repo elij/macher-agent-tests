@@ -8,9 +8,27 @@
 
 ;;; Code:
 
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   (expand-file-name default-directory))
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir)))
+  (add-to-list 'load-path (expand-file-name test-dir))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
 (require 'cl-lib)
 (require 'buttercup)
+(require 'macher-agent-test-setup)
+(require 'macher-agent)
 (require 'macher-agent-zero-mem)
+
+(defvar macher-agent--routing-stack nil)
 
 ;;;; 0. Reference Float PageRank Implementation for Equivalence Checks
 
@@ -287,13 +305,37 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
         (macher-agent-zero-mem-set-state ctx '(:traces ((:id 1 :text "node1"))))
         (expect (macher-agent-zero-mem-get-state ctx) :to-equal '(:traces ((:id 1 :text "node1"))))
         (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal '(:traces ((:id 1 :text "node1"))))
-        (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val")))
+        (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val"))
+      ;; Non-context handling
+      (expect (macher-agent-zero-mem-get-state nil) :to-be nil)
+      (expect (macher-agent-zero-mem-get-state "invalid") :to-be nil)
+      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-be nil)
+      (expect (macher-agent-zero-mem-set-state nil '(:data 1)) :to-equal '(:data 1)))
+
+    (it "retrieves event horizon directly from context plugins"
+      (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))
+        (expect (macher-agent-zero-mem--get-event-horizon nil ctx) :to-equal '(:line 42 :offset 1024))))
+
+    (it "extracts clean prompt from context prompt accessor"
+      (let ((ctx (make-macher-agent-context :id "prompt-ctx" :plugins '(:prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->"))))
+        (expect (macher-agent-zero-mem--extract-clean-prompt nil ctx) :to-equal "Clean Prompt Content")))
+
+    (it "resolves parent buffer via context origin buffer and routing stack"
+      (let* ((parent-buf (generate-new-buffer " *test-origin-parent*"))
+             (ctx-origin (make-macher-agent-context :id "orig-ctx" :origin-buffer parent-buf)))
+        (unwind-protect
+            (progn
+              (expect (macher-agent-zero-mem--resolve-parent-buffer ctx-origin) :to-equal parent-buf)
+              (with-temp-buffer
+                (setq-local macher-agent--routing-stack (list parent-buf))
+                (expect (macher-agent-zero-mem--resolve-parent-buffer nil) :to-equal parent-buf)))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf)))))
 
     (it "persists interaction graph into context plugins and uses stationary snapshot"
       (let* ((parent-buf (generate-new-buffer " *test-parent-snap*"))
              (child-buf (generate-new-buffer " *test-child-snap*"))
              (parent-ctx (make-macher-agent-context :id "parent-ctx"))
-             (child-ctx (make-macher-agent-context :id "child-ctx")))
+             (child-ctx (make-macher-agent-context :id "child-ctx" :origin-buffer parent-buf)))
         (unwind-protect
             (progn
               (with-current-buffer parent-buf
@@ -306,7 +348,7 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
                 (expect (plist-get (macher-agent-context-plugins parent-ctx) :zero-mem) :to-equal parent-graph)
                 (with-current-buffer child-buf
                   (setq-local macher-agent--persistent-context child-ctx)
-                  (macher-agent--push-routing "task-snap-1" (buffer-name parent-buf))
+                  (setq-local macher-agent--routing-stack (list parent-buf))
                   (insert "Retrieve DB_SECRET_KEY from parent."))
                 ;; Modify parent buffer after delegation
                 (with-current-buffer parent-buf

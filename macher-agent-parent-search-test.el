@@ -90,18 +90,34 @@
 
     (it "resolves parent buffer via context plist properties"
       (let* ((parent-buf (generate-new-buffer "*macher-test: parent-ctx-prop*"))
-             (child-buf (generate-new-buffer "*macher-test: child-ctx-prop*")))
+             (child-buf (generate-new-buffer "*macher-test: child-ctx-prop*"))
+             (ctx1 (make-macher-agent-context :plugins (list :origin-buffer parent-buf)))
+             (ctx2 (make-macher-agent-context :plugins (list :originator-buffer (buffer-name parent-buf)))))
         (unwind-protect
             (progn
               (expect (macher-agent-zero-mem--resolve-parent-buffer
-                       child-buf (list :parent-buffer (buffer-name parent-buf)))
+                       child-buf ctx1)
                       :to-equal parent-buf)
               (expect (macher-agent-zero-mem--resolve-parent-buffer
-                       child-buf (list :originator-name (buffer-name parent-buf)))
-                      :to-equal parent-buf)
-              (expect (macher-agent-zero-mem--resolve-parent-buffer
-                       child-buf (list :originator-buffer parent-buf))
+                       child-buf ctx2)
                       :to-equal parent-buf))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+          (when (buffer-live-p child-buf) (kill-buffer child-buf)))))
+
+    (it "injects search_parent_conversation_history tool when unpacked from state context and target-buffer"
+      (let* ((parent-buf (generate-new-buffer "*macher-test: parent-state-ctx*"))
+             (child-buf (generate-new-buffer "*macher-test: child-state-ctx*"))
+             (ctx (make-macher-agent-context :origin-buffer parent-buf)))
+        (unwind-protect
+            (let* ((state (make-macher-agent-transmission-state
+                           :target-buffer child-buf
+                           :context ctx
+                           :tools nil))
+                   (updated-state (macher-agent-parent-memory-pipe--inject-tool
+                                   state nil nil nil nil))
+                   (tool-names (mapcar #'macher-agent-canonical-tool-name
+                                       (macher-agent-transmission-state-tools updated-state))))
+              (expect (member "search_parent_conversation_history" tool-names) :to-be-truthy))
           (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
           (when (buffer-live-p child-buf) (kill-buffer child-buf))))))
 
@@ -161,6 +177,30 @@
                   (expect directive-text :to-match "<parent_conversation_context>")
                   (expect directive-text :to-match "</parent_conversation_context>")
                   (expect directive-text :to-match "<trace id=\"[0-9]+\">")
+                  (expect directive-text :to-match "Redis Cluster"))))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+          (when (buffer-live-p child-buf) (kill-buffer child-buf)))))
+
+    (it "injects parent context directive when unpacked from state context and target-buffer"
+      (let* ((parent-buf (generate-new-buffer "*macher-test: parent-state-dir*"))
+             (child-buf (generate-new-buffer "*macher-test: child-state-dir*"))
+             (ctx (make-macher-agent-context :origin-buffer parent-buf
+                                             :plugins (list :prompt "Deploy and configure Redis Cluster failover."))))
+        (unwind-protect
+            (progn
+              (with-current-buffer parent-buf
+                (insert "Turn 1: Initializing Redis Cluster deployment on port 6379.\nTurn 2: Setting up sentinel failover configuration.\nTurn 3: Unrelated discussion about typography and themes.\n"))
+              (let* ((state (make-macher-agent-transmission-state
+                             :target-buffer child-buf
+                             :context ctx
+                             :directives nil))
+                     (updated-state (macher-agent-pipe--inject-parent-context
+                                     state nil nil nil nil))
+                     (dirs (macher-agent-transmission-state-directives updated-state)))
+                (expect (length dirs) :to-be-greater-than 0)
+                (let ((directive-text (string-join dirs "\n\n")))
+                  (expect directive-text :to-match "<parent_conversation_context>")
+                  (expect directive-text :to-match "</parent_conversation_context>")
                   (expect directive-text :to-match "Redis Cluster"))))
           (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
           (when (buffer-live-p child-buf) (kill-buffer child-buf)))))

@@ -270,7 +270,19 @@
                           (macher-agent-sandbox-set-state ctx '(:active-primitives (spawn-subagent) :eval-mode safe))
                           (expect (macher-agent-sandbox-get-state ctx) :to-equal '(:active-primitives (spawn-subagent) :eval-mode safe))
                           (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal '(:active-primitives (spawn-subagent) :eval-mode safe))
-                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "value")))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "value")
+                          ;; Overwrite existing sandbox state
+                          (macher-agent-sandbox-set-state ctx '(:active-primitives (spawn-subagent test-tool) :eval-mode isolated))
+                          (expect (macher-agent-sandbox-get-state ctx) :to-equal '(:active-primitives (spawn-subagent test-tool) :eval-mode isolated))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal '(:active-primitives (spawn-subagent test-tool) :eval-mode isolated))))
+
+                    (it "returns nil when getting or setting state on non-context-struct objects"
+                        (expect (macher-agent-sandbox-get-state nil) :to-be nil)
+                        (expect (macher-agent-sandbox-get-state "invalid-string") :to-be nil)
+                        (expect (macher-agent-sandbox-get-state '(:sandbox (:active-primitives (spawn-subagent)))) :to-be nil)
+                        (expect (macher-agent-sandbox-set-state nil '(:active-primitives (spawn-subagent))) :to-be nil)
+                        (expect (macher-agent-sandbox-set-state "invalid-string" '(:active-primitives (spawn-subagent))) :to-be nil)
+                        (expect (macher-agent-sandbox-set-state '(:plugins nil) '(:active-primitives (spawn-subagent))) :to-be nil))
 
                     (it "handles unexpected yielded values with 1-argument stop-iter-fn invocation"
                         (let* ((stopped-reason nil)

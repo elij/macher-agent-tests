@@ -129,7 +129,7 @@
                 (expect (plist-get res-plist :child-buf) :to-be child-buf)
                 (with-current-buffer child-buf
                   (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be-truthy)
-                  (expect (macher-agent--get-context-workspace macher-agent--persistent-context) :to-equal workspace))))
+                  (expect (macher-agent-context-workspace macher-agent--persistent-context) :to-equal workspace))))
           (kill-buffer parent-buf)
           (kill-buffer child-buf)
           (delete-directory mock-dir t)))))
@@ -157,30 +157,23 @@
       (expect (member #'macher-agent-vfs-build-patch-from-hook macher-agent-vfs-flush-hook) :to-be-truthy)
       (expect (member #'macher-agent--mutation-dispatcher macher-agent-context-mutated-hook) :to-be-truthy))
 
-    (it "invokes plugin loaders dynamically when bound and handles unbound loaders gracefully"
+    (it "invokes plugin loaders directly via macher-agent-install"
       (let ((vfs-called nil)
             (sandbox-called nil)
             (zero-mem-called nil)
-            (ctx-called nil))
+            (ctx-called nil)
+            (trans-called nil))
         (cl-letf (((symbol-function 'macher-agent-vfs-install) (lambda () (setq vfs-called t)))
                   ((symbol-function 'macher-agent-sandbox-install) (lambda () (setq sandbox-called t)))
                   ((symbol-function 'macher-agent-zero-mem-install) (lambda () (setq zero-mem-called t)))
-                  ((symbol-function 'macher-agent-context-resolution-install) (lambda () (setq ctx-called t))))
+                  ((symbol-function 'macher-agent-context-resolution-install) (lambda () (setq ctx-called t)))
+                  ((symbol-function 'macher-agent-transmission-install) (lambda () (setq trans-called t))))
           (macher-agent-install)
           (expect vfs-called :to-be t)
           (expect sandbox-called :to-be t)
           (expect zero-mem-called :to-be t)
-          (expect ctx-called :to-be t))
-        ;; Unbound functions do not signal error
-        (cl-letf (((symbol-function 'macher-agent-vfs-install) nil)
-                  ((symbol-function 'macher-agent-sandbox-install) nil)
-                  ((symbol-function 'macher-agent-zero-mem-install) nil)
-                  ((symbol-function 'macher-agent-context-resolution-install) nil))
-          (fmakunbound 'macher-agent-vfs-install)
-          (fmakunbound 'macher-agent-sandbox-install)
-          (fmakunbound 'macher-agent-zero-mem-install)
-          (fmakunbound 'macher-agent-context-resolution-install)
-          (expect (macher-agent-install) :not :to-throw))))
+          (expect ctx-called :to-be t)
+          (expect trans-called :to-be t))))
 
     (it "manages VFS pipeline and flush hook registration via macher-agent-vfs-install"
       (clrhash macher-agent-pipeline-registry)

@@ -8,11 +8,26 @@
 
 ;;; Code:
 
+(let* ((file (or load-file-name buffer-file-name))
+       (test-dir (cond
+                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
+                   (expand-file-name default-directory))
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
+                   (expand-file-name "tests" default-directory))
+                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir)))
+  (add-to-list 'load-path (expand-file-name test-dir))
+  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+
 (require 'subr-x)
 (require 'buttercup)
-(require 'macher-agent-macher)
 (require 'cl-lib)
+(require 'macher-agent-test-setup)
 (require 'macher-agent)
+(require 'macher-agent-macher nil t)
 (require 'macher-agent-vfs)
 
 (defvar gptel--fsm)
@@ -59,7 +74,7 @@
           (it "asserts that sandbox inflation overlays the uncommitted VFS changes"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
                      (ctx (macher-agent--make-context :project-root "/mock/proj/")))
-                (macher-agent--set-context-data ctx :sandbox-path "/tmp/macher-sandbox/")
+                (setf (macher-agent-context-plugins ctx) (list :sandbox-path "/tmp/macher-sandbox/"))
                 (unwind-protect
                     (progn
                       (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
@@ -112,14 +127,14 @@
                      (mtime-ht (make-hash-table :test 'equal)))
                 (puthash "test.el" "vfs-content" vfs-ht)
                 (puthash "test.el" '(123 456) mtime-ht)
-                (macher-agent--set-context-data ctx :vfs-buffers vfs-ht)
-                (macher-agent--set-context-data ctx :mtime-tracker mtime-ht)
+                (setf (macher-agent-context-plugins ctx)
+                      (list :vfs-buffers vfs-ht :mtime-tracker mtime-ht))
 
                 (let* ((cloned-ctx (macher-agent--copy-context ctx))
-                       (cloned-vfs (copy-hash-table (macher-agent--get-context-data ctx :vfs-buffers)))
-                       (cloned-mtime (copy-hash-table (macher-agent--get-context-data ctx :mtime-tracker))))
-                  (macher-agent--set-context-data cloned-ctx :vfs-buffers cloned-vfs)
-                  (macher-agent--set-context-data cloned-ctx :mtime-tracker cloned-mtime)
+                       (cloned-vfs (copy-hash-table (plist-get (macher-agent-context-plugins ctx) :vfs-buffers)))
+                       (cloned-mtime (copy-hash-table (plist-get (macher-agent-context-plugins ctx) :mtime-tracker))))
+                  (setf (macher-agent-context-plugins cloned-ctx)
+                        (list :vfs-buffers cloned-vfs :mtime-tracker cloned-mtime))
 
                   ;; Verify they have the same initial content
                   (expect (gethash "test.el" cloned-vfs) :to-equal "vfs-content")
@@ -146,7 +161,7 @@
                       (list :macher-agent-context ctx
                             :backend mock-backend
                             :data mock-data))
-                (macher-agent--set-context-data ctx :pending-media "mockbase64")
+                (setf (macher-agent-context-plugins ctx) (list :pending-media "mockbase64"))
 
                 (spy-on 'gptel--inject-media :and-return-value nil)
                 (spy-on 'gptel--inject-prompt :and-return-value nil)
@@ -155,7 +170,7 @@
 
                 (expect 'gptel--inject-media :to-have-been-called)
                 (expect 'gptel--inject-prompt :to-have-been-called)
-                (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil)))
+                (expect (plist-get (macher-agent-context-plugins ctx) :pending-media) :to-be nil)))
 
           (it "processes context media-queue through FSM media injection and clears queue"
               (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"
@@ -177,7 +192,7 @@
                 (expect 'gptel--inject-media :to-have-been-called)
                 (expect 'gptel--inject-prompt :to-have-been-called)
                 (expect (macher-agent-context-media-queue ctx) :to-be nil)
-                (expect (macher-agent--get-context-data ctx :pending-media) :to-be nil))))
+                (expect (plist-get (macher-agent-context-plugins ctx) :pending-media) :to-be nil))))
 
 (describe "6. Sandbox Security and Path Traversal (Jailbreaks)"
           (it "completely neutralises absolute path injections, directory climbing, and home directory escapes"
@@ -302,7 +317,7 @@
               (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"))
                      (fsm (gptel-make-fsm)))
                 (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
-                (macher-agent--set-context-data ctx :pending-media (list "data"))
+                (setf (macher-agent-context-plugins ctx) (list :pending-media (list "data")))
                 (spy-on 'macher-agent--perform-pending-media-injection)
                 (macher-agent--inject-media-fsm-logic fsm)
                 (expect 'macher-agent--perform-pending-media-injection :to-have-been-called-with fsm))))
@@ -683,8 +698,8 @@
                       (expect (macher-agent-context-tools orig) :to-equal '(orig-tool)))
                   (when (buffer-live-p buf) (kill-buffer buf))))))
 
-(describe "15. Struct Prompt and Data Direct Accessors and Slot Mapping"
-          (it "maps dedicated slots and arbitrary keys cleanly in macher-agent--get-context-data and macher-agent--set-context-data"
+(describe "15. Struct Direct Accessors and Prompt Operations"
+          (it "accesses dedicated slots and plugin properties directly on macher-agent-context"
               (let ((ctx (macher-agent--make-context
                           :id "slot-id"
                           :project-root "/mock/slot-proj/"
@@ -693,50 +708,43 @@
                           :media-queue '("slot-media.png")
                           :subagents '("sub-1")
                           :plugins '(:custom-key "custom-val"))))
-                ;; Read dedicated slots via get-context-data
-                (expect (macher-agent--get-context-data ctx :id) :to-equal "slot-id")
-                (expect (macher-agent--get-context-data ctx :project-root) :to-equal "/mock/slot-proj/")
-                (expect (macher-agent--get-context-data ctx :tools) :to-equal '(slot-tool))
-                (expect (macher-agent--get-context-data ctx :skills) :to-equal '(slot-skill))
-                (expect (macher-agent--get-context-data ctx :media-queue) :to-equal '("slot-media.png"))
-                (expect (macher-agent--get-context-data ctx :pending-media) :to-equal '("slot-media.png"))
-                (expect (macher-agent--get-context-data ctx :subagents) :to-equal '("sub-1"))
-                (expect (macher-agent--get-context-data ctx :custom-key) :to-equal "custom-val")
-                (expect (macher-agent--get-context-data ctx :nonexistent "def") :to-equal "def")
+                ;; Read dedicated slots directly
+                (expect (macher-agent-context-id ctx) :to-equal "slot-id")
+                (expect (macher-agent-context-project-root ctx) :to-equal "/mock/slot-proj/")
+                (expect (macher-agent-context-tools ctx) :to-equal '(slot-tool))
+                (expect (macher-agent-context-skills ctx) :to-equal '(slot-skill))
+                (expect (macher-agent-context-media-queue ctx) :to-equal '("slot-media.png"))
+                (expect (macher-agent-context-subagents ctx) :to-equal '("sub-1"))
+                (expect (plist-get (macher-agent-context-plugins ctx) :custom-key) :to-equal "custom-val")
 
-                ;; Write dedicated slots via set-context-data
-                (macher-agent--set-context-data ctx :id "new-slot-id")
+                ;; Write dedicated slots directly
+                (setf (macher-agent-context-id ctx) "new-slot-id")
                 (expect (macher-agent-context-id ctx) :to-equal "new-slot-id")
 
-                (macher-agent--set-context-data ctx :tools '(new-tool))
+                (setf (macher-agent-context-tools ctx) '(new-tool))
                 (expect (macher-agent-context-tools ctx) :to-equal '(new-tool))
 
-                (macher-agent--set-context-data ctx :media-queue '("new-media.png"))
+                (setf (macher-agent-context-media-queue ctx) '("new-media.png"))
                 (expect (macher-agent-context-media-queue ctx) :to-equal '("new-media.png"))
 
-                ;; Write arbitrary keys into plugins
-                (macher-agent--set-context-data ctx :new-plugin-key "plugin-val")
-                (expect (macher-agent--get-context-data ctx :new-plugin-key) :to-equal "plugin-val")
+                ;; Write plugin properties directly
+                (setf (macher-agent-context-plugins ctx)
+                      (plist-put (copy-sequence (macher-agent-context-plugins ctx)) :new-plugin-key "plugin-val"))
                 (expect (plist-get (macher-agent-context-plugins ctx) :new-plugin-key) :to-equal "plugin-val")
                 (expect (plist-get (macher-agent-context-plugins ctx) :custom-key) :to-equal "custom-val")))
 
-          (it "safely accesses and synchronizes prompt on macher-agent-context"
+          (it "safely accesses and mutates prompt on macher-agent-context"
               (let ((ctx (macher-agent--make-context :project-root "/mock/proj/" :plugins '(:prompt "init prompt"))))
-                (expect (macher-agent--get-context-prompt ctx) :to-equal "init prompt")
                 (expect (macher-agent-context-prompt ctx) :to-equal "init prompt")
-                (macher-agent--set-context-prompt ctx "updated agent prompt")
-                (expect (macher-agent--get-context-prompt ctx) :to-equal "updated agent prompt")
+                (set-macher-agent-context-prompt ctx "updated agent prompt")
                 (expect (macher-agent-context-prompt ctx) :to-equal "updated agent prompt")
-                (expect (macher-agent--get-context-data ctx :prompt) :to-equal "updated agent prompt")
                 (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "updated agent prompt")
                 (setf (macher-agent-context-prompt ctx) "setf prompt")
-                (expect (macher-agent-context-prompt ctx) :to-equal "setf prompt")
-                (set-macher-agent-context-prompt ctx "setter prompt")
-                (expect (macher-agent-context-prompt ctx) :to-equal "setter prompt")))
+                (expect (macher-agent-context-prompt ctx) :to-equal "setf prompt")))
 
-          (it "retrieves tagged workspace structure from macher-agent-context via macher-agent--get-context-workspace"
+          (it "retrieves tagged workspace structure from macher-agent-context via macher-agent-context-workspace"
               (let ((ctx (macher-agent--make-context :project-root "/mock/proj/")))
-                (expect (macher-agent--get-context-workspace ctx)
+                (expect (macher-agent-context-workspace ctx)
                         :to-equal (cons 'project (expand-file-name "/mock/proj/"))))))
 
 (describe "16. Workspace Root Resolution, Context Lookup, and Context For Buffer"
@@ -949,18 +957,13 @@
                          :skill-sym 'test-skill
                          :system-message "Test system prompt")))
                 (expect (macher-agent-task-context-p tc) :to-be t)
-                (expect (macher-agent-valid-context-p tc) :to-be t)
                 (expect (macher-agent-task-context-workspace tc) :to-equal "/mock/task-ws")
                 (expect (macher-agent-task-context-target-buffer tc) :to-equal (current-buffer))
                 (expect (macher-agent-task-context-skill-sym tc) :to-equal 'test-skill)
                 (expect (macher-agent-task-context-system-message tc) :to-equal "Test system prompt")
-                (expect (macher-agent--get-context-workspace tc) :to-equal (cons 'project (expand-file-name "/mock/task-ws")))
-                (expect (macher-agent--get-context-data tc :target-buffer) :to-equal (current-buffer))
-                ;; Test recursion hazard safety
-                (setf (macher-agent-task-context-workspace tc) tc)
-                (expect (macher-agent--get-context-workspace tc) :to-equal tc)
                 (let ((cloned (copy-macher-agent-task-context tc)))
                   (expect (macher-agent-task-context-p cloned) :to-be t)
+                  (expect (macher-agent-task-context-workspace cloned) :to-equal "/mock/task-ws")
                   (expect (macher-agent-task-context-skill-sym cloned) :to-equal 'test-skill)))))
 
 (describe "20. Dual Virtual File System Instances"

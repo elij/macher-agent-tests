@@ -29,17 +29,28 @@
     data
     dirty-p
     shadow-buffers))
-(require 'macher-agent-macher)
-(require 'macher-agent)
+(require 'macher-agent-core)
+(require 'macher-agent-gptel)
+(require 'macher-agent-presets)
+(require 'macher-agent-tools)
+(require 'macher-agent-sandbox)
 (require 'macher-agent-vfs)
 (require 'macher-agent-zero-mem)
-(require 'macher-agent-gptel)
 (require 'macher-agent-orchestration)
+(require 'macher-agent-macher nil t)
+(require 'macher-agent-api)
+(require 'macher-agent)
 (require 'macher-agent-test-harness)
 
 (defvar gptel--fsm)
 (defvar macher-agent--active-fsm)
 (defvar gptel--fsm-last)
+
+(unless (fboundp 'make-gptel-fsm)
+  (if (fboundp 'gptel-make-fsm)
+      (defalias 'make-gptel-fsm #'gptel-make-fsm)
+    (defun make-gptel-fsm (&rest args)
+      (if (plist-member args :info) args (list :info args)))))
 
 (when (fboundp 'macher-agent-install)
   (macher-agent-install))
@@ -55,7 +66,7 @@
     (setq macher-agent--persistent-context nil)
     (setq macher-agent-search-backend-function #'macher-agent-search-glob)
     (let* ((ctx (ignore-errors (macher-agent-resolve-context)))
-           (ws (when ctx (macher-agent--get-context-workspace ctx))))
+           (ws (when ctx (macher-agent-context-workspace ctx))))
       (when ws (setf (macher-agent-workspace-active-subagents ws) nil)))))
 
 (provide 'macher-agent-test-setup)

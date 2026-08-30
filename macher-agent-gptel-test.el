@@ -33,10 +33,46 @@
 (describe "Macher-Agent GPTel Boundary Suite"
   (macher-agent-test-setup-before-each)
 
-  (describe "Resting State Consolidation & Context Resolution"
+  (describe "Specialised Context Accessors and Slots"
+    (it "constructs and inspects macher-agent-task-context structure slots directly"
+      (let* ((buf (generate-new-buffer "test-task-ctx-buf"))
+             (tctx (make-macher-agent-task-context
+                    :workspace (cons 'project "/mock/workspace/")
+                    :target-buffer buf
+                    :skill-sym 'expert-reviewer
+                    :system-message "Specialised task system message")))
+        (unwind-protect
+            (progn
+              (expect (macher-agent-task-context-p tctx) :to-be t)
+              (expect (macher-agent-task-context-workspace tctx) :to-equal (cons 'project "/mock/workspace/"))
+              (expect (macher-agent-task-context-target-buffer tctx) :to-be buf)
+              (expect (macher-agent-task-context-skill-sym tctx) :to-equal 'expert-reviewer)
+              (expect (macher-agent-task-context-system-message tctx) :to-equal "Specialised task system message")
+              (let ((cloned (copy-macher-agent-task-context tctx)))
+                (expect (macher-agent-task-context-p cloned) :to-be t)
+                (expect (macher-agent-task-context-workspace cloned) :to-equal (cons 'project "/mock/workspace/"))
+                (expect (macher-agent-task-context-target-buffer cloned) :to-be buf)
+                (expect (macher-agent-task-context-skill-sym cloned) :to-equal 'expert-reviewer)
+                (expect (macher-agent-task-context-system-message cloned) :to-equal "Specialised task system message")))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "accesses and mutates context prompt and workspace via specialised accessors"
+      (let ((ctx (make-macher-agent-context :project-root "/mock/specialised/proj/")))
+        (expect (macher-agent-context-p ctx) :to-be t)
+        (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (expand-file-name "/mock/specialised/proj/")))
+        (expect (macher-agent-context-prompt ctx) :to-be nil)
+        (setf (macher-agent-context-prompt ctx) "Initial prompt test")
+        (expect (macher-agent-context-prompt ctx) :to-equal "Initial prompt test")
+        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Initial prompt test")
+        (set-macher-agent-context-prompt ctx "Updated prompt test")
+        (expect (macher-agent-context-prompt ctx) :to-equal "Updated prompt test")
+        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Updated prompt test"))))
+
+  (describe "Resting State Consolidation and Context Resolution"
     (it "resolves context through macher-agent--persistent-context when idle"
       (let* ((buf (generate-new-buffer "test-gptel-resting-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/resting/")))
+             (mock-ctx (make-macher-agent-context :project-root "/mock/resting/")))
         (unwind-protect
             (with-current-buffer buf
               (setq-local macher-agent--persistent-context mock-ctx)
@@ -54,7 +90,7 @@
 
     (it "resolves context directly from FSM info plist during active execution"
       (let* ((buf (generate-new-buffer "test-gptel-active-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/active/"))
+             (mock-ctx (make-macher-agent-context :project-root "/mock/active/"))
              (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)))
              (fsm-empty (gptel-make-fsm :info nil)))
         (unwind-protect
@@ -76,10 +112,10 @@
           (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
-  (describe "Active FSM Lifecycle & Buffer-Local State"
+  (describe "Active FSM Lifecycle and Buffer-Local State"
     (it "binds active FSM buffer-locally during hijack and injects context into FSM info"
       (let* ((buf (generate-new-buffer "test-gptel-hijack-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/hijack/"))
+             (mock-ctx (make-macher-agent-context :project-root "/mock/hijack/"))
              (cb-called nil)
              (orig-cb (lambda (resp &rest _args) (setq cb-called resp)))
              (fsm (gptel-make-fsm :info (list :buffer buf :callback orig-cb))))
@@ -100,7 +136,7 @@
               (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx)
               (expect (plist-get (gptel-fsm-info fsm) :origin-buffer) :to-be buf)
               (expect (macher-agent-context-prompt mock-ctx) :to-equal "User prompt to be captured")
-              (expect (macher-agent--get-context-data mock-ctx :prompt) :to-equal "User prompt to be captured")
+              (expect (plist-get (macher-agent-context-plugins mock-ctx) :prompt) :to-equal "User prompt to be captured")
 
               ;; Handlers augmented
               (let ((handlers (gptel-fsm-handlers fsm)))
@@ -120,7 +156,7 @@
 
     (it "resets macher-agent--active-fsm to nil on terminal state flush"
       (let* ((buf (generate-new-buffer "test-flush-reset-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/flush/"))
+             (mock-ctx (make-macher-agent-context :project-root "/mock/flush/"))
              (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
                                   :state 'DONE))
              (flush-called nil)
@@ -159,8 +195,8 @@
 
     (it "resets FSM context structure via macher-agent-bridge-reset-fsm-context"
       (let* ((buf (generate-new-buffer "test-bridge-reset-buf"))
-             (old-ctx (macher-agent--make-context :project-root "/mock/old/"))
-             (new-ctx (macher-agent--make-context :project-root "/mock/new/"))
+             (old-ctx (make-macher-agent-context :project-root "/mock/old/"))
+             (new-ctx (make-macher-agent-context :project-root "/mock/new/"))
              (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context old-ctx))))
         (unwind-protect
             (with-current-buffer buf
@@ -204,7 +240,7 @@
           (when (buffer-live-p orig-buf)
             (kill-buffer orig-buf))))))
 
-  (describe "Transmission Pipeline Reducer & Directives Compilation"
+  (describe "Transmission Pipeline Reducer and Directives Compilation"
     (it "compiles base prompt, task submission directives, boot directives, and thought queue"
       (let* ((init-buf (generate-new-buffer "test-pipe-init-buf"))
              (subseq-buf (generate-new-buffer "test-pipe-subseq-buf"))
@@ -244,7 +280,7 @@
           (when (buffer-live-p init-buf) (kill-buffer init-buf))
           (when (buffer-live-p subseq-buf) (kill-buffer subseq-buf))))))
 
-  (describe "Tool Scope Enforcement & Deduplication"
+  (describe "Tool Scope Enforcement and Deduplication"
     (it "enforces tool scope against active FSM authorized tools"
       (let* ((allowed-tool (gptel-make-tool :name "read_file" :description "Read file" :args nil))
              (fsm (gptel-make-fsm :info (list :tools (list allowed-tool)))))
@@ -263,7 +299,7 @@
 
   (describe "Media Injection Lifecycle"
     (it "rejects invalid media formats and clears media queue upon injection"
-      (let* ((mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
+      (let* ((mock-ctx (make-macher-agent-context :project-root "/mock/proj/"))
              (fsm (gptel-make-fsm :info (list :macher-agent-context mock-ctx))))
         (setf (macher-agent-context-media-queue mock-ctx) 12345)
         (expect (macher-agent--perform-pending-media-injection fsm)
@@ -271,7 +307,13 @@
 
         (setf (macher-agent-context-media-queue mock-ctx) "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         (macher-agent--perform-pending-media-injection fsm)
-        (expect (macher-agent-context-media-queue mock-ctx) :to-be nil))))
+        (expect (macher-agent-context-media-queue mock-ctx) :to-be nil)
+
+        ;; Media queue injection via plugins plist
+        (setf (macher-agent-context-plugins mock-ctx)
+              (list :pending-media "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))
+        (macher-agent--perform-pending-media-injection fsm)
+        (expect (plist-get (macher-agent-context-plugins mock-ctx) :pending-media) :to-be nil))))
 
   (describe "Transmission Dispatch"
     (it "transmits request via macher-agent-gptel-transmit with system message and gptel-send"
@@ -288,7 +330,7 @@
           (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
-  (describe "State Restoration & Session Tracking"
+  (describe "State Restoration and Session Tracking"
     (it "marks buffer as restored session when model is buffer-local"
       (let ((buf (generate-new-buffer "test-restore-buf")))
         (unwind-protect

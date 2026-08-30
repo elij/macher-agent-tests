@@ -48,7 +48,7 @@
       (expect (get 'macher-agent--suppress-patch 'permanent-local) :to-be t)))
 
   ;; ---------------------------------------------------------------------
-  ;; 2. A2A Delegation & Dispatch Pipeline
+  ;; 2. A2A Delegation and Dispatch Pipeline
   ;; ---------------------------------------------------------------------
   (describe "A2A Delegation and Dispatch Pipeline"
     (it "normalizes payloads, dispatches through pipeline, and aggregates results on completion"
@@ -245,7 +245,7 @@
           (kill-buffer child-buf)))))
 
   ;; ---------------------------------------------------------------------
-  ;; 3. Subagent Buffer State & Lifecycle
+  ;; 3. Subagent Buffer State and Lifecycle
   ;; ---------------------------------------------------------------------
   (describe "Subagent Buffer State and Lifecycle"
     (it "creates and initializes subagent buffers with cloned context and tracking registration"
@@ -261,12 +261,14 @@
               (expect (buffer-name subagent-buf) :to-equal "*orch-life-child*")
               (with-current-buffer subagent-buf
                 (expect macher-agent--is-workspace :to-be t)
-                (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be t)
+                (expect (macher-agent-context-p macher-agent--persistent-context) :to-be t)
                 (expect (macher-agent-context-project-root macher-agent--persistent-context) :to-equal "/mock/subagent-root/")
                 (expect (eq macher-agent--persistent-context parent-ctx) :to-be nil)
-                (expect macher-agent-presets :to-equal '(mock-preset)))
-              ;; Registered in tracking list
-              (expect (assoc "*orch-life-child*" macher-agent-active-subagents) :to-be-truthy))
+                (expect macher-agent-presets :to-equal '(mock-preset))
+                (expect (assoc "*orch-life-child*" (macher-agent-context-subagents macher-agent--persistent-context)) :to-be-truthy))
+              ;; Registered in tracking list and parent context
+              (expect (assoc "*orch-life-child*" macher-agent-active-subagents) :to-be-truthy)
+              (expect (assoc "*orch-life-child*" (macher-agent-context-subagents parent-ctx)) :to-be-truthy))
           (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
           (when (and subagent-buf (buffer-live-p subagent-buf)) (kill-buffer subagent-buf)))))
 
@@ -280,10 +282,12 @@
                 (setq-local macher-agent--persistent-context parent-ctx)
                 (setq child-buf (macher-agent-add-subagent "*orch-iso-child*" nil parent-buf)))
               (with-current-buffer child-buf
-                (macher-agent--set-context-data macher-agent--persistent-context :key "child-mutated")
-                (expect (macher-agent--get-context-data macher-agent--persistent-context :key) :to-equal "child-mutated"))
+                (setf (macher-agent-context-plugins macher-agent--persistent-context)
+                      (plist-put (copy-sequence (macher-agent-context-plugins macher-agent--persistent-context))
+                                 :key "child-mutated"))
+                (expect (plist-get (macher-agent-context-plugins macher-agent--persistent-context) :key) :to-equal "child-mutated"))
               (with-current-buffer parent-buf
-                (expect (macher-agent--get-context-data parent-ctx :key) :to-equal "orig")))
+                (expect (plist-get (macher-agent-context-plugins parent-ctx) :key) :to-equal "orig")))
           (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
           (when (and child-buf (buffer-live-p child-buf)) (kill-buffer child-buf)))))
 
@@ -329,8 +333,9 @@
   (describe "Virtual Buffer Application"
     (it "applies single and batch virtual buffer edits to live buffers"
       (let* ((buf (get-buffer-create "*orch-vfs-live*"))
-             (ctx (macher-agent--make-vfs-context
-                   :contents (list (macher-agent-vfs-make-entry (buffer-name buf) "initial" "updated content")))))
+             (ctx (macher-agent--make-context
+                   :project-root default-directory
+                   :plugins (list :vfs (list :contents (list (make-macher-agent-vfs-entry :path (buffer-name buf) :orig "initial" :curr "updated content")))))))
         (unwind-protect
             (progn
               (with-current-buffer buf
@@ -346,7 +351,7 @@
       (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path nil :orig "" :curr "text")) :to-be nil)))
 
   ;; ---------------------------------------------------------------------
-  ;; 5. Preset / Payload Composition & Skills
+  ;; 5. Preset and Payload Composition and Skills
   ;; ---------------------------------------------------------------------
   (describe "Preset and Payload Composition"
     (it "composes payload directives, tools, and parameters from presets"
@@ -382,6 +387,19 @@
         (expect (macher-agent-task-context-target-buffer tctx) :to-equal (current-buffer))
         (expect (macher-agent-task-context-skill-sym tctx) :to-equal 'test-sym)
         (expect (macher-agent-task-context-system-message tctx) :to-equal "System prompt")))
+
+    (it "extracts and updates context prompts and workspaces using specialized accessors"
+      (let ((ctx (macher-agent--make-context :id "ctx-acc-01"
+                                             :project-root "/mock/acc-root/"
+                                             :plugins (list :prompt "Initial Prompt"))))
+        (expect (macher-agent-context-p ctx) :to-be t)
+        (expect (macher-agent-context-id ctx) :to-equal "ctx-acc-01")
+        (expect (macher-agent-context-project-root ctx) :to-equal "/mock/acc-root/")
+        (expect (macher-agent-context-prompt ctx) :to-equal "Initial Prompt")
+        (setf (macher-agent-context-prompt ctx) "Mutated Prompt")
+        (expect (macher-agent-context-prompt ctx) :to-equal "Mutated Prompt")
+        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Mutated Prompt")
+        (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (expand-file-name "/mock/acc-root/")))))
 
     (it "resolves buffer names from strings, buffers, and file paths via macher-agent--resolve-buffer-name"
       (let ((buf (get-buffer-create "*orch-name-resolve*")))
