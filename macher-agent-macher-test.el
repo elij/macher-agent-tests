@@ -108,6 +108,7 @@
   (describe "macher-agent-macher-build-patch and ephemeral translation"
     (it "accepts (ctx fsm) with macher-agent-context and ephemerally instantiates upstream macher-context"
       (let* ((proj-root "/mock/agent-project")
+             (canonical-root (file-truename (expand-file-name proj-root)))
              (files (list (make-macher-agent-vfs-entry :path "main.el" :orig nil :curr "(message \"hello\")")
                           (make-macher-agent-vfs-entry :path "test.el" :orig nil :curr "(message \"test\")")))
              (expected-upstream '(("main.el" nil . "(message \"hello\")") ("test.el" nil . "(message \"test\")")))
@@ -131,13 +132,14 @@
           (expect result :to-equal 'patch-result-agent-ctx)
           (expect (length make-context-calls) :to-equal 1)
           (let ((mc-args (car make-context-calls)))
-            (expect (plist-get mc-args :workspace) :to-equal (cons 'agent (expand-file-name proj-root)))
+            (expect (plist-get mc-args :workspace) :to-equal (cons 'agent canonical-root))
             (expect (plist-get mc-args :contents) :to-equal expected-upstream))
           (expect (length build-patch-calls) :to-equal 1)
           (expect (car build-patch-calls) :to-equal (list dummy-ephemeral-ctx dummy-fsm)))))
 
     (it "accepts (project-root vfs-files fsm) and ephemerally instantiates upstream macher-context"
       (let* ((proj-root "/mock/project-direct")
+             (canonical-root (file-truename (expand-file-name proj-root)))
              (files (list (make-macher-agent-vfs-entry :path "app.js" :orig nil :curr "console.log('hi');")))
              (expected-upstream '(("app.js" nil . "console.log('hi');")))
              (dummy-fsm (make-symbol "mock-fsm-direct"))
@@ -156,10 +158,39 @@
           (expect result :to-equal 'patch-result-3-args)
           (expect (length make-context-calls) :to-equal 1)
           (let ((mc-args (car make-context-calls)))
-            (expect (plist-get mc-args :workspace) :to-equal (cons 'agent (expand-file-name proj-root)))
+            (expect (plist-get mc-args :workspace) :to-equal (cons 'agent canonical-root))
             (expect (plist-get mc-args :contents) :to-equal expected-upstream))
           (expect (length build-patch-calls) :to-equal 1)
-          (expect (car build-patch-calls) :to-equal (list dummy-ephemeral-ctx dummy-fsm))))))
+          (expect (car build-patch-calls) :to-equal (list dummy-ephemeral-ctx dummy-fsm)))))
+
+    (it "resolves canonical relative paths using canonical-root and file-truename"
+      (let* ((proj-root "/mock/canonical-project/nested/..")
+             (canonical-root (file-truename (expand-file-name proj-root)))
+             (abs-file (expand-file-name "src/core.el" canonical-root))
+             (rel-file "lib/utils.el")
+             (dot-file "./components/widget.el")
+             (dotdot-file "sub/../models/user.el")
+             (files (list (make-macher-agent-vfs-entry :path abs-file :orig "old-core" :curr "new-core")
+                          (make-macher-agent-vfs-entry :path rel-file :orig "old-utils" :curr "new-utils")
+                          (make-macher-agent-vfs-entry :path dot-file :orig nil :curr "new-widget")
+                          (make-macher-agent-vfs-entry :path dotdot-file :orig "old-user" :curr nil)))
+             (expected-upstream '(("src/core.el" "old-core" . "new-core")
+                                  ("lib/utils.el" "old-utils" . "new-utils")
+                                  ("components/widget.el" nil . "new-widget")
+                                  ("models/user.el" "old-user" . nil)))
+             (dummy-fsm (make-symbol "mock-fsm-resolution"))
+             (make-context-calls nil))
+        (spy-on 'macher--make-context :and-call-fake
+                (lambda (&rest args)
+                  (setq make-context-calls (append make-context-calls (list args)))
+                  (list :mock-context t)))
+        (spy-on 'macher--build-patch :and-call-fake (lambda (_c _f) 'patch-ok))
+        (let ((res (macher-agent-macher-build-patch proj-root files dummy-fsm)))
+          (expect res :to-equal 'patch-ok)
+          (expect (length make-context-calls) :to-equal 1)
+          (let ((mc-args (car make-context-calls)))
+            (expect (plist-get mc-args :workspace) :to-equal (cons 'agent canonical-root))
+            (expect (plist-get mc-args :contents) :to-equal expected-upstream))))))
 
   (describe "macher-agent-macher-workspace-name"
     (it "resolves workspace name via macher--workspace-name when available"
