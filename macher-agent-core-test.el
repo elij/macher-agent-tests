@@ -552,24 +552,6 @@
               (expect (macher-agent-canonical-tool-name '(:name "my_tool")) :to-equal "my_tool")
               (expect (macher-agent-canonical-tool-name nil) :to-be nil)))
 
-(describe "12. Prompt Synchronization and Fallback Resolution"
-          (it "resolves, synchronizes, and preserves prompts across direct slots, plugins, and copiers"
-              (let* ((ctx-fallback (macher-agent--make-context :plugins '(:prompt "fallback prompt message")))
-                     (ctx-direct (macher-agent--make-context :plugins '(:prompt "data prompt")))
-                     (ctx-sync (macher-agent--make-context)))
-                ;; Direct vs fallback prompt extraction & sync
-                (expect (macher-agent--get-context-prompt ctx-fallback) :to-equal "fallback prompt message")
-                (expect (macher-agent--get-context-prompt ctx-direct) :to-equal "data prompt")
-                (macher-agent--set-context-prompt ctx-sync "new synchronized prompt")
-                (expect (macher-agent--get-context-data ctx-sync :prompt) :to-equal "new synchronized prompt")
-                (expect (macher-agent--get-context-prompt ctx-sync) :to-equal "new synchronized prompt")
-
-                ;; Clone preservation
-                (let* ((orig (macher-agent--make-context :project-root "/mock/proj"
-                                                         :plugins '(:prompt "cloned prompt text")))
-                       (cloned (macher-agent--copy-context orig)))
-                  (expect (macher-agent--get-context-prompt cloned) :to-equal "cloned prompt text")))))
-
 (describe "13. Active FSM Fallback Precedence"
           (it "resolves active FSM according to strict fallback hierarchy"
               (let ((fsm-arg 'fsm-arg)

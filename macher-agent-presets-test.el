@@ -236,7 +236,14 @@
                 (expect (plist-get composed :temperature) :to-equal 0.3)))
 
           (it "confirms dead function macher-agent--evaluate-and-cache-tool is removed"
-              (expect (fboundp 'macher-agent--evaluate-and-cache-tool) :to-be nil)))
+              (expect (fboundp 'macher-agent--evaluate-and-cache-tool) :to-be nil))
+
+          (it "resolves skill VFS content directly from context contents entries"
+              (let* ((vfs-entry (make-macher-agent-vfs-entry :path "/mock/skills/my-skill/SKILL.md"
+                                                             :curr "---\nname: vfs-skill\n---\nVFS Skill Body"))
+                     (ctx (macher-agent--make-vfs-context :contents (list vfs-entry))))
+                (expect (macher-agent--resolve-skill-vfs-content '("/mock/skills/my-skill/SKILL.md") ctx)
+                        :to-equal "---\nname: vfs-skill\n---\nVFS Skill Body"))))
 
 (provide 'macher-agent-presets-test)
 ;;; macher-agent-presets-test.el ends here

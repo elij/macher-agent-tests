@@ -99,6 +99,8 @@
               ;; Context injected into FSM info plist
               (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx)
               (expect (plist-get (gptel-fsm-info fsm) :origin-buffer) :to-be buf)
+              (expect (macher-agent-context-prompt mock-ctx) :to-equal "User prompt to be captured")
+              (expect (macher-agent--get-context-data mock-ctx :prompt) :to-equal "User prompt to be captured")
 
               ;; Handlers augmented
               (let ((handlers (gptel-fsm-handlers fsm)))
@@ -370,7 +372,15 @@
         (expect (macher-context-p ctx) :to-be t)
         (expect (macher-context-contents ctx) :to-equal '(("file.el" . ("old" . "new"))))
         (setf (macher-context-contents ctx) '(("file2.el" . ("a" . "b"))))
-        (expect (macher-context-contents ctx) :to-equal '(("file2.el" . ("a" . "b"))))))))
+        (expect (macher-context-contents ctx) :to-equal '(("file2.el" . ("a" . "b"))))))
+
+    (it "extracts tool names directly for tools, strings, and symbols"
+      (let ((mock-tool (gptel-make-tool :name "my_tool" :description "desc")))
+        (expect (macher-agent--extract-tool-name mock-tool) :to-equal "my_tool")
+        (expect (macher-agent--extract-tool-name (cons "alias" mock-tool)) :to-equal "my_tool")
+        (expect (macher-agent--extract-tool-name "str_tool") :to-equal "str_tool")
+        (expect (macher-agent--extract-tool-name 'sym_tool) :to-equal "sym_tool")
+        (expect (macher-agent--extract-tool-name 12345) :to-be nil)))))
 
 (provide 'macher-agent-gptel-test)
 ;;; macher-agent-gptel-test.el ends here
