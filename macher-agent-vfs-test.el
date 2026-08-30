@@ -25,31 +25,34 @@
                     (it "properly reads and writes VFS state via macher-agent-vfs--get-state and macher-agent-vfs--set-state"
                         (let ((ctx (macher-agent--make-context :id "ctx-env-1")))
                           (expect (macher-agent-vfs--get-state ctx) :to-be nil)
-                          (macher-agent-vfs--set-state ctx '(:contents (("a.el" . "code")) :dirty-p t))
-                          (expect (macher-agent-vfs--get-state ctx) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
-                          (expect (plist-get (macher-agent-context-plugins ctx) :vfs) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))))
+                          (macher-agent-vfs--set-state ctx (list :contents (list (make-macher-agent-vfs-entry :path "a.el" :orig nil :curr "code")) :dirty-p t))
+                          (expect (macher-agent-vfs--get-state ctx) :to-equal (list :contents (list (make-macher-agent-vfs-entry :path "a.el" :orig nil :curr "code")) :dirty-p t))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :vfs) :to-equal (list :contents (list (make-macher-agent-vfs-entry :path "a.el" :orig nil :curr "code")) :dirty-p t))))
 
-                    (it "handles raw plist contexts seamlessly with get-state and set-state"
-                        (let ((raw-ctx (list :id "raw-ctx-1" :vfs '(:contents (("a.el" . "code")) :dirty-p t))))
-                          (expect (macher-agent-vfs--get-state raw-ctx) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
-                          (let ((updated (macher-agent-vfs--set-state raw-ctx '(:contents (("b.el" . "code2")) :dirty-p nil))))
-                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil)))))
+                    (it "strictly enforces context structures and rejects residual alists in VFS state accessors"
+                        (let ((alist-ctx '((:vfs . (:contents nil :dirty-p t))))
+                              (valid-ctx (macher-agent--make-context :id "valid-ctx-vfs")))
+                          (expect (macher-agent-vfs--get-state alist-ctx) :to-be nil)
+                          (expect (macher-agent-vfs--set-state alist-ctx '(:contents nil)) :to-be nil)
+                          (expect (macher-agent-storage--extract-context alist-ctx) :to-be nil)
+                          (expect (macher-agent-storage--extract-context `((:target-context . ,valid-ctx))) :to-be nil)
+                          (expect (macher-agent-storage--extract-context valid-ctx) :to-be valid-ctx)
+                          (expect (macher-agent-storage--extract-context
+                                   (make-macher-agent-transit-payload :target-context valid-ctx))
+                                  :to-be valid-ctx)))
 
-                    (it "handles raw alist contexts seamlessly with get-state and set-state"
-                        (let ((raw-alist (list (cons :vfs '(:contents (("a.el" . "code")) :dirty-p t)))))
-                          (expect (macher-agent-vfs--get-state raw-alist) :to-equal '(:contents (("a.el" . "code")) :dirty-p t))
-                          (let ((updated (macher-agent-vfs--set-state raw-alist '(:contents (("b.el" . "code2")) :dirty-p nil))))
-                            (expect updated :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))
-                            (expect (macher-agent-vfs--get-state raw-alist) :to-equal '(:contents (("b.el" . "code2")) :dirty-p nil))))))
+                    (it "manages shadow buffers via canonical macher-agent-context-shadow-buffers and macher-agent--set-context-shadow-buffers"
+                        (let ((ctx (macher-agent--make-context :id "ctx-sb-1")))
+                          (expect (macher-agent-context-shadow-buffers ctx) :to-be nil)
+                          (macher-agent--set-context-shadow-buffers ctx (list "*shadow-1*"))
+                          (expect (macher-agent-context-shadow-buffers ctx) :to-equal (list "*shadow-1*")))))
 
           (describe "macher-agent-vfs-scratch-inflate"
                     (it "inflates VFS contents into its physical scratchpad directory"
                         (let* ((temp-dir (make-temp-file "macher-vfs-scratch-test" t))
                                (ws-root "/mock/scratch-ws/")
                                (vfs-tbl (make-hash-table :test 'equal))
-                               (inflate-fn (if (fboundp 'macher-agent-vfs-scratch-inflate)
-                                               #'macher-agent-vfs-scratch-inflate
-                                             #'macher-agent-sandbox-inflate)))
+                               (inflate-fn #'macher-agent-vfs-scratch-inflate))
                           (puthash "/mock/scratch-ws/nested/file.txt" "nested scratch content" vfs-tbl)
                           (puthash "/mock/scratch-ws/root-file.txt" "root scratch content" vfs-tbl)
                           (unwind-protect
@@ -359,7 +362,155 @@
                         (expect (fboundp 'macher-agent-vfs-read) :to-be nil)
                         (expect (fboundp 'macher-agent--hydrate-vfs-entry) :to-be nil)
                         (expect (fboundp 'macher-agent--filter-safe-files) :to-be nil)
-                        (expect (fboundp 'macher-agent-prepare-upstream-payloads) :to-be nil))))
+                        (expect (fboundp 'macher-agent-prepare-upstream-payloads) :to-be nil)
+                        (expect (fboundp 'macher-agent--get-context-shadow-buffers) :to-be nil)
+                        (expect (fboundp 'macher-agent-sandbox-inflate) :to-be nil))
+
+                    (it "contains no duplicate definitions of macher-agent-context-root and macher-agent--get-context-workspace"
+                        (let* ((vfs-file (or (locate-library "macher-agent-vfs.el")
+                                             (expand-file-name "macher-agent-vfs.el" default-directory)))
+                               (forms nil))
+                          (with-temp-buffer
+                            (insert-file-contents vfs-file)
+                            (goto-char (point-min))
+                            (condition-case nil
+                                (while t
+                                  (push (read (current-buffer)) forms))
+                              (end-of-file nil)))
+                          (let ((defined-symbols
+                                 (mapcar (lambda (form)
+                                           (let ((sym (cadr form)))
+                                             (if (and (consp sym) (eq (car sym) 'quote))
+                                                 (cadr sym)
+                                               sym)))
+                                         (cl-remove-if-not
+                                          (lambda (form)
+                                            (and (consp form)
+                                                 (memq (car form) '(defun cl-defun defmacro defalias defvar defcustom))))
+                                          forms))))
+                            (expect (member 'macher-agent-context-root defined-symbols) :to-be nil)
+                            (expect (member 'macher-agent--get-context-workspace defined-symbols) :to-be nil)
+                            (expect (member 'macher-agent--get-context-shadow-buffers defined-symbols) :to-be nil)
+                            (expect (member 'macher-agent-sandbox-inflate defined-symbols) :to-be nil)))))
+
+          (describe "Dual Virtual File System Separation & Struct Integration"
+                    (it "provides separate distinct instances for physical files and live non-file-backed buffers"
+                        (let* ((mock-dir (expand-file-name "/mock/dual-vfs-test/"))
+                               (buf1 (get-buffer-create "*vfs-test-non-file*"))
+                               (entry-file (macher-agent-vfs-make-entry
+                                            (expand-file-name "src/core.el" mock-dir)
+                                            "file-orig-content"
+                                            "file-modified-content"))
+                               (entry-buf (macher-agent-vfs-make-entry
+                                           "*vfs-test-non-file*"
+                                           "buf-orig-content"
+                                           "buf-modified-content"))
+                               (ctx (macher-agent--make-vfs-context
+                                     :workspace (make-macher-agent-workspace :project-root mock-dir)
+                                     :contents (list entry-file entry-buf))))
+                          (unwind-protect
+                              (progn
+                                (expect (macher-agent-vfs-entry-p entry-file) :to-be t)
+                                (expect (macher-agent-vfs-entry-p entry-buf) :to-be t)
+                                (expect (macher-agent-vfs-entry-modified-p entry-file) :to-be t)
+                                (expect (macher-agent-vfs-entry-modified-p entry-buf) :to-be t)
+                                (let* ((split (macher-agent--split-context ctx))
+                                       (phys-ctx (car split))
+                                       (virt-ctx (cdr split)))
+                                  (expect (macher-agent-context-p phys-ctx) :to-be t)
+                                  (expect (macher-agent-context-p virt-ctx) :to-be t)
+                                  (expect (eq phys-ctx virt-ctx) :to-be nil)
+                                  ;; Verify physical file VFS instance
+                                  (let ((phys-contents (macher-agent--get-context-contents phys-ctx)))
+                                    (expect (length phys-contents) :to-equal 1)
+                                    (expect (macher-agent-vfs-entry-path (car phys-contents))
+                                            :to-equal (expand-file-name "src/core.el" mock-dir))
+                                    (expect (macher-agent-vfs-entry-curr (car phys-contents))
+                                            :to-equal "file-modified-content"))
+                                  ;; Verify virtual buffer VFS instance
+                                  (let ((virt-contents (macher-agent--get-context-contents virt-ctx)))
+                                    (expect (length virt-contents) :to-equal 1)
+                                    (expect (macher-agent-vfs-entry-path (car virt-contents))
+                                            :to-equal "*vfs-test-non-file*")
+                                    (expect (macher-agent-vfs-entry-curr (car virt-contents))
+                                            :to-equal "buf-modified-content"))))
+                            (when (buffer-live-p buf1) (kill-buffer buf1)))))
+
+                    (it "properly merges deletions where diff items have nil curr and returns nil from read-context-file"
+                        (let* ((mock-dir (make-temp-file "macher-vfs-deletion-test" t))
+                               (workspace (make-macher-agent-workspace :project-root mock-dir))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
+                          (unwind-protect
+                              (progn
+                                (macher-agent--update-context-file ctx "to-delete.txt" "pre-deletion content")
+                                (expect (macher-agent--read-context-file ctx "to-delete.txt") :to-equal "pre-deletion content")
+                                (macher-agent-vfs--merge-payload
+                                 (make-macher-agent-transit-payload
+                                  :target-context ctx
+                                  :payload (list (make-macher-agent-vfs-entry :path "to-delete.txt" :orig "pre-deletion content" :curr nil))))
+                                (expect (macher-agent--read-context-file ctx "to-delete.txt") :to-be nil))
+                            (delete-directory mock-dir t))))
+
+                    (it "supports polymorphic invocation of macher-agent-vfs--merge-payload with gptel-fsm and context targets"
+                        (let* ((mock-dir (make-temp-file "macher-vfs-poly-test" t))
+                               (workspace (make-macher-agent-workspace :project-root mock-dir))
+                               (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
+                               (buf (generate-new-buffer "*macher-vfs-poly-buf*"))
+                               (fsm (gptel-make-fsm :info (list :macher-agent-context ctx :buffer buf))))
+                          (unwind-protect
+                              (progn
+                                (macher-agent-vfs--merge-payload fsm (list (make-macher-agent-vfs-entry :path "fsm-merge.txt" :orig nil :curr "fsm-data")))
+                                (expect (macher-agent--read-context-file ctx "fsm-merge.txt") :to-equal "fsm-data")
+                                (macher-agent-vfs--merge-payload ctx (list (make-macher-agent-vfs-entry :path "ctx-merge.txt" :orig nil :curr "ctx-data")))
+                                (expect (macher-agent--read-context-file ctx "ctx-merge.txt") :to-equal "ctx-data")
+                                ;; 1-arg transit payload with parent-context
+                                (macher-agent-vfs--merge-payload
+                                 (make-macher-agent-transit-payload
+                                  :parent-context ctx
+                                  :payload (list (make-macher-agent-vfs-entry :path "parent-ctx-merge.txt" :orig nil :curr "pctx-data"))))
+                                (expect (macher-agent--read-context-file ctx "parent-ctx-merge.txt") :to-equal "pctx-data")
+                                ;; 1-arg transit payload with target-buffer
+                                (with-current-buffer buf
+                                  (setq-local macher-agent--persistent-context ctx))
+                                (macher-agent-vfs--merge-payload
+                                 (make-macher-agent-transit-payload
+                                  :target-buffer buf
+                                  :payload (list (make-macher-agent-vfs-entry :path "tbuf-merge.txt" :orig nil :curr "tbuf-data"))))
+                                (expect (macher-agent--read-context-file ctx "tbuf-merge.txt") :to-equal "tbuf-data")
+                                ;; 2-arg polymorphic invocation with transit-payload as 2nd arg
+                                (macher-agent-vfs--merge-payload
+                                 fsm
+                                 (make-macher-agent-transit-payload
+                                  :payload (list (make-macher-agent-vfs-entry :path "fsm-poly-payload.txt" :orig nil :curr "poly-pdata"))))
+                                (expect (macher-agent--read-context-file ctx "fsm-poly-payload.txt") :to-equal "poly-pdata"))
+                            (when (buffer-live-p buf) (kill-buffer buf))
+                            (delete-directory mock-dir t))))
+
+                    (it "enforces security check in macher-agent--collect-raw-files before checking project-current"
+                        (cl-letf (((symbol-function 'project-current) (lambda (&rest _) 'mock-proj))
+                                  ((symbol-function 'project-files) (lambda (&rest _) '("/home/user/file.txt"))))
+                          (expect (macher-agent--collect-raw-files "/home/mockuser" "/home/mockuser")
+                                  :to-throw 'error)
+                          (expect (macher-agent--collect-raw-files "/" "/home/mockuser")
+                                  :to-throw 'error)))
+
+                    (it "properly expands relative paths in macher-agent-vfs-write"
+                        (let* ((vfs-ht (make-hash-table :test 'equal))
+                               (mtime-ht (make-hash-table :test 'equal))
+                               (temp-file (make-temp-file "macher-vfs-write-test")))
+                          (unwind-protect
+                              (let ((default-directory (file-name-directory temp-file))
+                                    (rel-name (file-name-nondirectory temp-file)))
+                                (macher-agent-vfs-write vfs-ht mtime-ht rel-name "new relative content")
+                                (expect (gethash rel-name vfs-ht) :to-equal "new relative content")
+                                (expect (gethash (expand-file-name rel-name) mtime-ht) :to-be-truthy))
+                            (delete-file temp-file))))
+
+                    (it "classifies relative paths against canonical project root"
+                        (let ((root "/mock/canonical-proj"))
+                          (expect (macher-agent--classify-file-path "src/main.el" root) :to-equal 'file)
+                          (expect (macher-agent--classify-file-path "assets/image.png" root) :to-equal 'media)
+                          (expect (macher-agent--classify-file-path "/outside/other.el" root) :to-equal 'external)))))
 
 (provide 'macher-agent-vfs-test)
 ;;; macher-agent-vfs-test.el ends here

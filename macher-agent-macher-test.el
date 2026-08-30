@@ -18,13 +18,26 @@
       (expect (fboundp 'macher-agent-macher-workspace-hash) :to-be t)
       (expect (fboundp 'macher-agent-macher-safe-workspace-hash) :to-be t)
       (expect (fboundp 'macher-agent-macher-install) :to-be t)
+      (expect (fboundp 'macher-agent-context-resolution-install) :to-be t)
+      (expect (fboundp 'macher-agent-context-lookup) :to-be t)
+      (expect (fboundp 'macher-agent-trigger-patch) :to-be t)
+      (expect (fboundp 'macher-agent-apply-patch) :to-be t)
       (expect (fboundp 'macher-agent-macher-register-workspace-type) :to-be nil)
       (expect (fboundp 'macher-agent-macher-build-patch-from-vfs) :to-be nil)
       (expect (fboundp 'macher-agent--create-and-tag-vfs-context) :to-be nil)
       (expect (fboundp 'macher-agent--def-context-accessor) :to-be nil)
       (expect (fboundp 'macher-agent--with-protected-context-contents) :to-be nil)
       (expect (fboundp 'macher-agent--context-p) :to-be nil)
-      (expect (fboundp 'macher-agent-macher-run-with-context) :to-be nil))
+      (expect (fboundp 'macher-agent-macher-run-with-context) :to-be nil)
+      (expect (fboundp 'macher-agent-ctx-pipe--canonical) :to-be nil)
+      (expect (fboundp 'macher-agent-ctx-pipe--workspace-id) :to-be nil)
+      (expect (fboundp 'macher-agent-ctx-pipe--subagent) :to-be nil)
+      (expect (fboundp 'macher-agent-ctx-pipe--fsm-fallback) :to-be nil)
+      (expect (fboundp 'macher-agent--safe-workspace-hash) :to-be nil)
+      (expect (fboundp 'macher-agent--find-active-workspace-in-ancestors) :to-be nil)
+      (expect (fboundp 'macher-agent--match-persistent-context) :to-be nil)
+      (expect (fboundp 'macher-agent--input-specifies-workspace-p) :to-be nil)
+      (expect (fboundp 'macher-agent--get-expanded-root) :to-be nil))
 
     (it "contains zero internal declare-function forms in macher-agent-macher.el"
       (let* ((file (or (locate-library "macher-agent-macher.el")
@@ -64,7 +77,9 @@
   (describe "macher-agent-macher-build-patch and ephemeral translation"
     (it "accepts (ctx fsm) with macher-agent-context and ephemerally instantiates upstream macher-context"
       (let* ((proj-root "/mock/agent-project")
-             (files '(("main.el" . "(message \"hello\")") ("test.el" . "(message \"test\")")))
+             (files (list (make-macher-agent-vfs-entry :path "main.el" :orig nil :curr "(message \"hello\")")
+                          (make-macher-agent-vfs-entry :path "test.el" :orig nil :curr "(message \"test\")")))
+             (expected-upstream '(("main.el" nil . "(message \"hello\")") ("test.el" nil . "(message \"test\")")))
              (agent-ctx (make-macher-agent-context
                          :id "test-agent-1"
                          :project-root proj-root
@@ -86,13 +101,14 @@
             (expect (length make-context-calls) :to-equal 1)
             (let ((mc-args (car make-context-calls)))
               (expect (plist-get mc-args :workspace) :to-equal (cons 'agent (expand-file-name proj-root)))
-              (expect (plist-get mc-args :contents) :to-equal files))
+              (expect (plist-get mc-args :contents) :to-equal expected-upstream))
             (expect (length build-patch-calls) :to-equal 1)
             (expect (car build-patch-calls) :to-equal (list dummy-ephemeral-ctx dummy-fsm))))))
 
     (it "accepts (project-root vfs-files fsm) and ephemerally instantiates upstream macher-context"
       (let* ((proj-root "/mock/project-direct")
-             (files '(("app.js" . "console.log('hi');")))
+             (files (list (make-macher-agent-vfs-entry :path "app.js" :orig nil :curr "console.log('hi');")))
+             (expected-upstream '(("app.js" nil . "console.log('hi');")))
              (dummy-fsm (make-symbol "mock-fsm-direct"))
              (make-context-calls nil)
              (build-patch-calls nil)
@@ -110,7 +126,7 @@
             (expect (length make-context-calls) :to-equal 1)
             (let ((mc-args (car make-context-calls)))
               (expect (plist-get mc-args :workspace) :to-equal (cons 'agent (expand-file-name proj-root)))
-              (expect (plist-get mc-args :contents) :to-equal files))
+              (expect (plist-get mc-args :contents) :to-equal expected-upstream))
             (expect (length build-patch-calls) :to-equal 1)
             (expect (car build-patch-calls) :to-equal (list dummy-ephemeral-ctx dummy-fsm)))))))
 
@@ -183,14 +199,7 @@
         (expect (length hash-default) :to-equal 16)
         (expect (length hash-4) :to-equal 4)
         (expect (length hash-8) :to-equal 8)
-        (expect (<= (length hash-large) 32) :to-be-truthy)))
-
-    (it "provides backwards compatible alias macher-agent--safe-workspace-hash"
-      (let ((ctx (make-macher-agent-context :project-root "/path/to/my/project")))
-        (expect (macher-agent--safe-workspace-hash ctx)
-                :to-equal (macher-agent-macher-safe-workspace-hash ctx))
-        (expect (macher-agent--safe-workspace-hash ctx 4)
-                :to-equal (macher-agent-macher-safe-workspace-hash ctx 4)))))
+        (expect (<= (length hash-large) 32) :to-be-truthy))))
 
   (describe "macher-agent-macher-install"
     (it "configures upstream alias, types alist, and workspace functions"
@@ -229,8 +238,10 @@
         (expect (macher-agent--unwrap-workspace ctx) :to-equal proj-root)))
 
     (it "generates display name cleanly via macher-agent--get-name for macher-agent-context"
-      (let ((ctx (make-macher-agent-context :project-root "/tmp/my-project")))
-        (expect (macher-agent--get-name ctx) :to-equal "Agent: my-project")))
+      (let ((ctx (make-macher-agent-context :project-root "/tmp/my-project"))
+            (ctx-slash (make-macher-agent-context :project-root "/tmp/my-project/")))
+        (expect (macher-agent--get-name ctx) :to-equal "Agent: my-project")
+        (expect (macher-agent--get-name ctx-slash) :to-equal "Agent: my-project")))
 
     (it "retrieves active patch buffer for macher-agent-context"
       (let* ((proj-root "/tmp/patch-proj")
@@ -243,16 +254,32 @@
           (expect (macher-agent-macher-patch-buffer ctx) :to-equal 'mock-patch-buffer)
           (expect called-ws :to-equal (cons 'project (expand-file-name proj-root)))))))
 
-  (describe "Context lookup and registration with macher-agent-context"
-    (it "registers and resolves macher-agent-context via macher-agent-context-lookup"
-      (let ((macher-agent-active-workspaces (make-hash-table :test 'equal))
-            (proj-root "/mock/lookup/project")
-            (ctx (make-macher-agent-context :project-root "/mock/lookup/project")))
-        (macher-agent--register-active-workspace-root proj-root ctx)
-        (expect (macher-agent-context-lookup ctx) :to-be ctx)
-        (expect (macher-agent-context-lookup proj-root) :to-be ctx)
-        (expect (macher-agent-context-lookup (cons 'agent proj-root)) :to-be ctx)
-        (expect (macher-agent-context-lookup (cons 'project proj-root)) :to-be ctx)))
+  (describe "Context lookup and resolution pipeline without obsolete steps"
+    (it "deterministically resolves macher-agent-context via macher-agent-context-lookup"
+      (let* ((ctx (make-macher-agent-context :project-root "/mock/lookup/project"))
+             (buf (generate-new-buffer "test-ctx-buf")))
+        (unwind-protect
+            (progn
+              (expect (macher-agent-context-lookup ctx) :to-be ctx)
+              (with-current-buffer buf
+                (setq-local macher-agent--persistent-context ctx))
+              (expect (macher-agent-context-lookup buf) :to-be ctx)
+              (cl-letf (((symbol-function 'macher-agent-resolve-context)
+                         (lambda (&optional input) (and (equal input 'custom-ref) ctx))))
+                (expect (macher-agent-context-lookup 'custom-ref) :to-be ctx)
+                (expect (macher-agent-context-lookup 'unknown-ref) :to-be nil)))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "installs clean context-resolution pipeline steps and excludes obsolete steps"
+      (clrhash macher-agent-pipeline-registry)
+      (macher-agent-context-resolution-install)
+      (let ((steps (macher-agent-get-pipeline-steps 'context-resolution)))
+        (expect (member #'macher-agent-ctx-pipe--explicit steps) :to-be-truthy)
+        (expect (member #'macher-agent-ctx-pipe--buffer steps) :to-be-truthy)
+        (expect (member #'macher-agent-ctx-pipe--fsm steps) :to-be-truthy)
+        (expect (member 'macher-agent-ctx-pipe--fsm-fallback steps) :to-be nil)
+        (expect (member #'macher-agent-ctx-pipe--lazy-init steps) :to-be-truthy)))
 
     (it "resolves context in pipeline step macher-agent-ctx-pipe--explicit"
       (let* ((ctx (make-macher-agent-context :project-root "/mock/pipeline-proj"))
@@ -260,20 +287,33 @@
              (updated (macher-agent-ctx-pipe--explicit state)))
         (expect (plist-get updated :resolved) :to-be ctx)))
 
-    (it "resolves context in pipeline step macher-agent-ctx-pipe--canonical"
-      (let* ((macher-agent-active-workspaces (make-hash-table :test 'equal))
-             (proj-root "/mock/canonical-proj")
-             (ctx (make-macher-agent-context :project-root proj-root))
-             (_ (macher-agent--register-active-workspace-root proj-root ctx))
-             (state (list :input proj-root :resolved nil))
-             (updated (macher-agent-ctx-pipe--canonical state)))
-        (expect (plist-get updated :resolved) :to-be ctx))))
+    (it "resolves context in pipeline step macher-agent-ctx-pipe--buffer"
+      (let* ((ctx (make-macher-agent-context :project-root "/mock/buf-proj"))
+             (buf (generate-new-buffer "test-pipe-buf")))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (setq-local macher-agent--persistent-context ctx))
+              (let* ((state (list :input buf :resolved nil))
+                     (updated (macher-agent-ctx-pipe--buffer state)))
+                (expect (plist-get updated :resolved) :to-be ctx)))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "resolves context in pipeline step macher-agent-ctx-pipe--fsm"
+      (let* ((ctx (make-macher-agent-context :project-root "/mock/fsm-proj"))
+             (dummy-fsm (make-symbol "mock-pipeline-fsm")))
+        (cl-letf (((symbol-function 'macher-agent--extract-fsm-context)
+                   (lambda (fsm) (when (eq fsm dummy-fsm) ctx))))
+          (let* ((state (list :input dummy-fsm :resolved nil))
+                 (updated (macher-agent-ctx-pipe--fsm state)))
+            (expect (plist-get updated :resolved) :to-be ctx))))))
 
   (describe "Context mutation, data/prompt setters, and cloning with macher-agent-context"
     (it "safely mutates data and prompt on macher-agent-context"
       (let ((ctx (make-macher-agent-context :project-root "/tmp/test")))
-        (macher-agent--set-context-data ctx :vfs '(:contents (("a.el" . "1"))))
-        (expect (plist-get (macher-agent-context-plugins ctx) :vfs) :to-equal '(:contents (("a.el" . "1"))))
+        (macher-agent--set-context-data ctx :vfs (list :contents (list (make-macher-agent-vfs-entry :path "a.el" :orig nil :curr "1"))))
+        (expect (plist-get (macher-agent-context-plugins ctx) :vfs) :to-equal (list :contents (list (make-macher-agent-vfs-entry :path "a.el" :orig nil :curr "1"))))
         (macher-agent--set-context-prompt ctx "new agent prompt")
         (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "new agent prompt")))
 
@@ -281,7 +321,7 @@
       (let* ((orig (make-macher-agent-context
                     :id "orig-1"
                     :project-root "/mock/clone-proj"
-                    :plugins (list :vfs (list :contents '(("f1" . "v1")) :dirty-p t)
+                    :plugins (list :vfs (list :contents (list (make-macher-agent-vfs-entry :path "f1" :orig nil :curr "v1")) :dirty-p t)
                                    :vfs-buffers (make-hash-table :test 'equal)
                                    :mtime-tracker (make-hash-table :test 'equal))))
              (cloned (macher-agent--clone-context orig)))
@@ -290,7 +330,7 @@
         (expect (macher-agent-context-id cloned) :to-equal "orig-1")
         (expect (macher-agent-context-project-root cloned) :to-equal "/mock/clone-proj")
         (expect (plist-get (plist-get (macher-agent-context-plugins cloned) :vfs) :contents)
-                :to-equal '(("f1" . "v1")))
+                :to-equal (list (make-macher-agent-vfs-entry :path "f1" :orig nil :curr "v1")))
         (expect (hash-table-p (plist-get (macher-agent-context-plugins cloned) :vfs-buffers)) :to-be t)
         (expect (eq (plist-get (macher-agent-context-plugins cloned) :vfs-buffers)
                     (plist-get (macher-agent-context-plugins orig) :vfs-buffers))

@@ -7,56 +7,98 @@
                    default-directory)
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t default-directory))))
+                  (t default-directory)))
+       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+  (when root-dir
+    (add-to-list 'load-path (expand-file-name root-dir))
+    (add-to-list 'load-path (expand-file-name "macher" root-dir))
+    (add-to-list 'load-path (expand-file-name "gptel" root-dir)))
   (add-to-list 'load-path test-dir)
   (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
 
 (require 'macher-agent-test-setup)
+(require 'cl-lib)
+(require 'macher nil t)
+(unless (fboundp 'macher--make-context)
+  (cl-defstruct (macher-context (:constructor macher--make-context))
+    contents
+    workspace
+    prompt
+    process-request-function
+    data
+    dirty-p
+    shadow-buffers))
 (require 'macher-agent-gptel)
 
 (describe "Macher-Agent GPTel Boundary Suite"
   (macher-agent-test-setup-before-each)
 
-  (describe "FSM Target Buffer & Context Extraction"
-    (it "extracts target buffer and context from varied FSM structures and buffers"
-      (let* ((buf (generate-new-buffer "test-gptel-fsm-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-             (fsm1 (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)))
-             (fsm2 (gptel-make-fsm :info (list :buffer buf :context mock-ctx)))
-             (fsm3 (gptel-make-fsm :info (list :buffer buf)))
+  (describe "Resting State Consolidation & Context Resolution"
+    (it "resolves context through macher-agent--persistent-context when idle"
+      (let* ((buf (generate-new-buffer "test-gptel-resting-buf"))
+             (mock-ctx (macher-agent--make-context :project-root "/mock/resting/")))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--persistent-context mock-ctx)
+              (setq-local macher-agent--active-fsm nil)
+
+              ;; When idle, active FSM is nil
+              (expect macher-agent--active-fsm :to-be nil)
+              (expect (macher-agent-get-active-fsm) :to-be nil)
+
+              ;; Resting state resolution
+              (expect (macher-agent-gptel--fsm-context nil buf) :to-be mock-ctx)
+              (expect (macher-agent-gptel--fsm-context) :to-be mock-ctx))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "resolves context directly from FSM info plist during active execution"
+      (let* ((buf (generate-new-buffer "test-gptel-active-buf"))
+             (mock-ctx (macher-agent--make-context :project-root "/mock/active/"))
+             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)))
              (fsm-empty (gptel-make-fsm :info nil)))
         (unwind-protect
             (progn
               ;; Buffer extraction
               (expect (macher-agent-gptel--fsm-target-buffer nil) :to-be nil)
               (expect (macher-agent-gptel--fsm-target-buffer fsm-empty) :to-be nil)
-              (expect (macher-agent-gptel--fsm-target-buffer fsm1) :to-be buf)
+              (expect (macher-agent-gptel--fsm-target-buffer fsm) :to-be buf)
 
-              ;; Context extraction directly from info
-              (expect (macher-agent-gptel--fsm-context nil) :to-be nil)
-              (expect (macher-agent-gptel--fsm-context fsm1) :to-be mock-ctx)
-              (expect (macher-agent-gptel--fsm-context fsm2) :to-be mock-ctx)
+              ;; Direct extraction from FSM info plist
+              (expect (macher-agent-gptel--fsm-context fsm) :to-be mock-ctx)
               (expect (macher-agent-gptel--fsm-context mock-ctx) :to-be mock-ctx)
 
-              ;; Context extraction fallback from buffer-local state
-              (with-current-buffer buf
-                (setq-local macher-agent--persistent-context mock-ctx))
-              (expect (macher-agent-gptel--fsm-context fsm3) :to-be mock-ctx)
-              (expect (macher-agent-gptel--fsm-context nil buf) :to-be mock-ctx))
+              ;; Fallback to buffer-local persistent-context when FSM info lacks it
+              (let ((fsm-no-ctx (gptel-make-fsm :info (list :buffer buf))))
+                (with-current-buffer buf
+                  (setq-local macher-agent--persistent-context mock-ctx))
+                (expect (macher-agent-gptel--fsm-context fsm-no-ctx) :to-be mock-ctx)))
           (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
-  (describe "FSM Hijack Transformation & Handler Augmentation"
-    (it "augments FSM handlers with media injection on WAIT and flush triggers on terminal states"
+  (describe "Active FSM Lifecycle & Buffer-Local State"
+    (it "binds active FSM buffer-locally during hijack and injects context into FSM info"
       (let* ((buf (generate-new-buffer "test-gptel-hijack-buf"))
+             (mock-ctx (macher-agent--make-context :project-root "/mock/hijack/"))
              (cb-called nil)
              (orig-cb (lambda (resp &rest _args) (setq cb-called resp)))
              (fsm (gptel-make-fsm :info (list :buffer buf :callback orig-cb))))
         (unwind-protect
             (progn
               (with-current-buffer buf
+                (setq-local macher-agent--persistent-context mock-ctx)
+                (setq-local macher-agent--active-fsm nil)
                 (insert "User prompt to be captured"))
+
               (macher-agent--fsm-hijack-transform #'ignore fsm)
+
+              ;; FSM bound buffer-locally in target buffer
+              (with-current-buffer buf
+                (expect macher-agent--active-fsm :to-be fsm))
+
+              ;; Context injected into FSM info plist
+              (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx)
+              (expect (plist-get (gptel-fsm-info fsm) :origin-buffer) :to-be buf)
 
               ;; Handlers augmented
               (let ((handlers (gptel-fsm-handlers fsm)))
@@ -71,6 +113,58 @@
                 (expect cb-called :to-equal "test response")
                 (funcall wrapped-cb nil (list :tool-use '((:name "test_tool"))))
                 (expect cb-called :to-equal "")))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "resets macher-agent--active-fsm to nil on terminal state flush"
+      (let* ((buf (generate-new-buffer "test-flush-reset-buf"))
+             (mock-ctx (macher-agent--make-context :project-root "/mock/flush/"))
+             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
+                                  :state 'DONE))
+             (flush-called nil)
+             (hook-fn (lambda (&rest _) (setq flush-called t))))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (setq-local macher-agent--persistent-context mock-ctx)
+                (setq-local macher-agent--active-fsm fsm)
+                (setq-local macher-agent--pending-instructions-queue '("queued-instruction")))
+              (add-hook 'macher-agent-task-flush-hook hook-fn)
+
+              (macher-agent-gptel--trigger-flush fsm)
+
+              ;; Flush hook called, queue drained, and active FSM reset to nil
+              (expect flush-called :to-be t)
+              (with-current-buffer buf
+                (expect macher-agent--active-fsm :to-be nil)
+                (expect macher-agent--pending-instructions-queue :to-be nil)))
+          (remove-hook 'macher-agent-task-flush-hook hook-fn)
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "resets macher-agent--active-fsm to nil on abort"
+      (let ((buf (generate-new-buffer "test-abort-reset-buf")))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (setq-local macher-agent--active-fsm 'mock-fsm))
+              (spy-on 'gptel-abort)
+              (macher-agent-bridge-abort buf)
+              (with-current-buffer buf
+                (expect macher-agent--active-fsm :to-be nil)))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "resets FSM context structure via macher-agent-bridge-reset-fsm-context"
+      (let* ((buf (generate-new-buffer "test-bridge-reset-buf"))
+             (old-ctx (macher-agent--make-context :project-root "/mock/old/"))
+             (new-ctx (macher-agent--make-context :project-root "/mock/new/"))
+             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context old-ctx))))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--active-fsm fsm)
+              (macher-agent-bridge-reset-fsm-context new-ctx)
+              (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx))
           (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
@@ -177,7 +271,7 @@
         (macher-agent--perform-pending-media-injection fsm)
         (expect (macher-agent-context-media-queue mock-ctx) :to-be nil))))
 
-  (describe "Transmission Dispatch & Completion Flush"
+  (describe "Transmission Dispatch"
     (it "transmits request via macher-agent-gptel-transmit with system message and gptel-send"
       (let* ((buf (generate-new-buffer "test-transmit-buf"))
              (task-ctx (make-macher-agent-task-context
@@ -190,26 +284,93 @@
               (with-current-buffer buf
                 (expect gptel-system-prompt :to-equal "Transmitted System Message")))
           (when (buffer-live-p buf)
+            (kill-buffer buf))))))
+
+  (describe "State Restoration & Session Tracking"
+    (it "marks buffer as restored session when model is buffer-local"
+      (let ((buf (generate-new-buffer "test-restore-buf")))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local gptel-model "mock-model")
+              (macher-agent--restore-local-state)
+              (expect macher-agent--is-restored-session :to-be t)
+              ;; Setup buffer clears restored session flag and resets presets
+              (setq-local macher-agent-presets '(test-preset))
+              (macher-agent-setup-gptel-buffer)
+              (expect macher-agent--is-restored-session :to-be nil)
+              (expect macher-agent-presets :to-be nil))
+          (when (buffer-live-p buf)
             (kill-buffer buf)))))
 
-    (it "triggers flush hook and drains instructions queue on FSM completion"
-      (let* ((buf (generate-new-buffer "test-flush-hook-buf"))
-             (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
-                                  :state 'DONE))
-             (flush-called nil)
-             (hook-fn (lambda (&rest _) (setq flush-called t))))
+    (it "does not mark buffer as restored session when neither model nor backend is local"
+      (let ((buf (generate-new-buffer "test-restore-buf-plain")))
+        (unwind-protect
+            (with-current-buffer buf
+              (macher-agent--restore-local-state)
+              (expect macher-agent--is-restored-session :to-be nil))
+          (when (buffer-live-p buf)
+            (kill-buffer buf))))))
+
+  (describe "VFS Context Clearance"
+    (it "clears persistent VFS context and resets FSM context without obsolete registries"
+      (let* ((buf (generate-new-buffer "test-clear-ctx-buf"))
+             (ws (make-macher-agent-workspace :project-root "/mock/clear/"))
+             (mock-ctx (macher-agent--make-vfs-context :workspace ws :contents (list (make-macher-agent-vfs-entry :path "foo.el" :orig "data" :curr "data"))))
+             (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx))))
         (unwind-protect
             (with-current-buffer buf
               (setq-local macher-agent--persistent-context mock-ctx)
-              (setq-local macher-agent--pending-instructions-queue '("queued-item"))
-              (add-hook 'macher-agent-task-flush-hook hook-fn)
-              (macher-agent-gptel--trigger-flush fsm)
-              (expect flush-called :to-be t)
-              (expect macher-agent--pending-instructions-queue :to-be nil))
-          (remove-hook 'macher-agent-task-flush-hook hook-fn)
+              (setq-local macher-agent--active-fsm fsm)
+              (macher-agent-clear-context)
+              (expect macher-agent--persistent-context :not :to-be nil)
+              (expect (macher-agent--get-context-contents macher-agent--persistent-context) :to-be nil)
+              (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be macher-agent--persistent-context))
           (when (buffer-live-p buf)
-            (kill-buffer buf)))))))
+            (kill-buffer buf))))))
+
+  (describe "Macher Tool Wrapping and Cons-Cell Context Coercion"
+    (it "maps marshalled cons-cell contents back into macher-agent-vfs-entry structs"
+      (let* ((buf (generate-new-buffer "test-wrap-tool-buf"))
+             (ws (make-macher-agent-workspace :project-root "/mock/gptel/"))
+             (init-entry (make-macher-agent-vfs-entry :path "init.el" :orig "orig" :curr "orig"))
+             (agent-ctx (macher-agent--make-vfs-context :workspace ws :contents (list init-entry)))
+             (orphaned-ctx (if (fboundp 'macher--make-context)
+                               (macher--make-context :workspace (cons 'project "/mock/gptel/") :contents nil)
+                             nil))
+             (mock-tool (gptel-make-tool
+                         :name "mock_macher_writer"
+                         :category "macher"
+                         :description "Writes virtual files via cons cells"
+                         :args '((:name "path" :type string))
+                         :function (lambda (m-ctx path)
+                                     (when (fboundp 'macher-context-contents)
+                                       (setf (macher-context-contents m-ctx)
+                                             (list (cons path (cons "old text" "new text")))))
+                                     "tool-result")))
+             (macher-agent--wrapped-tools-hash (make-hash-table :test 'eq)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--persistent-context agent-ctx)
+              (macher-agent--wrap-single-tool mock-tool)
+              (let ((res (funcall (gptel-tool-function mock-tool) orphaned-ctx "mapped-file.el")))
+                (expect res :to-equal "tool-result")
+                (let ((contents (macher-agent--get-context-contents agent-ctx)))
+                  (expect (length contents) :to-equal 1)
+                  (let ((entry (car contents)))
+                    (expect (macher-agent-vfs-entry-p entry) :to-be t)
+                    (expect (macher-agent-vfs-entry-path entry) :to-equal "mapped-file.el")
+                    (expect (macher-agent-vfs-entry-orig entry) :to-equal "old text")
+                    (expect (macher-agent-vfs-entry-curr entry) :to-equal "new text"))
+                  (expect (macher-agent--get-context-dirty-p agent-ctx) :to-be t))))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "cleanly creates macher-context and updates contents via setf without invalid fboundp calls"
+      (let ((ctx (macher--make-context :contents '(("file.el" . ("old" . "new"))))))
+        (expect (macher-context-p ctx) :to-be t)
+        (expect (macher-context-contents ctx) :to-equal '(("file.el" . ("old" . "new"))))
+        (setf (macher-context-contents ctx) '(("file2.el" . ("a" . "b"))))
+        (expect (macher-context-contents ctx) :to-equal '(("file2.el" . ("a" . "b"))))))))
 
 (provide 'macher-agent-gptel-test)
 ;;; macher-agent-gptel-test.el ends here

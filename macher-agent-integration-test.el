@@ -142,10 +142,11 @@
                 (with-current-buffer parent-buf
                   (macher-agent-add-subagent "agent-france")
                   (macher-agent-a2a-dispatch
-                   (list (list :type 'SEND_MESSAGE
-                               :task-id "fake-task"
-                               :metadata (list :buffer_name "agent-france" :presets "@macher-agent-worker")
-                               :message (list :instructions "What is the capital of France?")))
+                   (list (macher-agent-make-a2a-payload
+                          :type 'SEND_MESSAGE
+                          :task-id "fake-task"
+                          :metadata (list :buffer_name "agent-france" :presets "@macher-agent-worker")
+                          :payload (list :instructions "What is the capital of France?")))
                    (lambda (res)
                      (setq results res)))
                   (expect results :to-be-truthy)

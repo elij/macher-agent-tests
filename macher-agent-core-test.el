@@ -13,6 +13,7 @@
 (require 'macher-agent-macher)
 (require 'cl-lib)
 (require 'macher-agent)
+(require 'macher-agent-vfs)
 
 (defvar gptel--fsm)
 (defvar macher-agent--active-fsm)
@@ -63,8 +64,9 @@
                     (progn
                       (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
                       (puthash "/mock/proj/overlay.el" "VFS Overlay Content" (macher-agent-workspace-vfs-buffers workspace))
-
+                      
                       (let ((written-to-sandbox nil))
+                        (spy-on 'file-directory-p :and-return-value t)
                         (spy-on 'file-in-directory-p :and-return-value t)
                         (spy-on 'write-region :and-call-fake
                                 (lambda (start end filename &rest _args)
@@ -80,7 +82,7 @@
                                             (buffer-substring-no-properties start end))
                                            (t
                                             (buffer-substring-no-properties (point-min) (point-max))))))))
-
+                        
                         (macher-agent-vfs-scratch-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers workspace) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
                         (expect written-to-sandbox :to-equal "VFS Overlay Content")))
                   (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
@@ -192,10 +194,11 @@
               (spy-on 'macher-agent-resolve-context :and-return-value nil)
               (let* ((callback-result nil)
                      (sub-buf (get-buffer-create "sub-agent-buf"))
-                     (payloads (list (list :type 'SEND_MESSAGE
-                                           :task-id "task-001"
-                                           :message "Do something"
-                                           :metadata (list :buffer_name "sub-agent-buf" :background t))))
+                     (payloads (list (macher-agent-make-a2a-payload
+                                      :type 'SEND_MESSAGE
+                                      :task-id "task-001"
+                                      :payload "Do something"
+                                      :metadata (list :buffer_name "sub-agent-buf" :background t))))
                      (callback (lambda (res) (setq callback-result res))))
                 (unwind-protect
                     (progn
@@ -214,10 +217,11 @@
 
           (it "returns a controlled error state when dispatching to a missing or invalid sub-agent buffer"
               (let* ((callback-result nil)
-                     (payloads (list (list :type 'SEND_MESSAGE
-                                           :task-id "task-err-001"
-                                           :message "Do something"
-                                           :metadata (list :buffer_name "non-existent-buffer"))))
+                     (payloads (list (macher-agent-make-a2a-payload
+                                      :type 'SEND_MESSAGE
+                                      :task-id "task-err-001"
+                                      :payload "Do something"
+                                      :metadata (list :buffer_name "non-existent-buffer"))))
                      (callback (lambda (res) (setq callback-result res))))
                 (macher-agent-a2a-dispatch payloads callback)
                 (expect (length callback-result) :to-equal 1)
@@ -289,11 +293,10 @@
 
           (it "registers sync prompt transformer and transformers in setup-gptel-buffer"
               (let ((macher-agent-prompt-transformers '(t1 t2)))
-                (spy-on 'macher-agent-resolve-context :and-return-value t)
                 (with-temp-buffer
                   (macher-agent-setup-gptel-buffer)
                   (expect gptel-prompt-transform-functions
-                          :to-equal '(macher-agent--transform-inject-context macher-agent-sync-prompt-transformer t t1 t2)))))
+                          :to-equal '(macher-agent-sync-prompt-transformer t t1 t2)))))
 
           (it "triggers pending media injection on FSM updates"
               (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"))
@@ -332,6 +335,56 @@
                   (kill-buffer buf)))))
 
 (describe "10. Context Resolution and Prompt Injection"
+          (it "resolves context directly when given a valid context structure"
+              (let ((ctx (macher-agent--make-context :id "direct-ctx")))
+                (expect (macher-agent-resolve-context ctx) :to-be ctx)))
+
+          (it "resolves context from a live buffer persistent context"
+              (let ((buf (get-buffer-create "test-resolve-live-buf"))
+                    (ctx (macher-agent--make-context :id "buf-ctx")))
+                (unwind-protect
+                    (progn
+                      (with-current-buffer buf
+                        (setq-local macher-agent--persistent-context ctx))
+                      (expect (macher-agent-resolve-context buf) :to-be ctx))
+                  (when (buffer-live-p buf) (kill-buffer buf)))))
+
+          (it "returns nil when resolving context from a dead buffer"
+              (let ((buf (get-buffer-create "test-resolve-dead-buf"))
+                    (ctx (macher-agent--make-context :id "dead-buf-ctx")))
+                (with-current-buffer buf
+                  (setq-local macher-agent--persistent-context ctx))
+                (kill-buffer buf)
+                (with-temp-buffer
+                  (expect (macher-agent-resolve-context buf) :to-be nil))))
+
+          (it "resolves context from an active FSM payload"
+              (let* ((ctx (macher-agent--make-context :id "fsm-payload-ctx"))
+                     (fsm (gptel-make-fsm :info (list :macher-agent-context ctx))))
+                (expect (macher-agent-resolve-context fsm) :to-be ctx)))
+
+          (it "resolves context from active FSM when input is nil"
+              (let* ((ctx (macher-agent--make-context :id "active-fsm-ctx"))
+                     (fsm (gptel-make-fsm :info (list :macher-agent-context ctx))))
+                (let ((macher-agent--active-fsm fsm))
+                  (with-temp-buffer
+                    (expect (macher-agent-resolve-context) :to-be ctx)))))
+
+          (it "resolves buffer-local persistent context in resting state"
+              (let ((ctx (macher-agent--make-context :id "resting-ctx"))
+                    (buf (get-buffer-create "test-resting-state-buf")))
+                (unwind-protect
+                    (with-current-buffer buf
+                      (expect (bound-and-true-p macher-agent--active-fsm) :to-be nil)
+                      (setq-local macher-agent--persistent-context ctx)
+                      (expect (macher-agent-resolve-context) :to-be ctx))
+                  (when (buffer-live-p buf) (kill-buffer buf)))))
+
+          (it "returns nil in resting state when persistent context is unset"
+              (with-temp-buffer
+                (expect (bound-and-true-p macher-agent--active-fsm) :to-be nil)
+                (expect (macher-agent-resolve-context) :to-be nil)))
+
           (it "injects originating buffer context into FSM info when available"
               (let* ((origin-buf (get-buffer-create "test-origin-buf"))
                      (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
@@ -426,7 +479,8 @@
                       (expect (macher-agent-gptel--fsm-target-buffer fsm-empty) :to-be nil)
                       (expect (macher-agent-gptel--fsm-target-buffer fsm1) :to-be target-buf)
 
-                      (expect (macher-agent-gptel--fsm-context nil) :to-be nil)
+                      (with-temp-buffer
+                        (expect (macher-agent-gptel--fsm-context nil) :to-be nil))
                       (expect (macher-agent-gptel--fsm-context fsm1) :to-be mock-ctx)
                       (expect (macher-agent-gptel--fsm-context fsm2) :to-be mock-ctx)
 
@@ -535,11 +589,11 @@
                 (let ((macher-agent--active-fsm nil)
                       (gptel--fsm fsm-gptel))
                   (expect (macher-agent-get-active-fsm nil) :to-equal fsm-gptel))
-                ;; 4. gptel--fsm-last fallback
+                ;; 4. gptel--fsm-last is ignored (no legacy lookup)
                 (let ((macher-agent--active-fsm nil)
                       (gptel--fsm nil)
                       (gptel--fsm-last fsm-last))
-                  (expect (macher-agent-get-active-fsm nil) :to-equal fsm-last))
+                  (expect (macher-agent-get-active-fsm nil) :to-be nil))
                 ;; 5. Nil when none set
                 (let ((macher-agent--active-fsm nil)
                       (gptel--fsm nil)
@@ -748,38 +802,16 @@
                 (expect (macher-agent-context-root ctx-struct)
                         :to-equal (file-truename (expand-file-name "/mock/sample-proj")))))
 
-          (it "resolves contexts deterministically via macher-agent-context-lookup"
-              (let* ((mock-dir (file-truename (expand-file-name "/mock/lookup-proj/")))
-                     (sub-dir (file-truename (expand-file-name "/mock/lookup-proj/subdir/nested/")))
-                     (ctx (macher-agent--make-context :project-root mock-dir))
-                     (buf (get-buffer-create "test-lookup-buf")))
-                (unwind-protect
-                    (progn
-                      ;; 1. Direct context resolution
-                      (expect (macher-agent-context-lookup ctx) :to-be ctx)
-
-                      ;; 2. Buffer-local persistent context resolution
-                      (with-current-buffer buf
-                        (setq-local macher-agent--persistent-context ctx))
-                      (expect (macher-agent-context-lookup buf) :to-be ctx)
-
-                      ;; 3. Workspace hash table lookup & ancestor climbing
-                      (puthash (directory-file-name mock-dir) ctx macher-agent-active-workspaces)
-                      (expect (macher-agent-context-lookup mock-dir) :to-be ctx)
-                      (expect (macher-agent-context-lookup sub-dir) :to-be ctx)
-                      (expect (macher-agent-context-lookup "/nonexistent/path/xyz") :to-be nil))
-                  (remhash (directory-file-name mock-dir) macher-agent-active-workspaces)
-                  (when (buffer-live-p buf) (kill-buffer buf)))))
-
           (it "builds tagged Agent-to-Agent transit payloads"
               (let ((valid-payload (macher-agent-make-a2a-payload
                                     :transit-type :root-to-subagent
                                     :task-id "task-core-001"
                                     :message "Execute instruction")))
-                (expect (plist-get valid-payload :schema-version) :to-equal :a2a-v1)
-                (expect (plist-get valid-payload :transit-type) :to-equal :root-to-subagent)
-                (expect (plist-get valid-payload :task-id) :to-equal "task-core-001")
-                (expect (plist-get valid-payload :message) :to-equal "Execute instruction")
+                (expect (macher-agent-transit-payload-p valid-payload) :to-be t)
+                (expect (macher-agent-transit-payload-schema-version valid-payload) :to-equal :a2a-v1)
+                (expect (macher-agent-transit-payload-transit-type valid-payload) :to-equal :root-to-subagent)
+                (expect (macher-agent-transit-payload-task-id valid-payload) :to-equal "task-core-001")
+                (expect (macher-agent-transit-payload-payload valid-payload) :to-equal "Execute instruction")
                 (let ((debug-on-error nil))
                   (expect (macher-agent-make-a2a-payload :transit-type :invalid-transit) :to-throw))))
 
@@ -865,6 +897,153 @@
                   (macher-agent-run-task-flush-hook nil)
                   (expect zero-arg-called :to-be t)
                   (expect one-arg-called :to-be nil)))))
+
+(describe "19. Core cl-defstruct Contracts and Accessors"
+          (it "constructs, inspects, and copies macher-agent-vfs-entry structs"
+              (let ((entry (make-macher-agent-vfs-entry :path "foo.el" :orig "orig-text" :curr "curr-text")))
+                (expect (macher-agent-vfs-entry-p entry) :to-be t)
+                (expect (macher-agent-vfs-entry-path entry) :to-equal "foo.el")
+                (expect (macher-agent-vfs-entry-orig entry) :to-equal "orig-text")
+                (expect (macher-agent-vfs-entry-curr entry) :to-equal "curr-text")
+                (let ((cloned (copy-macher-agent-vfs-entry entry)))
+                  (expect (macher-agent-vfs-entry-p cloned) :to-be t)
+                  (expect (macher-agent-vfs-entry-path cloned) :to-equal "foo.el")
+                  (setf (macher-agent-vfs-entry-curr cloned) "mutated")
+                  (expect (macher-agent-vfs-entry-curr cloned) :to-equal "mutated")
+                  (expect (macher-agent-vfs-entry-curr entry) :to-equal "curr-text"))))
+
+          (it "constructs, inspects, and copies macher-agent-transit-payload structs"
+              (let ((payload (make-macher-agent-transit-payload
+                              :schema-version :a2a-v1
+                              :transit-type :subagent-to-parent
+                              :type 'ARTIFACT_UPDATE
+                              :task-id "task-struct-01"
+                              :target-buffer "*target*"
+                              :target-context 'mock-ctx
+                              :parent-context 'mock-parent
+                              :child-context 'mock-child
+                              :shared-state '(:state "active")
+                              :payload "payload data"
+                              :metadata '(:meta "data"))))
+                (expect (macher-agent-transit-payload-p payload) :to-be t)
+                (expect (macher-agent-transit-payload-schema-version payload) :to-equal :a2a-v1)
+                (expect (macher-agent-transit-payload-transit-type payload) :to-equal :subagent-to-parent)
+                (expect (macher-agent-transit-payload-type payload) :to-equal 'ARTIFACT_UPDATE)
+                (expect (macher-agent-transit-payload-task-id payload) :to-equal "task-struct-01")
+                (expect (macher-agent-transit-payload-target-buffer payload) :to-equal "*target*")
+                (expect (macher-agent-transit-payload-target-context payload) :to-equal 'mock-ctx)
+                (expect (macher-agent-transit-payload-parent-context payload) :to-equal 'mock-parent)
+                (expect (macher-agent-transit-payload-child-context payload) :to-equal 'mock-child)
+                (expect (macher-agent-transit-payload-shared-state payload) :to-equal '(:state "active"))
+                (expect (macher-agent-transit-payload-payload payload) :to-equal "payload data")
+                (expect (macher-agent-transit-payload-metadata payload) :to-equal '(:meta "data"))))
+
+          (it "constructs, inspects, and copies macher-agent-tool-call structs"
+              (let ((tc (make-macher-agent-tool-call
+                         :name 'read_file
+                         :args '(:path "main.py")
+                         :status 'success
+                         :result "content of main.py")))
+                (expect (macher-agent-tool-call-p tc) :to-be t)
+                (expect (macher-agent-tool-call-name tc) :to-equal 'read_file)
+                (expect (macher-agent-tool-call-args tc) :to-equal '(:path "main.py"))
+                (expect (macher-agent-tool-call-status tc) :to-equal 'success)
+                (expect (macher-agent-tool-call-result tc) :to-equal "content of main.py")))
+
+          (it "constructs, inspects, and copies macher-agent-sandbox-state structs"
+              (let ((sb (make-macher-agent-sandbox-state
+                         :env '((x . 10) (y . 20))
+                         :is-star t
+                         :interrupt 'tool-call)))
+                (expect (macher-agent-sandbox-state-p sb) :to-be t)
+                (expect (macher-agent-sandbox-state-env sb) :to-equal '((x . 10) (y . 20)))
+                (expect (macher-agent-sandbox-state-is-star sb) :to-be t)
+                (expect (macher-agent-sandbox-state-interrupt sb) :to-equal 'tool-call)))
+
+          (it "constructs, inspects, and copies macher-agent-task-context structs in core"
+              (let ((tc (make-macher-agent-task-context
+                         :workspace "/mock/task-ws"
+                         :target-buffer (current-buffer)
+                         :skill-sym 'test-skill
+                         :system-message "Test system prompt")))
+                (expect (macher-agent-task-context-p tc) :to-be t)
+                (expect (macher-agent-valid-context-p tc) :to-be t)
+                (expect (macher-agent-task-context-workspace tc) :to-equal "/mock/task-ws")
+                (expect (macher-agent-task-context-target-buffer tc) :to-equal (current-buffer))
+                (expect (macher-agent-task-context-skill-sym tc) :to-equal 'test-skill)
+                (expect (macher-agent-task-context-system-message tc) :to-equal "Test system prompt")
+                (expect (macher-agent--get-context-workspace tc) :to-equal (cons 'project (expand-file-name "/mock/task-ws")))
+                (expect (macher-agent--get-context-data tc :target-buffer) :to-equal (current-buffer))
+                ;; Test recursion hazard safety
+                (setf (macher-agent-task-context-workspace tc) tc)
+                (expect (macher-agent--get-context-workspace tc) :to-equal tc)
+                (let ((cloned (copy-macher-agent-task-context tc)))
+                  (expect (macher-agent-task-context-p cloned) :to-be t)
+                  (expect (macher-agent-task-context-skill-sym cloned) :to-equal 'test-skill)))))
+
+(describe "20. Dual Virtual File System Instances"
+          (it "partitions mixed context entries into separate physical and buffer VFS instances"
+              (let* ((mock-dir (expand-file-name "/mock/dual-vfs-proj/"))
+                     (buf (get-buffer-create "*dual-vfs-virtual-buf*"))
+                     (e-file (make-macher-agent-vfs-entry :path (expand-file-name "main.el" mock-dir)
+                                                          :orig "file-orig" :curr "file-curr"))
+                     (e-buf (make-macher-agent-vfs-entry :path "*dual-vfs-virtual-buf*"
+                                                         :orig "buf-orig" :curr "buf-curr"))
+                     (ctx (macher-agent--make-context :project-root mock-dir)))
+                (unwind-protect
+                    (progn
+                      (macher-agent--set-context-contents ctx (list e-file e-buf))
+                      (let* ((partitioned (macher-agent--partition-vfs-entries
+                                           (macher-agent--get-context-contents ctx) mock-dir))
+                             (virtual-list (car partitioned))
+                             (physical-list (cdr partitioned)))
+                        ;; Non-file-backed buffer partition
+                        (expect (length virtual-list) :to-equal 1)
+                        (expect (macher-agent-vfs-entry-path (car virtual-list)) :to-equal "*dual-vfs-virtual-buf*")
+                        ;; Physical file partition
+                        (expect (length physical-list) :to-equal 1)
+                        (expect (macher-agent-vfs-entry-path (car physical-list)) :to-equal (expand-file-name "main.el" mock-dir)))
+                      ;; Splitting context produces dual distinct instances
+                      (let* ((split (macher-agent--split-context ctx))
+                             (file-ctx (car split))
+                             (buf-ctx (cdr split)))
+                        (expect (macher-agent-context-p file-ctx) :to-be t)
+                        (expect (macher-agent-context-p buf-ctx) :to-be t)
+                        (expect (eq file-ctx buf-ctx) :to-be nil)
+                        (expect (length (macher-agent--get-context-contents file-ctx)) :to-equal 1)
+                        (expect (length (macher-agent--get-context-contents buf-ctx)) :to-equal 1)
+                        (expect (macher-agent-vfs-entry-path (car (macher-agent--get-context-contents file-ctx)))
+                                :to-equal (expand-file-name "main.el" mock-dir))
+                        (expect (macher-agent-vfs-entry-path (car (macher-agent--get-context-contents buf-ctx)))
+                                :to-equal "*dual-vfs-virtual-buf*")))
+                  (when (buffer-live-p buf) (kill-buffer buf)))))
+
+          (it "deep-copies hash tables in macher-agent--split-context so split contexts do not mutate each other"
+              (let* ((vfs-ht (make-hash-table :test 'equal))
+                     (mtime-ht (make-hash-table :test 'equal))
+                     (ctx (macher-agent--make-context :project-root "/mock/deep-copy-proj/")))
+                (puthash "key1" "val1" vfs-ht)
+                (puthash "key1" '(100 200) mtime-ht)
+                (setf (macher-agent-context-plugins ctx)
+                      (list :vfs-buffers vfs-ht :mtime-tracker mtime-ht))
+                (let* ((split (macher-agent--split-context ctx))
+                       (file-ctx (car split))
+                       (buf-ctx (cdr split))
+                       (file-vfs (plist-get (macher-agent-context-plugins file-ctx) :vfs-buffers))
+                       (buf-vfs (plist-get (macher-agent-context-plugins buf-ctx) :vfs-buffers))
+                       (file-mtime (plist-get (macher-agent-context-plugins file-ctx) :mtime-tracker))
+                       (buf-mtime (plist-get (macher-agent-context-plugins buf-ctx) :mtime-tracker)))
+                  ;; Ensure hash tables are distinct objects
+                  (expect (eq file-vfs buf-vfs) :to-be nil)
+                  (expect (eq file-vfs vfs-ht) :to-be nil)
+                  (expect (eq buf-vfs vfs-ht) :to-be nil)
+                  (expect (eq file-mtime buf-mtime) :to-be nil)
+                  (expect (eq file-mtime mtime-ht) :to-be nil)
+                  ;; Mutating file-vfs does not affect buf-vfs or original
+                  (puthash "file-only" "file-val" file-vfs)
+                  (expect (gethash "file-only" file-vfs) :to-equal "file-val")
+                  (expect (gethash "file-only" buf-vfs) :to-be nil)
+                  (expect (gethash "file-only" vfs-ht) :to-be nil)))))
 
 (provide 'macher-agent-core-test)
 ;;; macher-agent-core-test.el ends here

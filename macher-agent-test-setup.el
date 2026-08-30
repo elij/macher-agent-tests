@@ -10,12 +10,25 @@
                   (t (or (locate-dominating-file default-directory "tests") default-directory))))
        (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
+    (add-to-list 'load-path (expand-file-name root-dir))
+    (add-to-list 'load-path (expand-file-name "macher" root-dir))
+    (add-to-list 'load-path (expand-file-name "gptel" root-dir)))
   (add-to-list 'load-path (expand-file-name test-dir))
   (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
 
 (require 'subr-x)
 (require 'buttercup)
+(require 'cl-lib)
+(require 'macher nil t)
+(unless (fboundp 'macher--make-context)
+  (cl-defstruct (macher-context (:constructor macher--make-context))
+    contents
+    workspace
+    prompt
+    process-request-function
+    data
+    dirty-p
+    shadow-buffers))
 (require 'macher-agent-macher)
 (require 'macher-agent)
 (require 'macher-agent-vfs)

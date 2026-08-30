@@ -104,8 +104,8 @@
                             (funcall submit-fn (lambda (_) nil) :final_answer "Peer answer"))
 
                           (expect peer-received :not :to-be nil)
-                          (expect (plist-get peer-received :type) :to-equal 'ARTIFACT_UPDATE)
-                          (expect (plist-get (plist-get peer-received :message) :message) :to-equal "Peer answer")
+                          (expect (macher-agent-transit-payload-type peer-received) :to-equal 'ARTIFACT_UPDATE)
+                          (expect (plist-get (macher-agent-transit-payload-payload peer-received) :message) :to-equal "Peer answer")
                           (expect root-received :to-be nil)
 
                           ;; 4. Child completes root task -> submit_task_result pops root frame
@@ -113,8 +113,8 @@
                             (funcall submit-fn (lambda (_) nil) :final_answer "Root final answer"))
 
                           (expect root-received :not :to-be nil)
-                          (expect (plist-get root-received :type) :to-equal 'ARTIFACT_UPDATE)
-                          (expect (plist-get (plist-get root-received :message) :message) :to-equal "Root final answer")
+                          (expect (macher-agent-transit-payload-type root-received) :to-equal 'ARTIFACT_UPDATE)
+                          (expect (plist-get (macher-agent-transit-payload-payload root-received) :message) :to-equal "Root final answer")
 
                           (kill-buffer root-buf)
                           (kill-buffer child-buf)

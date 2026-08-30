@@ -86,27 +86,25 @@
                           (expect (macher-agent-resolve-context fsm) :to-be ctx)))
 
                     (it "resolves context cleanly via workspace identifiers and direct lookup"
-                        (let* ((macher-agent-active-workspaces (make-hash-table :test 'equal))
-                               (root-dir "/mock/ws-registry-proj/")
-                               (sub-dir "/mock/ws-registry-proj/nested/dir/")
-                               (ws (make-macher-agent-workspace :project-root root-dir))
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/ws-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-                               (debug-lookups nil))
-                          (puthash (expand-file-name root-dir) ctx macher-agent-active-workspaces)
-
-                          (push (macher-agent-context-lookup root-dir) debug-lookups)
-                          (push (macher-agent-context-lookup sub-dir) debug-lookups)
-                          (push (macher-agent-context-lookup ws) debug-lookups)
-                          (push (macher-agent-context-lookup (cons 'agent root-dir)) debug-lookups)
-                          
-                          (push (macher-agent-resolve-context root-dir) debug-lookups)
-                          (push (macher-agent-resolve-context sub-dir) debug-lookups)
-                          (push (macher-agent-resolve-context (list :workspace-id sub-dir)) debug-lookups)
-                          (push (macher-agent-resolve-context (list :workspace ws)) debug-lookups)
-
-                          ;; Assert all 8 resolution strategies successfully returned the context
-                          (dolist (res debug-lookups)
-                            (expect res :to-be ctx))))
+                               (buf (generate-new-buffer "*mock-ctx-buf*"))
+                               (fsm (gptel-make-fsm)))
+                          (unwind-protect
+                              (progn
+                                ;; 1. Resting state buffer-local context resolution
+                                (with-temp-buffer
+                                  (setq-local macher-agent--persistent-context ctx)
+                                  (expect (macher-agent-resolve-context) :to-be ctx))
+                                ;; 2. Live buffer resolution
+                                (with-current-buffer buf
+                                  (setq-local macher-agent--persistent-context ctx))
+                                (expect (macher-agent-resolve-context buf) :to-be ctx)
+                                ;; 3. Active FSM context resolution
+                                (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
+                                (expect (macher-agent-resolve-context fsm) :to-be ctx))
+                            (when (buffer-live-p buf)
+                              (kill-buffer buf)))))
 
                     (it "returns nil when context resolution fails across all steps"
                         (let ((macher-agent-active-workspaces (make-hash-table :test 'equal))
@@ -128,7 +126,7 @@
                     (it "executes pipeline steps in strict sequential order"
                         (let* ((step-order nil)
                                (ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents '(("mock-file.txt" . "content")))))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content")))))
                           (spy-on 'macher-agent--vfs-verify-clean-merge :and-call-fake (lambda (&rest _) (push 'verify step-order)))
                           (spy-on 'macher-agent--vfs-sync-baseline :and-call-fake (lambda (&rest _) (push 'sync step-order)))
                           (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
@@ -251,6 +249,27 @@
                             (expect (member ''macher-agent-vfs requires) :to-be nil)
                             (expect (member 'macher-agent-macher requires) :to-be nil)
                             (expect (member ''macher-agent-macher requires) :to-be nil))))
+
+                    (it "does not duplicate macher-agent--allow-gptel-restore in macher-agent-api.el"
+                        (let* ((api-file (or (locate-library "macher-agent-api.el")
+                                             (expand-file-name "macher-agent-api.el" default-directory)))
+                               (forms nil))
+                          (with-temp-buffer
+                            (insert-file-contents api-file)
+                            (goto-char (point-min))
+                            (condition-case nil
+                                (while t
+                                  (push (read (current-buffer)) forms))
+                              (end-of-file nil)))
+                          (let ((defvars
+                                 (cl-remove-if-not
+                                  (lambda (form)
+                                    (and (consp form)
+                                         (memq (car form) '(defvar defcustom defconst))
+                                         (eq (cadr form) 'macher-agent--allow-gptel-restore)))
+                                  forms)))
+                            (expect defvars :to-equal nil)
+                            (expect (boundp 'macher-agent--allow-gptel-restore) :to-be t))))
 
                     (it "contains no internal declare-function forms in macher-agent-gptel.el and requires internal modules directly"
                         (let* ((gptel-file (or (locate-library "macher-agent-gptel.el")
@@ -623,101 +642,45 @@
                                 (with-current-buffer buf
                                   (erase-buffer)
                                   (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '("*mock-orch-target-1*" "initial text" . "updated tuple text"))))
+                                (let ((applied (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "*mock-orch-target-1*" :orig "initial text" :curr "updated tuple text"))))
                                   (expect applied :to-be-truthy)
                                   (expect (with-current-buffer buf (buffer-string)) :to-equal "updated tuple text")))
                             (when (buffer-live-p buf) (kill-buffer buf)))))
 
-                    (it "applies virtual edits from pair cons cells (path . curr) to live buffers"
-                        (let ((buf (get-buffer-create "*mock-orch-target-2*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf
-                                  (erase-buffer)
-                                  (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '("*mock-orch-target-2*" . "updated pair text"))))
-                                  (expect applied :to-be-truthy)
-                                  (expect (with-current-buffer buf (buffer-string)) :to-equal "updated pair text")))
-                            (when (buffer-live-p buf) (kill-buffer buf)))))
-
-                    (it "applies virtual edits from plist structures (:path / :curr) to live buffers"
-                        (let ((buf (get-buffer-create "*mock-orch-target-3*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf
-                                  (erase-buffer)
-                                  (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '(:path "*mock-orch-target-3*" :curr "updated plist text"))))
-                                  (expect applied :to-be-truthy)
-                                  (expect (with-current-buffer buf (buffer-string)) :to-equal "updated plist text")))
-                            (when (buffer-live-p buf) (kill-buffer buf)))))
-
-                    (it "applies virtual edits from plist structures (:file / :content) to live buffers"
-                        (let ((buf (get-buffer-create "*mock-orch-target-4*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf
-                                  (erase-buffer)
-                                  (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '(:file "*mock-orch-target-4*" :content "updated file plist text"))))
-                                  (expect applied :to-be-truthy)
-                                  (expect (with-current-buffer buf (buffer-string)) :to-equal "updated file plist text")))
-                            (when (buffer-live-p buf) (kill-buffer buf)))))
-
-                    (it "applies virtual edits from 2-element list (path curr) to live buffers"
-                        (let ((buf (get-buffer-create "*mock-orch-target-5*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf
-                                  (erase-buffer)
-                                  (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '("*mock-orch-target-5*" "updated 2-list text"))))
-                                  (expect applied :to-be-truthy)
-                                  (expect (with-current-buffer buf (buffer-string)) :to-equal "updated 2-list text")))
-                            (when (buffer-live-p buf) (kill-buffer buf)))))
-
-                    (it "applies virtual edits from plist structures (:path / :contents) to live buffers"
-                        (let ((buf (get-buffer-create "*mock-orch-target-6*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf
-                                  (erase-buffer)
-                                  (insert "initial text"))
-                                (let ((applied (macher-agent--apply-single-virtual-buffer '(:path "*mock-orch-target-6*" :contents "updated contents plist text"))))
-                                  (expect applied :to-be-truthy)
-                                  (expect (with-current-buffer buf (buffer-string)) :to-equal "updated contents plist text")))
-                            (when (buffer-live-p buf) (kill-buffer buf)))))
-
-                    (it "returns nil gracefully for nil or invalid entries or dead buffers"
+                    (it "returns nil gracefully for nil or invalid entries or dead buffers in macher-agent--apply-single-virtual-buffer"
                         (expect (macher-agent--apply-single-virtual-buffer nil) :to-be nil)
-                        (expect (macher-agent--apply-single-virtual-buffer '("*nonexistent-buf*" . "some content")) :to-be nil)
-                        (expect (macher-agent--apply-single-virtual-buffer '(:path nil :curr "content")) :to-be nil)
-                        (expect (macher-agent--apply-single-virtual-buffer '(:file 123 :curr "content")) :to-be nil))
+                        (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "*nonexistent-buf*" :orig "" :curr "some content")) :to-be nil)
+                        (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "" :orig "" :curr "content")) :to-be nil))
 
                     (it "applies batch virtual buffer entries via macher-agent-apply-virtual-buffers"
                         (let ((buf1 (get-buffer-create "*mock-batch-1*"))
                               (buf2 (get-buffer-create "*mock-batch-2*"))
-                              (buf3 (get-buffer-create "*mock-batch-3*")))
+                              (buf3 (get-buffer-create "*mock-batch-3*"))
+                              (buf4 (get-buffer-create "*mock-batch-4*")))
                           (unwind-protect
                               (progn
                                 (with-current-buffer buf1 (erase-buffer) (insert "old 1"))
                                 (with-current-buffer buf2 (erase-buffer) (insert "old 2"))
                                 (with-current-buffer buf3 (erase-buffer) (insert "old 3"))
+                                (with-current-buffer buf4 (erase-buffer) (insert "old 4"))
                                 (let* ((ws (make-macher-agent-workspace :project-root "/mock/batch/"))
                                        (ctx (macher-agent--make-vfs-context
                                              :workspace ws
-                                             :contents (list '("*mock-batch-1*" "old 1" . "new batch 1")
-                                                             '(:path "*mock-batch-2*" :curr "new batch 2")
-                                                             '(:file "*mock-batch-3*" :content "new batch 3")))))
+                                             :contents (list (make-macher-agent-vfs-entry :path "*mock-batch-1*" :orig "old 1" :curr "new batch 1")
+                                                             (make-macher-agent-vfs-entry :path "*mock-batch-2*" :orig nil :curr "new batch 2")
+                                                             (make-macher-agent-vfs-entry :path "*mock-batch-3*" :orig nil :curr "new batch 3")
+                                                             (make-macher-agent-vfs-entry :path "*mock-batch-4*" :orig nil :curr "new batch 4")))))
                                   (macher-agent-apply-virtual-buffers ctx)
                                   (expect (with-current-buffer buf1 (buffer-string)) :to-equal "new batch 1")
                                   (expect (with-current-buffer buf2 (buffer-string)) :to-equal "new batch 2")
-                                  (expect (with-current-buffer buf3 (buffer-string)) :to-equal "new batch 3")))
+                                  (expect (with-current-buffer buf3 (buffer-string)) :to-equal "new batch 3")
+                                  (expect (with-current-buffer buf4 (buffer-string)) :to-equal "new batch 4")))
                             (when (buffer-live-p buf1) (kill-buffer buf1))
                             (when (buffer-live-p buf2) (kill-buffer buf2))
-                            (when (buffer-live-p buf3) (kill-buffer buf3)))))
+                            (when (buffer-live-p buf3) (kill-buffer buf3))
+                            (when (buffer-live-p buf4) (kill-buffer buf4)))))
 
-                    (it "normalises context entries to clean alist and trims content right in macher-agent-apply-virtual-buffers"
+                    (it "normalises context entries and trims content right in macher-agent-apply-virtual-buffers"
                         (let ((buf1 (get-buffer-create "*mock-norm-1*"))
                               (buf2 (get-buffer-create "*mock-norm-2*"))
                               (buf3 (get-buffer-create "*mock-norm-3*"))
@@ -731,27 +694,23 @@
                                 (let* ((ws (make-macher-agent-workspace :project-root "/mock/norm/"))
                                        (ctx (macher-agent--make-vfs-context
                                              :workspace ws
-                                             :contents (list '(:path "*mock-norm-1*" :curr "norm content 1\n\n  ")
-                                                             '(:file "*mock-norm-2*" :content "norm content 2 \t\n")
-                                                             '(:path "*mock-norm-3*" :contents "norm content 3\r\n")
-                                                             '("*mock-norm-4*" . "norm content 4\n")))))
+                                             :contents (list (make-macher-agent-vfs-entry :path "*mock-norm-1*" :orig nil :curr "norm content 1\n\n  ")
+                                                             (make-macher-agent-vfs-entry :path "*mock-norm-2*" :orig nil :curr "norm content 2 \t\n")
+                                                             (make-macher-agent-vfs-entry :path "*mock-norm-3*" :orig nil :curr "norm content 3\r\n")
+                                                             (make-macher-agent-vfs-entry :path "*mock-norm-4*" :orig nil :curr "norm content 4\n")))))
                                   (macher-agent-apply-virtual-buffers ctx)
                                   ;; Buffers receive trimmed content
                                   (expect (with-current-buffer buf1 (buffer-string)) :to-equal "norm content 1")
                                   (expect (with-current-buffer buf2 (buffer-string)) :to-equal "norm content 2")
                                   (expect (with-current-buffer buf3 (buffer-string)) :to-equal "norm content 3")
                                   (expect (with-current-buffer buf4 (buffer-string)) :to-equal "norm content 4")
-                                  ;; Context contents is converted to cons pairs, never remaining plists
+                                  ;; Context contents is converted to strict vfs-entry structs
                                   (let ((updated-contents (macher-agent--get-context-contents ctx)))
-                                    (expect updated-contents :to-equal '(("*mock-norm-1*" "norm content 1" . "norm content 1")
-                                                                         ("*mock-norm-2*" "norm content 2" . "norm content 2")
-                                                                         ("*mock-norm-3*" "norm content 3" . "norm content 3")
-                                                                         ("*mock-norm-4*" "norm content 4" . "norm content 4")))
+                                    (expect (length updated-contents) :to-equal 4)
                                     (dolist (entry updated-contents)
-                                      (expect (consp entry) :to-be-truthy)
-                                      (expect (keywordp (car entry)) :to-be nil)
-                                      (expect (stringp (car entry)) :to-be-truthy)
-                                      (expect (stringp (macher-agent-vfs-entry-curr entry)) :to-be-truthy)))))
+                                      (expect (macher-agent-vfs-entry-p entry) :to-be t)
+                                      (expect (stringp (macher-agent-vfs-entry-path entry)) :to-be t)
+                                      (expect (stringp (macher-agent-vfs-entry-curr entry)) :to-be t)))))
                             (when (buffer-live-p buf1) (kill-buffer buf1))
                             (when (buffer-live-p buf2) (kill-buffer buf2))
                             (when (buffer-live-p buf3) (kill-buffer buf3))

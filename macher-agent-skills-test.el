@@ -111,10 +111,11 @@
                     (run-hook-with-args 'gptel-post-response-functions (point-min) (point-max)))))
 
         (macher-agent-a2a-dispatch
-         (list (list :type 'SEND_MESSAGE
-                     :task-id "task-err"
-                     :message "test"
-                     :metadata (list :buffer_name (buffer-name buf))))
+         (list (macher-agent-make-a2a-payload
+                :type 'SEND_MESSAGE
+                :task-id "task-err"
+                :payload "test"
+                :metadata (list :buffer_name (buffer-name buf))))
          callback)
         
         (let ((res (if (vectorp callback-called) (aref callback-called 0) callback-called)))
@@ -137,14 +138,16 @@
                        (when cb
                          (funcall cb (list :status 'success :data (format "Output from %s" (buffer-name)))))))))
           (macher-agent-a2a-dispatch
-           (list (list :type 'SEND_MESSAGE
-                       :task-id "t1"
-                       :message "do w1"
-                       :metadata (list :buffer_name "worker1"))
-                 (list :type 'SEND_MESSAGE
-                       :task-id "t2"
-                       :message "do w2"
-                       :metadata (list :buffer_name "worker2")))
+           (list (macher-agent-make-a2a-payload
+                  :type 'SEND_MESSAGE
+                  :task-id "t1"
+                  :payload "do w1"
+                  :metadata (list :buffer_name "worker1"))
+                 (macher-agent-make-a2a-payload
+                  :type 'SEND_MESSAGE
+                  :task-id "t2"
+                  :payload "do w2"
+                  :metadata (list :buffer_name "worker2")))
            callback))
         
         (expect (length callback-called) :to-equal 2)
@@ -191,8 +194,8 @@
           (with-macher-agent-mock-fsm ctx
                                       (expect (funcall tool-fn nil "My final answer")
                                               :to-equal "SUCCESS: Result submitted. STOP NOW."))
-          (expect (plist-get callback-data :type) :to-equal 'ARTIFACT_UPDATE)
-          (expect (plist-get (plist-get callback-data :message) :message) :to-equal "My final answer")
+          (expect (macher-agent-transit-payload-type callback-data) :to-equal 'ARTIFACT_UPDATE)
+          (expect (plist-get (macher-agent-transit-payload-payload callback-data) :message) :to-equal "My final answer")
           (expect macher-agent-task-finished :to-be t)
           (expect (funcall tool-fn nil "Second final answer") :to-equal "ERROR: Task has already been submitted."))
         (kill-buffer buf)))
@@ -388,7 +391,7 @@
       (let ((buf (generate-new-buffer "test-conv-traces")))
         (with-current-buffer buf
           (insert "First trace line\n\nSecond trace line\n"))
-        (let ((traces (macher-agent--buffer-to-traces buf)))
+        (let ((traces (macher-agent-zero-mem--buffer-to-traces buf)))
           (expect (length traces) :to-equal 2)
           (expect (plist-get (nth 0 traces) :text) :to-equal "First trace line")
           (expect (plist-get (nth 0 traces) :timestamp) :to-equal 1.0)

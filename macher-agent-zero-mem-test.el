@@ -281,16 +281,13 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
 
     (it "manages zero-mem state strictly inside context plugins plist"
       (expect (fboundp 'macher-agent-context-zero-mem) :to-be nil)
+      (expect (fboundp 'macher-agent--buffer-to-traces) :to-be nil)
       (let ((ctx (make-macher-agent-context :id "test-ctx" :plugins '(:existing-key "val"))))
         (expect (macher-agent-zero-mem-get-state ctx) :to-be nil)
         (macher-agent-zero-mem-set-state ctx '(:traces ((:id 1 :text "node1"))))
         (expect (macher-agent-zero-mem-get-state ctx) :to-equal '(:traces ((:id 1 :text "node1"))))
         (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal '(:traces ((:id 1 :text "node1"))))
-        (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val")
-        ;; Raw plist context handling
-        (let ((raw-ctx (list :id "raw-ctx" :zero-mem '(:graph "raw"))))
-          (expect (macher-agent-zero-mem-get-state raw-ctx) :to-equal '(:graph "raw"))
-          (expect (macher-agent-zero-mem-set-state raw-ctx '(:graph "new")) :to-equal '(:graph "new")))))
+        (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val")))
 
     (it "persists interaction graph into context plugins and uses stationary snapshot"
       (let* ((parent-buf (generate-new-buffer " *test-parent-snap*"))

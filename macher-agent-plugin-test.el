@@ -72,7 +72,7 @@
              (cb-called nil)
              (dispatched-id nil)
              (child-buf (generate-new-buffer "test-collision-child"))
-             (initial-state (list :a2a-msg (list :task-id existing-id :metadata nil)
+             (initial-state (list :a2a-msg (make-macher-agent-transit-payload :task-id existing-id :metadata nil)
                                   :shared-state (list :results (make-hash-table :test 'equal)
                                                       :total 1
                                                       :final-callback nil
@@ -87,19 +87,25 @@
               (spy-on 'macher-agent-a2a-pipe--validate-routing :and-call-fake
                       (lambda (state)
                         (let ((msg (plist-get state :a2a-msg)))
-                          (setq dispatched-id (plist-get msg :task-id)))
+                          (setq dispatched-id (if (macher-agent-transit-payload-p msg)
+                                                  (macher-agent-transit-payload-task-id msg)
+                                                (plist-get msg :task-id))))
                         state))
               (macher-agent-a2a-dispatch
-               (list (list :type 'USER_DIRECTIVE
-                           :task-id existing-id
-                           :message "Test message"
-                           :metadata nil))
+               (list (macher-agent-make-a2a-payload
+                      :type 'USER_DIRECTIVE
+                      :task-id existing-id
+                      :payload "Test message"
+                      :metadata nil))
                nil)
               (expect dispatched-id :not :to-equal existing-id)
               (expect (string-prefix-p "task-" dispatched-id) :to-be t)
               ;; 2. Bind closure collision resolution
               (let* ((res-state (macher-agent-a2a-pipe--bind-closure initial-state))
-                     (assigned-id (plist-get (plist-get res-state :a2a-msg) :task-id)))
+                     (assigned-id (let ((m (plist-get res-state :a2a-msg)))
+                                    (if (macher-agent-transit-payload-p m)
+                                        (macher-agent-transit-payload-task-id m)
+                                      (plist-get m :task-id)))))
                 (expect assigned-id :not :to-equal existing-id)
                 (expect (gethash assigned-id macher-agent--pending-callbacks) :not :to-be nil)))
           (remhash existing-id macher-agent--pending-callbacks)
@@ -115,7 +121,7 @@
             (progn
               (with-current-buffer parent-buf
                 (setq-local macher-agent--persistent-context parent-ctx))
-              (let* ((state-plist (list :a2a-msg (list :task-id "task-p1" :metadata (list :buffer_name "test-a2a-child-buf"))
+              (let* ((state-plist (list :a2a-msg (make-macher-agent-transit-payload :task-id "task-p1" :metadata (list :buffer_name "test-a2a-child-buf"))
                                         :target "test-a2a-child-buf"
                                         :target-name "test-a2a-child-buf"
                                         :shared-state (list :parent-buffer parent-buf)))
@@ -224,7 +230,7 @@
           (setq macher-agent-pipeline-registry saved-registry)))))
 
   (describe "3. Polymorphic Plugin State Accessors"
-    (it "reads and writes plugin state polymorphically across structs, plists, and alists"
+    (it "reads and writes plugin state on context structs"
       (dolist (spec (list (list :getter #'macher-agent-sandbox-get-state
                                 :setter #'macher-agent-sandbox-set-state
                                 :key :sandbox
@@ -240,32 +246,18 @@
               (key (plist-get spec :key))
               (val1 (plist-get spec :val1))
               (val2 (plist-get spec :val2)))
-          ;; 1. Context struct
+          ;; Context struct
           (let ((ctx (make-macher-agent-context :id "ctx-poly" :plugins '(:preserved "val"))))
             (expect (funcall getter ctx) :to-be nil)
             (funcall setter ctx val1)
             (expect (funcall getter ctx) :to-equal val1)
             (expect (plist-get (macher-agent-context-plugins ctx) key) :to-equal val1)
-            (expect (plist-get (macher-agent-context-plugins ctx) :preserved) :to-equal "val"))
-          ;; 2. Raw flat plist
-          (let ((raw-plist (list :id "p-1" key val1)))
-            (expect (funcall getter raw-plist) :to-equal val1)
-            (funcall setter raw-plist val2)
-            (expect (funcall getter raw-plist) :to-equal val2))
-          ;; 3. Nested plist (:plugins (:key ...))
-          (let ((nested-plist (list :id "n-1" :plugins (list key val1))))
-            (expect (funcall getter nested-plist) :to-equal val1)
-            (funcall setter nested-plist val2)
-            (expect (funcall getter nested-plist) :to-equal val2))
-          ;; 4. Keyword and symbol alists
-          (let ((kw-alist (list (cons key val1))))
-            (expect (funcall getter kw-alist) :to-equal val1)
-            (funcall setter kw-alist val2)
-            (expect (funcall getter kw-alist) :to-equal val2))
-          (let ((sym-alist (list (cons (intern (substring (symbol-name key) 1)) val1))))
-            (expect (funcall getter sym-alist) :to-equal val1)
-            (funcall setter sym-alist val2)
-            (expect (funcall getter sym-alist) :to-equal val2)))))
+            (expect (plist-get (macher-agent-context-plugins ctx) :preserved) :to-equal "val"))))))
+
+    (it "strictly enforces context structures and rejects alists in sandbox state accessors"
+      (let ((alist-ctx '((:sandbox . (:active-primitives (spawn-subagent))))))
+        (expect (macher-agent-sandbox-get-state alist-ctx) :to-be nil)
+        (expect (macher-agent-sandbox-set-state alist-ctx '(:active-primitives (spawn-subagent))) :to-be nil)))
 
     (it "resolves context comprehensively across transit keys, wrapper states, and buffers"
       (let* ((mock-dir (make-temp-file "macher-transit-test" t))
@@ -275,22 +267,19 @@
         (unwind-protect
             (progn
               (expect (macher-agent-resolve-from-transit-payload ctx) :to-be ctx)
-              (dolist (key '(:target-context :parent-context :context))
-                (let* ((payload (list key ctx :data "sample"))
+              (dolist (key '(:target-context :parent-context))
+                (let* ((payload (if (eq key :target-context)
+                                    (make-macher-agent-transit-payload :target-context ctx)
+                                  (make-macher-agent-transit-payload :parent-context ctx)))
                        (resolved (macher-agent-resolve-from-transit-payload payload)))
                   (expect resolved :to-be ctx)
                   (let* ((pipe-state (list :input payload :resolved nil))
                          (res-state (macher-agent-resolve-from-transit-payload pipe-state)))
                     (expect (plist-get res-state :resolved) :to-be ctx))))
-              ;; Raw payloads with :resolved & shared state plists
-              (expect (macher-agent-resolve-from-transit-payload (list :context ctx :resolved t)) :to-be ctx)
-              (expect (macher-agent-resolve-from-transit-payload (list :resolved "done" :target-context ctx)) :to-be ctx)
-              (expect (macher-agent-resolve-from-transit-payload (list :shared-state (list :context ctx))) :to-be ctx)
               ;; Buffer fallbacks
               (with-current-buffer buf
                 (setq-local macher-agent--persistent-context ctx))
-              (expect (macher-agent-resolve-from-transit-payload (list :buffer-name (buffer-name buf))) :to-be ctx)
-              (expect (macher-agent-resolve-from-transit-payload (list :target-buffer buf)) :to-be ctx)
+              (expect (macher-agent-resolve-from-transit-payload (make-macher-agent-transit-payload :target-buffer buf)) :to-be ctx)
               ;; Invalid inputs reject with an error signal
               (expect (macher-agent-resolve-from-transit-payload '(:context "invalid-string")) :to-throw 'error)
               (expect (macher-agent-resolve-from-transit-payload '(project . "/some/path")) :to-throw 'error)
@@ -308,13 +297,13 @@
               (expect (macher-agent--extract-fsm-context nil) :to-be nil)
               (expect (macher-agent--extract-fsm-context ctx) :to-be ctx)
               (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :target-context ctx))))
+                         (lambda (_fsm) (list :macher-agent-context ctx))))
                 (expect (macher-agent--extract-fsm-context 'mock-fsm) :to-be ctx))
               (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :shared-state (list :context ctx)))))
+                         (lambda (_fsm) (list :macher-agent-context ctx))))
                 (expect (macher-agent--extract-fsm-context 'mock-fsm-pipeline) :to-be ctx))
               (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :context ctx))))
+                         (lambda (_fsm) (list :macher-agent-context ctx))))
                 (expect (macher-agent--extract-fsm-context 'mock-fsm-err) :to-be ctx)))
           (delete-directory mock-dir t)))))
 
@@ -350,32 +339,51 @@
         (unwind-protect
             (progn
               ;; 1. Merge diffs
-              (let* ((state (list :status 'initial
-                                  :context ctx
-                                  :diff (list (cons "file1.txt" (cons "old" "new content")))
-                                  :data "test result data"))
+              (let* ((state (make-macher-agent-transit-payload
+                             :target-context ctx
+                             :payload (list (make-macher-agent-vfs-entry :path "file1.txt" :orig "old" :curr "new content"))))
                      (merged (macher-agent-vfs--merge-payload state)))
-                (expect (plist-get merged :data) :to-equal "test result data")
-                (expect (plist-get merged :status) :to-equal 'initial)
+                (expect (macher-agent-transit-payload-target-context merged) :to-be ctx)
                 (expect (macher-agent--read-context-file ctx "file1.txt") :to-equal "new content"))
               ;; 2. Handle deletions
               (macher-agent--update-context-file ctx "deleted-file.txt" "original text")
-              (macher-agent-vfs--merge-payload (list :context ctx :diff (list (cons "deleted-file.txt" (cons "original text" nil)))))
+              (macher-agent-vfs--merge-payload
+               (make-macher-agent-transit-payload
+                :target-context ctx
+                :payload (list (make-macher-agent-vfs-entry :path "deleted-file.txt" :orig "original text" :curr nil))))
               (expect (macher-agent--read-context-file ctx "deleted-file.txt") :to-be nil)
-              ;; 3. Workspace-id and shared-state context extraction
-              (puthash (expand-file-name mock-dir) ctx macher-agent-active-workspaces)
+              ;; 3. Target context and shared-state context extraction
               (let ((macher-agent--persistent-context ambient-ctx))
-                (macher-agent-vfs--merge-payload (list :workspace-id mock-dir :diff (list (cons "scoped-file.txt" (cons nil "target payload")))))
+                (macher-agent-vfs--merge-payload
+                 (make-macher-agent-transit-payload
+                  :target-context ctx
+                  :payload (list (make-macher-agent-vfs-entry :path "scoped-file.txt" :orig nil :curr "target payload"))))
                 (expect (macher-agent--read-context-file ctx "scoped-file.txt") :to-equal "target payload"))
-              (macher-agent-vfs--merge-payload (list :shared-state (list :context ctx) :diff (list (cons "shared-file.txt" (cons nil "shared content")))))
+              (macher-agent-vfs--merge-payload
+               (make-macher-agent-transit-payload
+                :target-context ctx
+                :payload (list (make-macher-agent-vfs-entry :path "shared-file.txt" :orig nil :curr "shared content"))))
               (expect (macher-agent--read-context-file ctx "shared-file.txt") :to-equal "shared content")
               ;; 4. Target buffer persistent context update
-              (let ((res (macher-agent-vfs--merge-payload (list :parent-context ctx :target-buffer target-buf :diff (list (cons "merged-doc.txt" (cons nil "fresh content")))))))
-                (expect (plist-get res :target-context) :to-be ctx)
+              (let ((res (macher-agent-vfs--merge-payload
+                          (make-macher-agent-transit-payload
+                           :parent-context ctx
+                           :target-buffer target-buf
+                           :payload (list (make-macher-agent-vfs-entry :path "merged-doc.txt" :orig nil :curr "fresh content"))))))
+                (expect (macher-agent-transit-payload-target-context res) :to-be ctx)
                 (expect (macher-agent--read-context-file ctx "merged-doc.txt") :to-equal "fresh content")
                 (with-current-buffer target-buf
-                  (expect macher-agent--persistent-context :to-be ctx))))
-          (remhash (expand-file-name mock-dir) macher-agent-active-workspaces)
+                  (expect macher-agent--persistent-context :to-be ctx)))
+              ;; 5. Polymorphic invocation (macher-agent-vfs--merge-payload target payload)
+              (let* ((fsm (gptel-make-fsm :info (list :macher-agent-context ctx :buffer target-buf)))
+                     (poly-payload (list (make-macher-agent-vfs-entry :path "poly-file.txt" :orig nil :curr "poly content"))))
+                (macher-agent-vfs--merge-payload fsm poly-payload)
+                (expect (macher-agent--read-context-file ctx "poly-file.txt") :to-equal "poly content")
+                (macher-agent-vfs--merge-payload ctx (list (make-macher-agent-vfs-entry :path "direct-ctx.txt" :orig nil :curr "direct content")))
+                (expect (macher-agent--read-context-file ctx "direct-ctx.txt") :to-equal "direct content")
+                (with-current-buffer target-buf (setq-local macher-agent--persistent-context ctx))
+                (macher-agent-vfs--merge-payload target-buf (list (make-macher-agent-vfs-entry :path "buf-target.txt" :orig nil :curr "buf content")))
+                (expect (macher-agent--read-context-file ctx "buf-target.txt") :to-equal "buf content")))
           (when (buffer-live-p target-buf) (kill-buffer target-buf))
           (delete-directory mock-dir t))))
 
@@ -453,8 +461,22 @@
              (child-buf (generate-new-buffer "test-chain-child"))
              (results-tbl (make-hash-table :test 'equal))
              (task-id "task-chain-merge")
-             (step-one (lambda (msg) (plist-put (copy-sequence msg) :step-one-flag t)))
-             (step-two (lambda (msg) (plist-put (copy-sequence msg) :step-two-flag t))))
+             (step-one (lambda (msg)
+                         (if (macher-agent-transit-payload-p msg)
+                             (let ((pl (macher-agent-transit-payload-payload msg)))
+                               (when (listp pl)
+                                 (setf (macher-agent-transit-payload-payload msg)
+                                       (plist-put pl :step-one-flag t)))
+                               msg)
+                           (plist-put (copy-sequence msg) :step-one-flag t))))
+             (step-two (lambda (msg)
+                         (if (macher-agent-transit-payload-p msg)
+                             (let ((pl (macher-agent-transit-payload-payload msg)))
+                               (when (listp pl)
+                                 (setf (macher-agent-transit-payload-payload msg)
+                                       (plist-put pl :step-two-flag t)))
+                               msg)
+                           (plist-put (copy-sequence msg) :step-two-flag t)))))
         (macher-agent-register-pipeline-step 'payload-merge step-one 12)
         (macher-agent-register-pipeline-step 'payload-merge step-two 14)
         (unwind-protect
@@ -468,21 +490,24 @@
                                          :final-callback nil
                                          :parent-buffer parent-buf
                                          :parent-fsm nil
-                                         :original-payloads nil))
-                     (initial-state (list :a2a-msg (list :type 'SEND_MESSAGE :task-id task-id)
+                                         :original-payloads (list (make-macher-agent-transit-payload :task-id task-id))))
+                     (initial-state (list :a2a-msg (make-macher-agent-transit-payload :type 'SEND_MESSAGE :task-id task-id)
                                           :child-buf child-buf
                                           :shared-state shared-state))
                      (_res-state (macher-agent-a2a-pipe--bind-closure initial-state))
                      (cb (gethash task-id macher-agent--pending-callbacks)))
                 (expect cb :not :to-be nil)
                 (macher-agent--update-context-file child-ctx "merged-file.el" "updated-content")
-                (let ((payload (list :diff (list (cons "merged-file.el" (cons "initial" "updated-content")))
-                                     :data "chain-result"
-                                     :status 'success
-                                     :buffer-name (buffer-name child-buf))))
-                  (funcall cb (list :type 'ARTIFACT_UPDATE
-                                    :task-id task-id
-                                    :message payload)))
+                (let ((payload (make-macher-agent-transit-payload
+                                :type 'ARTIFACT_UPDATE
+                                :task-id task-id
+                                :child-context child-ctx
+                                :payload (list :diff (list (make-macher-agent-vfs-entry :path "merged-file.el" :orig "initial" :curr "updated-content"))
+                                               :data "chain-result"
+                                               :status 'success
+                                               :buffer-name (buffer-name child-buf)
+                                               :shared-state shared-state))))
+                  (funcall cb payload))
                 ;; Assert diff merge into parent context
                 (expect (macher-agent--read-context-file parent-ctx "merged-file.el") :to-equal "updated-content")
                 ;; Assert sequential reducer step propagation
@@ -552,7 +577,7 @@
         (unwind-protect
             (progn
               (macher-agent--aggregate-a2a-results
-               task-id msg-body results-ht 1 (list (list :task-id task-id)) final-cb parent-buf nil)
+               task-id msg-body results-ht 1 (list (make-macher-agent-transit-payload :task-id task-id)) final-cb parent-buf nil)
               (expect hook-called :to-be nil)
               (expect callback-result :to-equal (vector msg-body)))
           (remove-hook 'macher-agent-task-flush-hook hook-fn)
@@ -582,7 +607,7 @@
                            (and (symbolp fn)
                                 (string-prefix-p "macher-agent-" (symbol-name fn))))))
                   forms)))
-            (expect internal-declares :to-equal nil)))))))
+            (expect internal-declares :to-equal nil))))))
 
 (provide 'macher-agent-plugin-test)
 ;;; macher-agent-plugin-test.el ends here

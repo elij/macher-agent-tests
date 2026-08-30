@@ -9,67 +9,6 @@
 (require 'macher-agent-orchestration)
 (require 'macher-agent-api)
 
-(defun macher-agent--fsm-hijack-transform (callback fsm)
-  "Mutate the FSM to inject media, capture prompts, protect callbacks, and trigger patches."
-  (let* ((info (gptel-fsm-info fsm))
-         (orig-cb (plist-get info :callback))
-         (target-buf (when (macher-agent--plist-p info) (plist-get info :buffer))))
-
-    (when (and target-buf (buffer-live-p target-buf))
-      (with-current-buffer target-buf
-        (setq macher-agent--active-fsm fsm)))
-
-    (let* ((prompt-start
-            (if (or (bound-and-true-p gptel-mode) 
-                    (bound-and-true-p gptel-track-response))
-                (if (and (> (point-max) (point-min)) 
-                         (get-text-property (1- (point-max)) 'gptel))
-                    (point-max)
-                  (or (previous-single-property-change (point-max) 'gptel) (point-min)))
-              (point-min)))
-           (raw-prompt
-            (if (fboundp 'gptel--trim-prefixes)
-                (gptel--trim-prefixes
-                 (buffer-substring-no-properties prompt-start (point-max)))
-              (string-trim (buffer-substring-no-properties prompt-start (point-max))))))
-      (when (and raw-prompt (not (string-empty-p raw-prompt)))
-        (setq info (plist-put info :prompt raw-prompt))
-        (setf (gptel-fsm-info fsm) info)
-        (let ((ctx (when (and target-buf (buffer-live-p target-buf))
-                     (buffer-local-value 'macher-agent--persistent-context target-buf))))
-          (when ctx
-            (when (fboundp 'macher-agent--set-context-prompt)
-              (macher-agent--set-context-prompt ctx raw-prompt))
-            (when (fboundp 'macher-agent--set-context-data)
-              (macher-agent--set-context-data ctx :prompt raw-prompt))))))
-
-    (let ((cb (or orig-cb #'ignore)))
-      (setq info
-            (plist-put (gptel-fsm-info fsm) :callback
-                       (lambda (response &rest args)
-                         (let ((info-arg (car args)))
-                           (when (or response (and (listp info-arg) (plist-get info-arg :tool-use)))
-                             (apply cb (or response "") args))))))
-      (setf (gptel-fsm-info fsm) info))
-    
-    (let* ((handlers (gptel-fsm-handlers fsm))
-           (all-states (delete-dups (append (mapcar #'car handlers) '(WAIT DONE ERRS ABRT))))
-           (augmented-handlers
-            (cl-loop
-             for state in all-states
-             for funcs = (alist-get state handlers)
-             collect (cons state 
-                           (cond
-                            ((eq state 'WAIT)
-                             (cons #'macher-agent--inject-media-fsm-logic funcs))
-                            ((memq state '(DONE ERRS ABRT))
-                             (append funcs (list #'macher-agent-gptel--trigger-flush)))
-                            (t funcs))))))
-      (setf (gptel-fsm-handlers fsm) augmented-handlers)))
-  
-  (when (functionp callback)
-    (funcall callback)))
-
 (defmacro with-macher-agent-mock-fsm (ctx &rest body)
   "Execute BODY synchronously while pretending an FSM is active with CTX."
   (declare (indent 1))

@@ -55,7 +55,26 @@
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "ptc")
                    (expect (cdr (assoc 'target entry)) :to-equal 'test-ptc-tool)
-                   (expect (cdr (assoc 'args entry)) :to-equal '(:path "file.txt"))))))
+                   (expect (cdr (assoc 'args entry)) :to-equal '(:path "file.txt")))))
+
+           (it "logs PTC tool yields into explicitly passed context"
+               (let ((ctx (macher-agent--make-context))
+                     (macher-agent--active-ptc-primitives '(custom-ptc-tool)))
+                 (macher-agent-sandbox-run '(custom-ptc-tool :name "foo" :count 42) nil ctx)
+                 (let* ((log (macher-agent--get-context-data ctx :audit-log))
+                        (entry (car log)))
+                   (expect (length log) :to-equal 1)
+                   (expect (cdr (assoc 'type entry)) :to-equal "ptc")
+                   (expect (cdr (assoc 'target entry)) :to-equal 'custom-ptc-tool)
+                   (expect (cdr (assoc 'args entry)) :to-equal '(:name "foo" :count 42)))))
+
+           (it "does not log audit entries for non-tool expressions"
+               (let ((ctx (macher-agent--make-context))
+                     (macher-agent--active-ptc-primitives '(test-ptc-tool)))
+                 (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+                 (macher-agent-sandbox-run '(+ 1 2) '(+))
+                 (let ((log (macher-agent--get-context-data ctx :audit-log)))
+                   (expect (length log) :to-equal 0)))))
 
  (describe "macher-agent-read-context-audit-log-tool"
            (it "filters audit log by preset and limit returning JSON string of entries"
