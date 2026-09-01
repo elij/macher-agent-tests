@@ -24,35 +24,35 @@
   (macher-agent-test-setup-before-each)
 
   (describe "PTC Evaluation Context Resolution"
-    (it "receives context directly from execution payload or FSM info plist without global workspace searches"
+    (it "evaluates script with explicit context and target buffer without probing FSM"
       (let* ((mock-ctx (macher-agent--make-context :id "ctx-ptc-direct" :project-root "/mock/direct-ptc/"))
-             (fsm (gptel-make-fsm :info (list :buffer (current-buffer) :macher-agent-context mock-ctx)))
-             (macher-agent--active-fsm fsm)
+             (target-buf (generate-new-buffer " *test-ptc-buf*"))
              (executed-ctx nil)
              (success-called nil)
              (error-called nil))
-        (clrhash macher-agent-active-workspaces)
-        (setq-local macher-agent--persistent-context nil)
+        (unwind-protect
+            (progn
+              (macher-agent-execute-ptc-script
+               "(+ 10 20)"
+               mock-ctx
+               target-buf
+               (lambda (val)
+                 (setq success-called val)
+                 (setq executed-ctx (buffer-local-value 'macher-agent--persistent-context target-buf)))
+               (lambda (err) (setq error-called err)))
 
-        (macher-agent-execute-ptc-script
-         "(+ 10 20)"
-         nil
-         (lambda (val)
-           (setq success-called val)
-           (setq executed-ctx (bound-and-true-p macher-agent--persistent-context)))
-         (lambda (err) (setq error-called err)))
+              (expect error-called :to-be nil)
+              (expect success-called :to-equal 30)
+              (expect executed-ctx :to-be mock-ctx))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
 
-        (expect error-called :to-be nil)
-        (expect success-called :to-equal 30)
-        (expect executed-ctx :to-be mock-ctx)))
-
-    (it "resolves context directly from active FSM info plist during tool execution inside sandbox"
-      (let* ((mock-ctx (macher-agent--make-context :id "ctx-fsm-tool" :project-root "/mock/fsm-tool/"))
-             (fsm (gptel-make-fsm :info (list :buffer (current-buffer)
-                                              :macher-agent-context mock-ctx
-                                              :ptc-primitives '(test-ctx-tool))))
-             (macher-agent--active-fsm fsm)
+    (it "passes explicit context to tool executions and delegates UI spoofing"
+      (let* ((mock-ctx (macher-agent--make-context :id "ctx-tool-exec" :project-root "/mock/tool-exec/"))
+             (target-buf (generate-new-buffer " *test-ptc-tool-buf*"))
              (captured-ctx nil)
+             (spoofed-buf nil)
+             (spoofed-tool nil)
              (success-res nil)
              (err-res nil)
              (mock-tool (macher-agent-make-tool mock-sandbox-ctx-tool
@@ -62,39 +62,82 @@
                           :command-fn (lambda (_payload context _root)
                                         (setq captured-ctx context)
                                         "tool-success"))))
-        (clrhash macher-agent-active-workspaces)
-        (setq-local macher-agent--persistent-context nil)
+        (unwind-protect
+            (cl-letf (((symbol-function 'macher-agent-resolve-tool)
+                       (lambda (_name &rest _args) mock-tool))
+                      ((symbol-function 'macher-agent-gptel-spoof-tool-ui)
+                       (lambda (buf tool-name)
+                         (setq spoofed-buf buf)
+                         (setq spoofed-tool tool-name))))
+              (let ((macher-agent--active-ptc-primitives '(test-ctx-tool)))
+                (macher-agent-execute-ptc-script
+                 "(test-ctx-tool \"value\")"
+                 mock-ctx
+                 target-buf
+                 (lambda (val) (setq success-res val))
+                 (lambda (err) (setq err-res err)))
 
-        (cl-letf (((symbol-function 'macher-agent-resolve-tool)
-                   (lambda (_name &rest _args) mock-tool)))
-          (macher-agent-execute-ptc-script
-           "(test-ctx-tool \"value\")"
-           nil
-           (lambda (val) (setq success-res val))
-           (lambda (err) (setq err-res err))
-           '(test-ctx-tool)))
+                (expect err-res :to-be nil)
+                (expect success-res :to-equal "tool-success")
+                (expect captured-ctx :to-be mock-ctx)
+                (expect spoofed-buf :to-equal target-buf)
+                (expect spoofed-tool :to-equal "test_ctx_tool")))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
 
-        (expect err-res :to-be nil)
-        (expect success-res :to-equal "tool-success")
-        (expect captured-ctx :to-be mock-ctx)))
+    (it "delegates UI spoofing to macher-agent-gptel-spoof-tool-ui in display-ptc-tool-execution"
+      (let* ((mock-ctx (macher-agent--make-context :id "ctx-ui" :project-root "/mock/ui/"))
+             (target-buf (generate-new-buffer " *test-ui-buf*"))
+             (spoofed-buf nil)
+             (spoofed-tool nil))
+        (unwind-protect
+            (cl-letf (((symbol-function 'macher-agent-gptel-spoof-tool-ui)
+                       (lambda (buf tool-name)
+                         (setq spoofed-buf buf)
+                         (setq spoofed-tool tool-name)))
+                      ((symbol-function 'macher-agent-resolve-tool)
+                       (lambda (_name &rest _) nil)))
+              (macher-agent--display-ptc-tool-execution 'custom-test-primitive '(:key "val") mock-ctx target-buf)
+              (expect spoofed-buf :to-equal target-buf)
+              (expect spoofed-tool :to-equal "custom_test_primitive"))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
 
-    (it "propagates explicit context argument to sandbox-run without global lookups"
+    (it "invokes on-error when script execution fails"
+      (let* ((mock-ctx (macher-agent--make-context :id "ctx-err" :project-root "/mock/err/"))
+             (target-buf (generate-new-buffer " *test-err-buf*"))
+             (err-result nil)
+             (success-result nil))
+        (unwind-protect
+            (progn
+              (macher-agent-execute-ptc-script
+               "(error \"PTC execution failed\")"
+               mock-ctx
+               target-buf
+               (lambda (val) (setq success-result val))
+               (lambda (err) (setq err-result err)))
+              (expect success-result :to-be nil)
+              (expect (plist-get err-result :status) :to-equal 'error)
+              (expect (string-match-p "PTC execution failed" (plist-get err-result :error)) :to-be-truthy))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
+
+    (it "propagates explicit context and target buffer to sandbox-run without global lookups"
       (let* ((mock-ctx (macher-agent--make-context :id "ctx-run-direct" :project-root "/mock/run/"))
+             (target-buf (generate-new-buffer " *test-run-buf*"))
              (logged-ctx nil))
-        (clrhash macher-agent-active-workspaces)
-        (setq-local macher-agent--persistent-context nil)
+        (unwind-protect
+            (cl-letf (((symbol-function 'macher-agent-log-tool-intent)
+                       (lambda (context _type _target _args)
+                         (setq logged-ctx context))))
+              (let* ((macher-agent--active-ptc-primitives '(mock-intent-tool)))
+                (macher-agent-sandbox-run '(mock-intent-tool :foo "bar") nil mock-ctx target-buf)
+                (expect logged-ctx :to-be mock-ctx)))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
 
-        (cl-letf (((symbol-function 'macher-agent-log-tool-intent)
-                   (lambda (context _type _target _args)
-                     (setq logged-ctx context))))
-          (let* ((macher-agent--active-ptc-primitives '(mock-intent-tool))
-                 (result (macher-agent-sandbox-run '(mock-intent-tool :foo "bar") nil mock-ctx)))
-            (expect logged-ctx :to-be mock-ctx)))))
-
-    (it "extracts ptc primitives directly from FSM info plist"
-      (let* ((fsm (gptel-make-fsm :info (list :buffer (current-buffer)
-                                              :ptc-primitives '(custom-prim-alpha))))
-             (macher-agent--active-fsm fsm))
+    (it "recognizes ptc primitives from active primitives list without inspecting FSM"
+      (let ((macher-agent--active-ptc-primitives '(custom-prim-alpha)))
         (expect (macher-agent--ptc-primitive-p 'custom-prim-alpha) :to-be t)
         (expect (macher-agent--ptc-primitive-p 'custom_prim_alpha) :to-be t)
         (expect (macher-agent--ptc-primitive-p 'unmatched-primitive) :to-be nil)))

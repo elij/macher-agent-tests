@@ -185,7 +185,7 @@
       (let* ((parent-buf (generate-new-buffer "*macher-test: parent-state-dir*"))
              (child-buf (generate-new-buffer "*macher-test: child-state-dir*"))
              (ctx (make-macher-agent-context :origin-buffer parent-buf
-                                             :plugins (list :prompt "Deploy and configure Redis Cluster failover."))))
+                                             :prompt "Deploy and configure Redis Cluster failover.")))
         (unwind-protect
             (progn
               (with-current-buffer parent-buf

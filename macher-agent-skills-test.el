@@ -58,7 +58,6 @@
                              (macher-agent-vfs-make-entry "/root/internal.txt" "" ""))))
            (list-tool-fn (gptel-tool-function macher-agent-list-buffers-in-workspace-tool)))
 
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--classify-file-path :and-call-fake
                 (lambda (path &rest _)
                   (pcase path
@@ -77,7 +76,6 @@
              (tool-fn (gptel-tool-function macher-agent-commit-buffer-tool)))
         (with-current-buffer buf
           (insert "original content"))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
                                     (let ((response (funcall tool-fn nil "live-commit-buf" "committed virtual content")))
@@ -98,7 +96,6 @@
                                                macher-agent-delegate-tasks-to-subagents-tool)))
              (buf (get-buffer-create "test-sub")))
         
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent-a2a-dispatch)
         (spy-on 'macher-agent--ensure-access)
         
@@ -113,7 +110,6 @@
              (callback-called nil)
              (callback (lambda (msg) (setq callback-called msg))))
 
-        (spy-on 'macher-agent-resolve-context :and-return-value (macher-agent--make-vfs-context :contents nil))
         ;; Simulate gptel-send firing and instantly triggering the post-response hook
         (spy-on 'gptel-send :and-call-fake
                 (lambda ()
@@ -140,7 +136,6 @@
              (callback-called nil)
              (callback (lambda (msg) (setq callback-called msg))))
         
-        (spy-on 'macher-agent-resolve-context :and-return-value (macher-agent--make-context))
         ;; Mock the dispatcher to instantly return a success payload rather than firing the network
         (cl-letf (((symbol-function 'gptel-send)
                    (lambda ()
@@ -171,7 +166,6 @@
   (it "ensures target buffer exists when using write_buffer_in_workspace to support patch UI"
       (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "dummy" "dummy" "dummy"))))
              (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (unwind-protect
             (progn
               (with-macher-agent-mock-fsm ctx
@@ -185,7 +179,6 @@
   (it "rejects fuzzy security matching in read_buffer_in_workspace"
       (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "*scratch*" "" "content"))))
              (tool-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (with-macher-agent-mock-fsm ctx
                                     (let ((result (funcall tool-fn nil "scratch")))
                                       (expect result :to-match "SECURITY ERROR.*scratch.*")))))
@@ -196,7 +189,6 @@
              (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
              (task-id "skill-submit-task-1")
              (callback-data nil))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (expect (gptel-tool-description macher-agent-submit-task-result-tool)
                 :to-match "CRITICAL DIRECTIVE: You MUST use the `submit_task_result` tool")
         (puthash task-id (lambda (res) (setq callback-data res)) macher-agent--pending-callbacks)
@@ -214,8 +206,6 @@
   (it "write_buffer_in_workspace registers a virtual edit safely"
       (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-buf" "orig" "orig"))))
              (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-        
         (with-macher-agent-mock-fsm ctx
                                     (let* ((response (funcall tool-fn nil "test-buf" "New virtual content")))
                                       (expect response :to-match "SUCCESS")
@@ -225,8 +215,6 @@
   (it "multi_edit_buffer_in_workspace uses a decoupled deterministic scratchpad"
       (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-file.rs" "line1\nline2" "line1\nline2"))))
              (tool-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-        
         (with-macher-agent-mock-fsm ctx
                                     (let* ((edits (vector (list :old_text "line2" :new_text "line3")))
                                            (response (funcall tool-fn nil "test-file.rs" edits)))
@@ -241,7 +229,6 @@
              (edit-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
         (with-current-buffer buf
           (insert "hello world"))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         
         (with-macher-agent-mock-fsm ctx
@@ -261,7 +248,6 @@
              (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
         (with-current-buffer buf
           (insert "initial unchanged content"))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
                                     (let ((res (funcall read-fn nil "unmodified-scoped-buf")))
@@ -279,7 +265,6 @@
              (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
         (with-current-buffer buf
           (insert "initial buffer text"))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--ensure-access)
         (with-macher-agent-mock-fsm ctx
                                     (let ((res1 (funcall read-fn nil "live-mod-buf")))
@@ -307,7 +292,6 @@
                      :plugins (list :vfs (list :contents nil))))
                (agent-write-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool))
                (agent-read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-          (spy-on 'macher-agent-resolve-context :and-return-value ctx)
           (cl-letf (((symbol-function 'macher--tool-write-file)
                      (lambda (_c p cont)
                        (macher-agent-context-update ctx p cont))))
@@ -326,7 +310,6 @@
              (write-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool))
              (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
                          (get 'macher-agent-tool-search-in-workspace 'command-fn))))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--vfs-verify-clean-merge)
         (spy-on 'macher-agent--vfs-sync-baseline)
         (spy-on 'shell-command-to-string :and-call-fake
@@ -346,7 +329,6 @@
              (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
                          (get 'macher-agent-tool-search-in-workspace 'command-fn)))
              (captured-cmd nil))
-        (spy-on 'macher-agent-resolve-context :and-return-value ctx)
         (spy-on 'macher-agent--vfs-verify-clean-merge)
         (spy-on 'macher-agent--vfs-sync-baseline)
         (spy-on 'shell-command-to-string :and-call-fake
@@ -501,7 +483,7 @@
             (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj"))
                    (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
               (puthash (expand-file-name "/mock/proj") ctx macher-agent-active-workspaces)
-              (spy-on 'macher-agent-resolve-context :and-return-value ctx)))
+              (setq-local macher-agent--persistent-context ctx)))
            
            (it "parses SKILL.md files correctly extracting frontmatter and markdown body"
                (let* ((parsed (macher-agent-parse-skill-file "tests/fixtures/skills/global/SKILL.md")))
@@ -512,7 +494,8 @@
                  (expect (plist-get parsed :body) :to-equal "This is the system prompt for the mock skill.\nIt spans multiple lines.")))
 
            (it "extracts boot-directive from SKILL.md frontmatter"
-               (let* ((ctx (macher-agent-resolve-context))
+               (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                       (vfs-file "tests/fixtures/skills/global/SKILL.md"))
                  (macher-agent--set-context-contents
                   ctx
@@ -525,7 +508,8 @@
                    (expect (plist-get parsed :boot-directive) :to-equal "Perform initial setup before executing."))))
 
            (it "persists boot-directive into gptel--known-presets and sets buffer-local macher-agent--boot-directive when applying preset"
-               (let* ((ctx (macher-agent-resolve-context))
+               (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                       (workspace (macher-agent-context-workspace ctx)))
                  (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
@@ -542,7 +526,8 @@
                    (kill-buffer test-buf))))
 
            (it "sets buffer-local macher-agent--boot-directive via macher-agent-use-skill, macher-agent-add-subagent, and macher-agent--apply-payload-locally"
-               (let* ((ctx (macher-agent-resolve-context))
+               (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                       (workspace (macher-agent-context-workspace ctx)))
                  (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
@@ -566,7 +551,8 @@
                    (kill-buffer local-buf))))
 
            (it "prioritises virtual edits inside the VFS when parsing SKILL.md"
-               (let* ((ctx (macher-agent-resolve-context))
+               (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                       (vfs-file "tests/fixtures/skills/global/SKILL.md"))
                  (macher-agent--set-context-contents 
                   ctx 
@@ -595,7 +581,8 @@
                    (insert "(setq workspace-tool-1 'workspace-loaded)"))
                  
                  ;; Test workspace parsing logic
-                 (let ((ctx (macher-agent-resolve-context)))
+                 (let ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
                    (macher-agent--load-skill-from-path "tests/fixtures/skills/workspace/" ctx)
                    (let* ((workspace (macher-agent-context-workspace ctx))
                           (skill-meta (alist-get 'workspace-skill (macher-agent-workspace-skills-alist workspace))))
@@ -626,7 +613,8 @@
                  (with-temp-file (expand-file-name "tool-a.el" ws-scripts) (insert "(setq tool-a mock-ws-a-global)"))
                  
                  ;; Clear registry
-                 (let* ((ctx (macher-agent-resolve-context))
+                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                         (ws (macher-agent-context-workspace ctx)))
                    (clrhash (macher-agent-workspace-tools-registry ws)))
                  
@@ -647,7 +635,8 @@
                                          (gptel-make-tool :name "the_tool" :function (lambda () nil) :description "A tool")
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
-                 (let* ((ctx (macher-agent-resolve-context))
+                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                         (workspace (macher-agent-context-workspace ctx)))
                    (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
                    (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))
@@ -669,7 +658,8 @@
                                          (gptel-make-tool :name "the_tool" :function (lambda () nil) :description "A tool")
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
-                 (let* ((ctx (macher-agent-resolve-context))
+                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
                         (workspace (macher-agent-context-workspace ctx)))
                    (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
                    (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))

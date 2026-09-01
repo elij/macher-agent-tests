@@ -77,7 +77,6 @@
                                                       :total 1
                                                       :final-callback nil
                                                       :parent-buffer (current-buffer)
-                                                      :parent-fsm nil
                                                       :original-payloads nil)
                                   :child-buf child-buf)))
         (puthash existing-id (lambda (_msg) (setq cb-called t)) macher-agent--pending-callbacks)
@@ -281,24 +280,8 @@
           (when (buffer-live-p buf) (kill-buffer buf))
           (delete-directory mock-dir t))))
 
-    (it "extracts context from FSM structures via macher-agent--extract-fsm-context"
-      (let* ((mock-dir (make-temp-file "macher-fsm-ctx-test" t))
-             (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
-        (unwind-protect
-            (progn
-              (expect (macher-agent--extract-fsm-context nil) :to-be nil)
-              (expect (macher-agent--extract-fsm-context ctx) :to-be ctx)
-              (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :macher-agent-context ctx))))
-                (expect (macher-agent--extract-fsm-context 'mock-fsm) :to-be ctx))
-              (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :macher-agent-context ctx))))
-                (expect (macher-agent--extract-fsm-context 'mock-fsm-pipeline) :to-be ctx))
-              (cl-letf (((symbol-function 'macher-agent--extract-fsm-info)
-                         (lambda (_fsm) (list :macher-agent-context ctx))))
-                (expect (macher-agent--extract-fsm-context 'mock-fsm-err) :to-be ctx)))
-          (delete-directory mock-dir t)))))
+    (it "verifies macher-agent--extract-fsm-context is removed in favor of explicit context transport"
+      (expect (fboundp 'macher-agent--extract-fsm-context) :to-be nil)))
 
   (describe "4. Storage and Virtual File System"
     (it "executes within Virtual File System awareness scope using macher-agent-with-vfs-scope"
@@ -482,7 +465,6 @@
                                          :total 1
                                          :final-callback nil
                                          :parent-buffer parent-buf
-                                         :parent-fsm nil
                                          :original-payloads (list (make-macher-agent-transit-payload :task-id task-id))))
                      (initial-state (list :a2a-msg (make-macher-agent-transit-payload :type 'SEND_MESSAGE :task-id task-id)
                                           :child-buf child-buf
@@ -570,7 +552,7 @@
         (unwind-protect
             (progn
               (macher-agent--aggregate-a2a-results
-               task-id msg-body results-ht 1 (list (make-macher-agent-transit-payload :task-id task-id)) final-cb parent-buf nil)
+               task-id msg-body results-ht 1 (list (make-macher-agent-transit-payload :task-id task-id)) final-cb parent-buf)
               (expect hook-called :to-be nil)
               (expect callback-result :to-equal (vector msg-body)))
           (remove-hook 'macher-agent-task-flush-hook hook-fn)

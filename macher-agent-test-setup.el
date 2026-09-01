@@ -65,7 +65,7 @@
     (spy-on 'macher--add-termination-handler)
     (setq macher-agent--persistent-context nil)
     (setq macher-agent-search-backend-function #'macher-agent-search-glob)
-    (let* ((ctx (ignore-errors (macher-agent-resolve-context)))
+    (let* ((ctx (ignore-errors (macher-agent-context-from-buffer (current-buffer))))
            (ws (when ctx (macher-agent-context-workspace ctx))))
       (when ws (setf (macher-agent-workspace-active-subagents ws) nil)))))
 

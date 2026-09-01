@@ -317,7 +317,7 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
         (expect (macher-agent-zero-mem--get-event-horizon nil ctx) :to-equal '(:line 42 :offset 1024))))
 
     (it "extracts clean prompt from context prompt accessor"
-      (let ((ctx (make-macher-agent-context :id "prompt-ctx" :plugins '(:prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->"))))
+      (let ((ctx (make-macher-agent-context :id "prompt-ctx" :prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->")))
         (expect (macher-agent-zero-mem--extract-clean-prompt nil ctx) :to-equal "Clean Prompt Content")))
 
     (it "resolves parent buffer via context origin buffer and routing stack"

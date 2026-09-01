@@ -134,8 +134,8 @@
                     (it "dispatches to macher-agent-vfs-flush-hook when context has changes"
                         (let* ((ctx (macher-agent--make-context
                                      :project-root "/mock/flush-test/"
-                                     :plugins (list :prompt "Refactor codebase"
-                                                    :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/flush-test/a.el" "old" "new"))))))
+                                     :prompt "Refactor codebase"
+                                     :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/flush-test/a.el" "old" "new"))))))
                                (hook-called nil))
                           (let ((macher-agent-vfs-flush-hook
                                  (list (lambda (c) (setq hook-called c)))))
@@ -188,56 +188,57 @@
                           (expect flush-received :to-be ctx))))
 
           (describe "macher-agent-vfs-build-patch-from-hook"
-                    (it "executes split patch generation and extracts FSM prompt"
+                    (it "executes split patch generation using prompt from context"
                         (let* ((agent-buf (generate-new-buffer "agent-build-hook-buf"))
-                               (fsm (gptel-make-fsm :info (list :buffer agent-buf :prompt "Hook prompt")))
-                               (gptel--fsm fsm)
-                               (macher-agent--active-fsm fsm)
                                (ctx (macher-agent--make-context
                                      :project-root "/mock/build-hook/"
+                                     :origin-buffer agent-buf
+                                     :prompt "Hook prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/build-hook/x.el" "orig" "mod"))))))
                                (build-calls nil))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
-                                         (lambda (c f) (push (cons c f) build-calls))))
+                                         (lambda (c prompt &optional files)
+                                           (push (list c prompt files) build-calls))))
                                 (macher-agent-vfs-build-patch-from-hook ctx)
                                 (expect (length build-calls) :to-equal 1)
+                                (expect (nth 1 (car build-calls)) :to-equal "Hook prompt")
                                 (expect (macher-agent-context-prompt ctx) :to-equal "Hook prompt"))
                             (when (buffer-live-p agent-buf) (kill-buffer agent-buf))))))
 
           (describe "macher-agent--execute-split-patch"
-                    (it "extracts prompt from fsm-obj plist and propagates to split contexts"
-                        (let* ((orig-buf (generate-new-buffer "split-plist-prompt-buf"))
-                               (fsm-plist (list :buffer orig-buf :prompt "Plist Prompt Text"))
+                    (it "extracts prompt from context and propagates to split contexts"
+                        (let* ((orig-buf (generate-new-buffer "split-prompt-buf"))
                                (ctx (macher-agent--make-context
                                      :project-root "/mock/split-prompt/"
                                      :origin-buffer orig-buf
+                                     :prompt "Explicit Context Prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/split-prompt/f.el" "1" "2"))))))
                                (captured-p-ctx nil))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent--build-and-rename-patch)
-                                         (lambda (sub-ctx fsm type)
+                                         (lambda (sub-ctx type &optional files)
                                            (setq captured-p-ctx sub-ctx)
                                            nil)))
-                                (macher-agent--execute-split-patch ctx fsm-plist)
-                                (expect (macher-agent-context-prompt captured-p-ctx) :to-equal "Plist Prompt Text"))
+                                (macher-agent--execute-split-patch ctx)
+                                (expect (macher-agent-context-prompt captured-p-ctx) :to-equal "Explicit Context Prompt"))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf)))))
 
-                    (it "extracts prompt from ctx when fsm-obj prompt is nil"
-                        (let* ((orig-buf (generate-new-buffer "split-ctx-prompt-buf"))
+                    (it "handles nil prompt on context gracefully by defaulting to empty string"
+                        (let* ((orig-buf (generate-new-buffer "split-nil-prompt-buf"))
                                (ctx (macher-agent--make-context
-                                     :project-root "/mock/split-ctx-prompt/"
+                                     :project-root "/mock/split-nil-prompt/"
                                      :origin-buffer orig-buf
-                                     :plugins (list :prompt "Ctx Prompt Text"
-                                                    :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/split-ctx-prompt/f.el" "1" "2"))))))
+                                     :prompt nil
+                                     :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/split-nil-prompt/f.el" "1" "2"))))))
                                (captured-p-ctx nil))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent--build-and-rename-patch)
-                                         (lambda (sub-ctx fsm type)
+                                         (lambda (sub-ctx type &optional files)
                                            (setq captured-p-ctx sub-ctx)
                                            nil)))
-                                (macher-agent--execute-split-patch ctx nil)
-                                (expect (macher-agent-context-prompt captured-p-ctx) :to-equal "Ctx Prompt Text"))
+                                (macher-agent--execute-split-patch ctx)
+                                (expect (macher-agent-context-prompt captured-p-ctx) :to-equal ""))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf))))))
 
           (describe "macher-agent--expressive-patch-buffer-name"
@@ -258,38 +259,39 @@
           (describe "macher-agent--build-and-rename-patch"
                     (it "delegates patch building directly to macher-agent-macher-build-patch"
                         (let* ((orig-buf (generate-new-buffer "agent-build-test"))
-                               (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
                                (ctx (macher-agent--make-context
                                      :project-root "/mock/build-test/"
                                      :origin-buffer orig-buf
+                                     :prompt "Build patch prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/build-test/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
                                (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
                                (build-patch-called nil))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
-                                         (lambda (c f)
-                                           (setq build-patch-called (list c f)))))
-                                (macher-agent--build-and-rename-patch ctx fsm "physical")
-                                (expect (car build-patch-called) :to-equal ctx)
-                                (expect (cadr build-patch-called) :to-equal fsm))
+                                         (lambda (c p &optional f)
+                                           (setq build-patch-called (list c p f)))))
+                                (macher-agent--build-and-rename-patch ctx "physical")
+                                (expect (nth 0 build-patch-called) :to-equal ctx)
+                                (expect (nth 1 build-patch-called) :to-equal "Build patch prompt")
+                                (expect (nth 2 build-patch-called) :to-be nil))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
                             (when-let* ((b (get-buffer expected-name))) (kill-buffer b)))))
 
                     (it "renames patch-buf directly in place retaining its buffer identity"
                         (let* ((orig-buf (generate-new-buffer "agent-retain-id-buf"))
-                               (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
                                (ctx (macher-agent--make-context
                                      :project-root "/mock/retain-id/"
                                      :origin-buffer orig-buf
+                                     :prompt "Retain id prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/retain-id/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
                                (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
                                (raw-patch-buf (generate-new-buffer "*temp-raw-patch*")))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
-                                         (lambda (_c _f) raw-patch-buf)))
-                                (let ((result (macher-agent--build-and-rename-patch ctx fsm "physical")))
+                                         (lambda (_c _p &optional _f) raw-patch-buf)))
+                                (let ((result (macher-agent--build-and-rename-patch ctx "physical")))
                                   (expect result :to-be raw-patch-buf)
                                   (expect (buffer-live-p raw-patch-buf) :to-be-truthy)
                                   (expect (buffer-name raw-patch-buf) :to-equal expected-name)))
@@ -299,10 +301,10 @@
 
                     (it "kills pre-existing expressive buffer when renaming a distinct live patch-buf"
                         (let* ((orig-buf (generate-new-buffer "agent-kill-existing-buf"))
-                               (fsm (gptel-make-fsm :info (list :buffer orig-buf)))
                                (ctx (macher-agent--make-context
                                      :project-root "/mock/kill-existing/"
                                      :origin-buffer orig-buf
+                                     :prompt "Kill existing prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/kill-existing/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
                                (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
@@ -310,8 +312,8 @@
                                (new-patch-buf (generate-new-buffer "*new-patch-buffer*")))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
-                                         (lambda (_c _f) new-patch-buf)))
-                                (let ((result (macher-agent--build-and-rename-patch ctx fsm "physical")))
+                                         (lambda (_c _p &optional _f) new-patch-buf)))
+                                (let ((result (macher-agent--build-and-rename-patch ctx "physical")))
                                   (expect result :to-be new-patch-buf)
                                   (expect (buffer-live-p new-patch-buf) :to-be-truthy)
                                   (expect (buffer-name new-patch-buf) :to-equal expected-name)

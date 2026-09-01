@@ -47,7 +47,7 @@
  (describe "macher-agent--log-gptel-pre-tool"
            (it "logs standard gptel tool calls into active context audit log"
                (let ((ctx (macher-agent--make-context)))
-                 (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+                 (setq-local macher-agent--persistent-context ctx)
                  (macher-agent--log-gptel-pre-tool 'test-gptel-tool nil :param "val")
                  (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
@@ -59,9 +59,9 @@
  (describe "macher-agent-sandbox-run"
            (it "logs PTC tool yields into active context audit log"
                (let ((ctx (macher-agent--make-context))
+                     (buf (current-buffer))
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
-                 (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-                 (macher-agent-sandbox-run '(test-ptc-tool :path "file.txt") nil)
+                 (macher-agent-sandbox-run '(test-ptc-tool :path "file.txt") nil ctx buf)
                  (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
@@ -71,8 +71,9 @@
 
            (it "logs PTC tool yields into explicitly passed context"
                (let ((ctx (macher-agent--make-context))
+                     (buf (current-buffer))
                      (macher-agent--active-ptc-primitives '(custom-ptc-tool)))
-                 (macher-agent-sandbox-run '(custom-ptc-tool :name "foo" :count 42) nil ctx)
+                 (macher-agent-sandbox-run '(custom-ptc-tool :name "foo" :count 42) nil ctx buf)
                  (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
@@ -82,9 +83,9 @@
 
            (it "does not log audit entries for non-tool expressions"
                (let ((ctx (macher-agent--make-context))
+                     (buf (current-buffer))
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
-                 (spy-on 'macher-agent-resolve-context :and-return-value ctx)
-                 (macher-agent-sandbox-run '(+ 1 2) '(+))
+                 (macher-agent-sandbox-run '(+ 1 2) '(+) ctx buf)
                  (let ((log (plist-get (macher-agent-context-plugins ctx) :audit-log)))
                    (expect (length log) :to-equal 0)))))
 
@@ -92,7 +93,7 @@
            (it "filters audit log by preset and limit returning JSON string of entries"
                (let ((ctx (macher-agent--make-context))
                      (callback-result nil))
-                 (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+                 (setq-local macher-agent--persistent-context ctx)
                  (let ((macher-agent--active-skill-sym 'PresetAlpha))
                    (macher-agent-log-tool-intent ctx "gptel-tool" "tool-1" '(:a 1)))
                  (let ((macher-agent--active-skill-sym 'PresetBeta))

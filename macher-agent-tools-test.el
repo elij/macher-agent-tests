@@ -106,7 +106,12 @@
 
                           ;; Invalid property type
                           (expect (macher-agent--validate-object-schema spec '(:name "Dave" :role 99) "user")
-                                  :to-throw 'error)))
+                                  :to-throw 'error)
+
+                          ;; Invalid non-flat/odd-length properties plist
+                          (let ((invalid-spec '(:type object :properties (:name (:type string) :invalid))))
+                            (expect (macher-agent--validate-object-schema invalid-spec '(:name "Eve") "user")
+                                    :to-throw 'error))))
 
                     (it "handles null values and optionality in general schema validation"
                         (let ((opt-spec '(:name "opt_arg" :type string :optional t))
@@ -464,6 +469,33 @@
           ;; 6. Active Execution & Direct Context Transport
           ;; --------------------------------------------------------------------------
           (describe "6. Active Execution & Direct Context Transport"
+                    (it "delegates context extraction from FSM to macher-agent-gptel-context-from-fsm"
+                        (let* ((mock-ctx (make-macher-agent-context :id "ctx-fsm-delegated" :project-root "/mock/fsm-delegated-root"))
+                               (mock-fsm (if (fboundp 'gptel-make-fsm)
+                                             (gptel-make-fsm :info (list :macher-agent-context mock-ctx :buffer (current-buffer)))
+                                           (list :macher-agent-context mock-ctx :buffer (current-buffer))))
+                               (received-ctx nil)
+                               (fsm-extractor-called nil))
+                          (macher-agent-make-tool mock-delegated-tool
+                                                  "Tool testing FSM delegation"
+                                                  :category "test-tools"
+                                                  :args '((:name "input" :type string))
+                                                  :command-fn (lambda (payload ctx _root)
+                                                                (setq received-ctx ctx)
+                                                                (plist-get payload :input)))
+                          (cl-letf (((symbol-function 'macher-agent-gptel-context-from-fsm)
+                                     (lambda (fsm &optional target-buf)
+                                       (setq fsm-extractor-called t)
+                                       mock-ctx)))
+                            (let ((macher-agent--active-fsm mock-fsm)
+                                  (res nil))
+                              (funcall (gptel-tool-function mock-delegated-tool)
+                                       (lambda (r) (setq res r))
+                                       :input "val-delegated")
+                              (expect res :to-equal "val-delegated")
+                              (expect fsm-extractor-called :to-be t)
+                              (expect received-ctx :to-be mock-ctx)))))
+
                     (it "extracts active context directly from active FSM info plist :macher-agent-context"
                         (let* ((mock-ctx (make-macher-agent-context :id "ctx-fsm-direct" :project-root "/mock/fsm-direct-root"))
                                (mock-fsm (if (fboundp 'gptel-make-fsm)
@@ -638,7 +670,8 @@
                         (let* ((mock-ctx (make-macher-agent-context
                                           :id "ctx-direct-plugins"
                                           :project-root "/mock/direct-root"
-                                          :plugins '(:custom-setting "active-val" :prompt "Tool Context Prompt")))
+                                          :prompt "Tool Context Prompt"
+                                          :plugins '(:custom-setting "active-val")))
                                (extracted-prompt nil)
                                (extracted-ws nil)
                                (extracted-plugin-val nil)

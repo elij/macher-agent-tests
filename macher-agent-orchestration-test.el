@@ -107,6 +107,12 @@
         (expect (plist-get (aref results 0) :status) :to-be 'error)
         (expect (plist-get (aref results 0) :error) :to-match "Sub-agent buffer 'nonexistent-target-buf' not found")))
 
+    (it "invokes final-callback with an empty vector when payloads list is empty"
+      (let ((callback-result :not-called))
+        (macher-agent-a2a-dispatch nil (lambda (res) (setq callback-result res)))
+        (expect (vectorp callback-result) :to-be t)
+        (expect callback-result :to-equal [])))
+
     (it "wakes suspended subagents awaiting callbacks without re-transmitting"
       (let* ((target-buf (get-buffer-create "*orch-wake-target*"))
              (wake-data nil)
@@ -230,7 +236,6 @@
                                               :total 1
                                               :final-callback nil
                                               :parent-buffer (current-buffer)
-                                              :parent-fsm nil
                                               :original-payloads nil)
                           :child-buf child-buf)))
         (puthash existing-id #'ignore macher-agent--pending-callbacks)
@@ -242,7 +247,62 @@
               (expect (string-prefix-p "task-" assigned-id) :to-be t)
               (expect (gethash assigned-id macher-agent--pending-callbacks) :not :to-be nil))
           (remhash existing-id macher-agent--pending-callbacks)
-          (kill-buffer child-buf)))))
+          (kill-buffer child-buf))))
+
+    (it "dispatches with pure context and buffer shared-state without parent-fsm"
+      (let* ((parent-buf (get-buffer-create "*orch-pure-parent*"))
+             (parent-ctx (macher-agent--make-context :id "ctx-pure-dispatch" :project-root "/mock/pure/"))
+             (child-buf (get-buffer-create "*orch-pure-child*"))
+             (captured-shared nil))
+        (unwind-protect
+            (progn
+              (with-current-buffer parent-buf
+                (setq-local macher-agent--persistent-context parent-ctx)
+                (spy-on 'macher-agent-a2a-pipe--validate-routing :and-call-fake
+                        (lambda (state)
+                          (setq captured-shared (plist-get state :shared-state))
+                          (plist-put state :error-payload '(:status cancelled))))
+                (macher-agent-a2a-dispatch
+                 (list (macher-agent-make-a2a-payload
+                        :type 'SEND_MESSAGE
+                        :payload "test pure dispatch"
+                        :metadata (list :buffer_name (buffer-name child-buf))))
+                 nil)))
+          (expect captured-shared :not :to-be nil)
+          (expect (plist-member captured-shared :parent-fsm) :to-be nil)
+          (expect (plist-get captured-shared :parent-buffer) :to-equal parent-buf)
+          (expect (plist-get captured-shared :parent-context) :to-be parent-ctx)
+          (kill-buffer parent-buf)
+          (kill-buffer child-buf))))
+
+    (it "aggregates sub-agent results with 7-argument signature without FSM parameters"
+      (let* ((parent-buf (get-buffer-create "*orch-agg-parent*"))
+             (results-tbl (make-hash-table :test 'equal))
+             (task-1 "task-agg-01")
+             (task-2 "task-agg-02")
+             (p1 (make-macher-agent-transit-payload :task-id task-1))
+             (p2 (make-macher-agent-transit-payload :task-id task-2))
+             (payloads (list p1 p2))
+             (cb-result nil)
+             (executed-in-buf nil)
+             (final-cb (lambda (res)
+                         (setq cb-result res)
+                         (setq executed-in-buf (current-buffer)))))
+        (unwind-protect
+            (progn
+              ;; First task completes
+              (macher-agent--aggregate-a2a-results
+               task-1 '(:status success :data "Result 1") results-tbl 2 payloads final-cb parent-buf)
+              (expect cb-result :to-be nil)
+              ;; Second task completes, triggering callback in parent buffer
+              (macher-agent--aggregate-a2a-results
+               task-2 '(:status success :data "Result 2") results-tbl 2 payloads final-cb parent-buf)
+              (expect (vectorp cb-result) :to-be t)
+              (expect (length cb-result) :to-equal 2)
+              (expect (plist-get (aref cb-result 0) :data) :to-equal "Result 1")
+              (expect (plist-get (aref cb-result 1) :data) :to-equal "Result 2")
+              (expect executed-in-buf :to-equal parent-buf))
+          (kill-buffer parent-buf)))))
 
   ;; ---------------------------------------------------------------------
   ;; 3. Subagent Buffer State and Lifecycle
@@ -288,6 +348,32 @@
                 (expect (plist-get (macher-agent-context-plugins macher-agent--persistent-context) :key) :to-equal "child-mutated"))
               (with-current-buffer parent-buf
                 (expect (plist-get (macher-agent-context-plugins parent-ctx) :key) :to-equal "orig")))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
+          (when (and child-buf (buffer-live-p child-buf)) (kill-buffer child-buf)))))
+
+    (it "unconditionally sets gptel--known-presets and gptel-directives as buffer-local in subagent buffer"
+      (let* ((parent-buf (get-buffer-create "*orch-presets-parent*"))
+             (child-buf nil)
+             (parent-presets '((custom-preset . (:system "Custom Preset"))))
+             (parent-directives '((custom-directive . "Custom Directive Prompt"))))
+        (unwind-protect
+            (progn
+              (with-current-buffer parent-buf
+                (setq-local gptel--known-presets parent-presets)
+                (setq-local gptel-directives parent-directives))
+              (let ((state (list :name "*orch-presets-child*"
+                                 :target-dir default-directory
+                                 :parent-buffer parent-buf
+                                 :cloned-ctx nil
+                                 :presets nil)))
+                (macher-agent-subagent-pipe--init-buffer state)
+                (setq child-buf (get-buffer "*orch-presets-child*"))
+                (expect (bufferp child-buf) :to-be t)
+                (with-current-buffer child-buf
+                  (expect (local-variable-p 'gptel--known-presets) :to-be t)
+                  (expect (local-variable-p 'gptel-directives) :to-be t)
+                  (expect gptel--known-presets :to-equal parent-presets)
+                  (expect gptel-directives :to-equal parent-directives))))
           (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
           (when (and child-buf (buffer-live-p child-buf)) (kill-buffer child-buf)))))
 
@@ -391,14 +477,13 @@
     (it "extracts and updates context prompts and workspaces using specialized accessors"
       (let ((ctx (macher-agent--make-context :id "ctx-acc-01"
                                              :project-root "/mock/acc-root/"
-                                             :plugins (list :prompt "Initial Prompt"))))
+                                             :prompt "Initial Prompt")))
         (expect (macher-agent-context-p ctx) :to-be t)
         (expect (macher-agent-context-id ctx) :to-equal "ctx-acc-01")
         (expect (macher-agent-context-project-root ctx) :to-equal "/mock/acc-root/")
         (expect (macher-agent-context-prompt ctx) :to-equal "Initial Prompt")
         (setf (macher-agent-context-prompt ctx) "Mutated Prompt")
         (expect (macher-agent-context-prompt ctx) :to-equal "Mutated Prompt")
-        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Mutated Prompt")
         (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (expand-file-name "/mock/acc-root/")))))
 
     (it "resolves buffer names from strings, buffers, and file paths via macher-agent--resolve-buffer-name"

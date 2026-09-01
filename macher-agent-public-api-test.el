@@ -35,97 +35,82 @@
 
           (describe "Sandboxed Evaluator Basic Features"
                     (it "evaluates basic expressions safely"
-                        (expect (macher-agent-sandbox-run 42 nil) :to-equal 42)
-                        (expect (macher-agent-sandbox-run "test" nil) :to-equal "test")
-                        (expect (macher-agent-sandbox-run t nil) :to-equal t)
-                        (expect (macher-agent-sandbox-run nil nil) :to-be nil)
-                        (expect (macher-agent-sandbox-run '(quote (1 2 3)) nil) :to-equal '(1 2 3))
-                        (expect (macher-agent-sandbox-run '(progn 1 2 3) nil) :to-equal 3)
-                        (expect (macher-agent-sandbox-run '(if t 'yes 'no) nil) :to-equal 'yes)
-                        (expect (macher-agent-sandbox-run '(if nil 'yes 'no) nil) :to-equal 'no)
-                        (expect (macher-agent-sandbox-run '(let ((x 10) (y 20)) (progn (setq x 15) (+ x y))) '(+)) :to-equal 35)
-                        (expect (macher-agent-sandbox-run '(funcall (lambda (x) (* x x)) 5) '(*)) :to-equal 25)))
+                        (let ((mock-ctx (macher-agent--make-context))
+                              (target-buf (current-buffer)))
+                          (expect (macher-agent-sandbox-run 42 nil mock-ctx target-buf) :to-equal 42)
+                          (expect (macher-agent-sandbox-run "test" nil mock-ctx target-buf) :to-equal "test")
+                          (expect (macher-agent-sandbox-run t nil mock-ctx target-buf) :to-equal t)
+                          (expect (macher-agent-sandbox-run nil nil mock-ctx target-buf) :to-be nil)
+                          (expect (macher-agent-sandbox-run '(quote (1 2 3)) nil mock-ctx target-buf) :to-equal '(1 2 3))
+                          (expect (macher-agent-sandbox-run '(progn 1 2 3) nil mock-ctx target-buf) :to-equal 3)
+                          (expect (macher-agent-sandbox-run '(if t 'yes 'no) nil mock-ctx target-buf) :to-equal 'yes)
+                          (expect (macher-agent-sandbox-run '(if nil 'yes 'no) nil mock-ctx target-buf) :to-equal 'no)
+                          (expect (macher-agent-sandbox-run '(let ((x 10) (y 20)) (progn (setq x 15) (+ x y))) '(+) mock-ctx target-buf) :to-equal 35)
+                          (expect (macher-agent-sandbox-run '(funcall (lambda (x) (* x x)) 5) '(*) mock-ctx target-buf) :to-equal 25))))
 
           (describe "Sandboxed Evaluator Comprehensive Features"
                     (it "evaluates newly implemented sandboxed features safely"
-                        ;; Keyword self-evaluation
-                        (expect (macher-agent-sandbox-run ':foo nil) :to-equal :foo)
-                        (expect (macher-agent-sandbox-run '(let ((x :bar)) x) nil) :to-equal :bar)
+                        (let ((mock-ctx (macher-agent--make-context))
+                              (target-buf (current-buffer)))
+                          ;; Keyword self-evaluation
+                          (expect (macher-agent-sandbox-run ':foo nil mock-ctx target-buf) :to-equal :foo)
+                          (expect (macher-agent-sandbox-run '(let ((x :bar)) x) nil mock-ctx target-buf) :to-equal :bar)
 
-                        ;; Built-in and whitelisted functions
-                        (expect (macher-agent-sandbox-run '(not nil) nil) :to-equal t)
-                        (expect (macher-agent-sandbox-run '(not t) nil) :to-be nil)
-                        (expect (macher-agent-sandbox-run '(reverse '(1 2 3)) nil) :to-equal '(3 2 1))
-                        (expect (macher-agent-sandbox-run '(split-string "foo bar" " ") nil) :to-equal '("foo" "bar"))
-                        (expect (macher-agent-sandbox-run '(plist-get '(:a 1 :b 2) :b) nil) :to-equal 2)
+                          ;; Built-in and whitelisted functions
+                          (expect (macher-agent-sandbox-run '(not nil) nil mock-ctx target-buf) :to-equal t)
+                          (expect (macher-agent-sandbox-run '(not t) nil mock-ctx target-buf) :to-be nil)
+                          (expect (macher-agent-sandbox-run '(reverse '(1 2 3)) nil mock-ctx target-buf) :to-equal '(3 2 1))
+                          (expect (macher-agent-sandbox-run '(split-string "foo bar" " ") nil mock-ctx target-buf) :to-equal '("foo" "bar"))
+                          (expect (macher-agent-sandbox-run '(plist-get '(:a 1 :b 2) :b) nil mock-ctx target-buf) :to-equal 2)
 
-                        ;; Functional application
-                        (expect (macher-agent-sandbox-run '(apply '+ 1 2 '(3 4)) '(+)) :to-equal 10)
-                        (expect (macher-agent-sandbox-run '(apply '+ '(1 2 3)) '(+)) :to-equal 6)
-                        (expect (macher-agent-sandbox-run '(mapcar (lambda (x) (* x 2)) '(1 2 3)) '(*)) :to-equal '(2 4 6))
+                          ;; Functional application
+                          (expect (macher-agent-sandbox-run '(apply '+ 1 2 '(3 4)) '(+) mock-ctx target-buf) :to-equal 10)
+                          (expect (macher-agent-sandbox-run '(apply '+ '(1 2 3)) '(+) mock-ctx target-buf) :to-equal 6)
+                          (expect (macher-agent-sandbox-run '(mapcar (lambda (x) (* x 2)) '(1 2 3)) '(*) mock-ctx target-buf) :to-equal '(2 4 6))
 
-                        ;; Control flow and Error handling
-                        (expect (macher-agent-sandbox-run '(condition-case err (/ 1 0) (error 'caught)) '(/)) :to-equal 'caught)
-                        (expect (macher-agent-sandbox-run '(unwind-protect 1 2) nil) :to-equal 1)
-                        (expect (macher-agent-sandbox-run '(catch 'tag (throw 'tag 42)) nil) :to-equal 42)
+                          ;; Control flow and Error handling
+                          (expect (macher-agent-sandbox-run '(condition-case err (/ 1 0) (error 'caught)) '(/) mock-ctx target-buf) :to-equal 'caught)
+                          (expect (macher-agent-sandbox-run '(unwind-protect 1 2) nil mock-ctx target-buf) :to-equal 1)
+                          (expect (macher-agent-sandbox-run '(catch 'tag (throw 'tag 42)) nil mock-ctx target-buf) :to-equal 42)
 
-                        ;; Introspection
-                        (expect (macher-agent-sandbox-run '(fboundp 'car) nil) :to-equal t)
-                        (expect (macher-agent-sandbox-run '(fboundp 'nonexistent) nil) :to-be nil)
-                        (expect (macher-agent-sandbox-run '(let ((x 1)) (boundp 'x)) nil) :to-equal t)
-                        (expect (macher-agent-sandbox-run '(boundp 'nonexistent) nil) :to-be nil)
+                          ;; Introspection
+                          (expect (macher-agent-sandbox-run '(fboundp 'car) nil mock-ctx target-buf) :to-equal t)
+                          (expect (macher-agent-sandbox-run '(fboundp 'nonexistent) nil mock-ctx target-buf) :to-be nil)
+                          (expect (macher-agent-sandbox-run '(let ((x 1)) (boundp 'x)) nil mock-ctx target-buf) :to-equal t)
+                          (expect (macher-agent-sandbox-run '(boundp 'nonexistent) nil mock-ctx target-buf) :to-be nil)
 
-                        ;; Macros
-                        (expect (macher-agent-sandbox-run '(progn
-                                                             (defalias 'my-when '(macro lambda (cond &rest body)
-                                                                                        (list 'if cond (cons 'progn body))))
-                                                             (my-when t 42))
-                                                          nil)
-                                :to-equal 42)))
+                          ;; Macros
+                          (expect (macher-agent-sandbox-run '(progn
+                                                               (defalias 'my-when '(macro lambda (cond &rest body)
+                                                                                          (list 'if cond (cons 'progn body))))
+                                                               (my-when t 42))
+                                                            nil mock-ctx target-buf)
+                                  :to-equal 42))))
 
-          (describe "Context Resolution Regression"
+          (describe "Context Resolution and Typed Contracts"
                     (before-each
                      (setq macher-agent--persistent-context nil)
                      (clrhash macher-agent-active-workspaces))
 
-                    (it "short-circuits waterfall pipeline when explicit context is passed"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/explicit-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
-                          (expect (macher-agent-resolve-context ctx) :to-be ctx)))
-
-                    (it "extracts context from FSM payload when FSM object is supplied"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/fsm-proj/"))
+                    (it "extracts persistent context from live buffer objects and buffer names via macher-agent-context-from-buffer"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/buf-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-                               (fsm (gptel-make-fsm)))
-                          (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
-                          (expect (macher-agent-resolve-context fsm) :to-be ctx)))
-
-                    (it "resolves context cleanly via workspace identifiers and direct lookup"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/ws-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-                               (buf (generate-new-buffer "*mock-ctx-buf*"))
-                               (fsm (gptel-make-fsm)))
+                               (buf (generate-new-buffer "*mock-ctx-buf*")))
                           (unwind-protect
                               (progn
-                                ;; 1. Resting state buffer-local context resolution
-                                (with-temp-buffer
-                                  (setq-local macher-agent--persistent-context ctx)
-                                  (expect (macher-agent-resolve-context) :to-be ctx))
-                                ;; 2. Live buffer resolution
                                 (with-current-buffer buf
                                   (setq-local macher-agent--persistent-context ctx))
-                                (expect (macher-agent-resolve-context buf) :to-be ctx)
-                                ;; 3. Active FSM context resolution
-                                (setf (gptel-fsm-info fsm) (list :macher-agent-context ctx))
-                                (expect (macher-agent-resolve-context fsm) :to-be ctx))
+                                (expect (macher-agent-context-from-buffer buf) :to-be ctx)
+                                (expect (macher-agent-context-from-buffer (buffer-name buf)) :to-be ctx))
                             (when (buffer-live-p buf)
                               (kill-buffer buf)))))
 
-                    (it "returns nil when context resolution fails across all steps"
-                        (let ((macher-agent-active-workspaces (make-hash-table :test 'equal))
-                              (macher-agent--persistent-context nil))
-                          (spy-on 'macher-agent--resolve-context-lazy-init :and-return-value nil)
-                          (expect (macher-agent-resolve-context) :to-be nil)))
+                    (it "extracts context directly or from transit payload via macher-agent-context-from-payload"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/payload-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (payload (make-macher-agent-transit-payload :target-context ctx)))
+                          (expect (macher-agent-context-from-payload ctx) :to-be ctx)
+                          (expect (macher-agent-context-from-payload payload) :to-be ctx)))
 
                     (it "reads and updates files via context API functions"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/api-proj/"))
@@ -214,7 +199,7 @@
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/force-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
                                (flushed-ctx nil))
-                          (spy-on 'macher-agent-resolve-context :and-return-value ctx)
+                          (setq-local macher-agent--persistent-context ctx)
                           (spy-on 'macher-agent-run-task-flush-hook :and-call-fake (lambda (c) (setq flushed-ctx c)))
                           (macher-agent-force-review)
                           (expect 'macher-agent-run-task-flush-hook :to-have-been-called)

@@ -36,26 +36,14 @@
 (describe "Macher-Agent Orchestration Integration"
           (before-each
            (setq macher-agent--garbage-queue nil)
-           (spy-on 'macher-agent-resolve-context :and-call-fake
-                   (lambda (&optional input)
-                     (cond
-                      ((macher-agent-valid-context-p input) input)
-                      ((and (bufferp input) (buffer-live-p input)
-                            (buffer-local-value 'macher-agent--persistent-context input)))
-                      ((and (stringp input) (get-buffer input) (buffer-live-p (get-buffer input))
-                            (buffer-local-value 'macher-agent--persistent-context (get-buffer input))))
-                      ((and input (ignore-errors (macher-agent-resolve-from-transit-payload input))))
-                      ((bound-and-true-p macher-agent--persistent-context)
-                       macher-agent--persistent-context)
-                      ((gethash (expand-file-name default-directory) macher-agent-active-workspaces))
-                      (t
-                       (let* ((ws (make-macher-agent-workspace :project-root (expand-file-name default-directory)))
-                              (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
-                         (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
-                         (macher-agent-initialize-skills ctx (or (bound-and-true-p macher-agent--bundled-skills-dir)
-                                                                 (bound-and-true-p macher-agent-bundled-skills-directory)))
-                         ctx)))))
-           
+           (setq gptel-api-key "mock-key")
+           (let* ((ws (make-macher-agent-workspace :project-root (expand-file-name default-directory)))
+                  (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+             (setq-local macher-agent--persistent-context ctx)
+             (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
+             (macher-agent-initialize-skills ctx (or (bound-and-true-p macher-agent--bundled-skills-dir)
+                                                     (bound-and-true-p macher-agent-bundled-skills-directory))))
+
            ;; 1. Mock the LLM: Intercept gptel-send to act as the AI for the sub-agents
            (let ((orig-send (symbol-function 'gptel-send)))
              (spy-on 'gptel-send :and-call-fake
@@ -66,7 +54,8 @@
                           ((string-match-p "agent-france" name)
                            (with-current-buffer buf
                              (setq-local macher-agent--ready-to-reap t))
-                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
+                           (let* ((ctx (macher-agent-context-from-buffer buf))
+                                  (tool (or (when ctx (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace ctx))))
                                             macher-agent-submit-task-result-tool))
                                   (submit-fn (gptel-tool-function tool)))
                              (funcall submit-fn (lambda (_) nil) :final_answer "The capital of France is Paris.")))
@@ -74,7 +63,8 @@
                           ((string-match-p "agent-spain" name)
                            (with-current-buffer buf
                              (setq-local macher-agent--ready-to-reap t))
-                           (let* ((tool (or (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
+                           (let* ((ctx (macher-agent-context-from-buffer buf))
+                                  (tool (or (when ctx (gethash "submit_task_result" (macher-agent-workspace-tools-registry (macher-agent-context-workspace ctx))))
                                             macher-agent-submit-task-result-tool))
                                   (submit-fn (gptel-tool-function tool)))
                              (funcall submit-fn (lambda (_) nil) :final_answer "The capital of Spain is Madrid.")))
@@ -98,10 +88,12 @@
                   
                   ;; --- A. Setup the Master Orchestrator Context ---
                   (let ((macher-agent--allow-lazy-init t))
-                    (let* ((spawn-tool (or (gethash "spawn_subagent" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
+                    (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                    (macher-agent-context-from-buffer (current-buffer))))
+                           (spawn-tool (or (when ctx (gethash "spawn_subagent" (macher-agent-workspace-tools-registry (macher-agent-context-workspace ctx))))
                                            (bound-and-true-p macher-agent-spawn-subagent-tool)))
-                           (delegate-tool (or (gethash "delegate_tasks" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
-                                              (gethash "delegate_tasks_to_subagents" (macher-agent-workspace-tools-registry (macher-agent-context-workspace (macher-agent-resolve-context))))
+                           (delegate-tool (or (when ctx (gethash "delegate_tasks" (macher-agent-workspace-tools-registry (macher-agent-context-workspace ctx))))
+                                              (when ctx (gethash "delegate_tasks_to_subagents" (macher-agent-workspace-tools-registry (macher-agent-context-workspace ctx))))
                                               (bound-and-true-p macher-agent-delegate-tasks-tool)
                                               (bound-and-true-p macher-agent-delegate-tasks-to-subagents-tool))))
                       
@@ -182,9 +174,11 @@
           (it "invokes macher-agent--vfs-a2a-callback directly from wait_for_vfs_semaphore"
               (let* ((lock-result nil)
                      (resource-path "src/semaphore-test.el")
-                     (sem-tool (or (gethash "wait_for_vfs_semaphore"
-                                            (macher-agent-workspace-tools-registry
-                                             (macher-agent-context-workspace (macher-agent-resolve-context))))
+                     (ctx (or (bound-and-true-p macher-agent--persistent-context)
+                              (macher-agent-context-from-buffer (current-buffer))))
+                     (sem-tool (or (when ctx (gethash "wait_for_vfs_semaphore"
+                                                      (macher-agent-workspace-tools-registry
+                                                       (macher-agent-context-workspace ctx))))
                                    (bound-and-true-p macher-agent-wait-for-vfs-semaphore)))
                      (tool-fn (gptel-tool-function sem-tool)))
                 (funcall tool-fn

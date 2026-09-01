@@ -64,13 +64,11 @@
         (expect (macher-agent-context-prompt ctx) :to-be nil)
         (setf (macher-agent-context-prompt ctx) "Initial prompt test")
         (expect (macher-agent-context-prompt ctx) :to-equal "Initial prompt test")
-        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Initial prompt test")
         (set-macher-agent-context-prompt ctx "Updated prompt test")
-        (expect (macher-agent-context-prompt ctx) :to-equal "Updated prompt test")
-        (expect (plist-get (macher-agent-context-plugins ctx) :prompt) :to-equal "Updated prompt test"))))
+        (expect (macher-agent-context-prompt ctx) :to-equal "Updated prompt test"))))
 
   (describe "Resting State Consolidation and Context Resolution"
-    (it "resolves context through macher-agent--persistent-context when idle"
+    (it "resolves context through macher-agent--persistent-context when idle via macher-agent-gptel-context-from-fsm"
       (let* ((buf (generate-new-buffer "test-gptel-resting-buf"))
              (mock-ctx (make-macher-agent-context :project-root "/mock/resting/")))
         (unwind-protect
@@ -83,12 +81,12 @@
               (expect (macher-agent-get-active-fsm) :to-be nil)
 
               ;; Resting state resolution
-              (expect (macher-agent-gptel--fsm-context nil buf) :to-be mock-ctx)
-              (expect (macher-agent-gptel--fsm-context) :to-be mock-ctx))
+              (expect (macher-agent-gptel-context-from-fsm nil buf) :to-be mock-ctx)
+              (expect (macher-agent-gptel-context-from-fsm nil) :to-be mock-ctx))
           (when (buffer-live-p buf)
             (kill-buffer buf)))))
 
-    (it "resolves context directly from FSM info plist during active execution"
+    (it "resolves context directly from FSM info plist during active execution via macher-agent-gptel-context-from-fsm"
       (let* ((buf (generate-new-buffer "test-gptel-active-buf"))
              (mock-ctx (make-macher-agent-context :project-root "/mock/active/"))
              (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)))
@@ -101,14 +99,14 @@
               (expect (macher-agent-gptel--fsm-target-buffer fsm) :to-be buf)
 
               ;; Direct extraction from FSM info plist
-              (expect (macher-agent-gptel--fsm-context fsm) :to-be mock-ctx)
-              (expect (macher-agent-gptel--fsm-context mock-ctx) :to-be mock-ctx)
+              (expect (macher-agent-gptel-context-from-fsm fsm) :to-be mock-ctx)
+              (expect (macher-agent-gptel-context-from-fsm mock-ctx) :to-be mock-ctx)
 
               ;; Fallback to buffer-local persistent-context when FSM info lacks it
               (let ((fsm-no-ctx (gptel-make-fsm :info (list :buffer buf))))
                 (with-current-buffer buf
                   (setq-local macher-agent--persistent-context mock-ctx))
-                (expect (macher-agent-gptel--fsm-context fsm-no-ctx) :to-be mock-ctx)))
+                (expect (macher-agent-gptel-context-from-fsm fsm-no-ctx) :to-be mock-ctx)))
           (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
@@ -136,7 +134,6 @@
               (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be mock-ctx)
               (expect (plist-get (gptel-fsm-info fsm) :origin-buffer) :to-be buf)
               (expect (macher-agent-context-prompt mock-ctx) :to-equal "User prompt to be captured")
-              (expect (plist-get (macher-agent-context-plugins mock-ctx) :prompt) :to-equal "User prompt to be captured")
 
               ;; Handlers augmented
               (let ((handlers (gptel-fsm-handlers fsm)))
@@ -151,6 +148,31 @@
                 (expect cb-called :to-equal "test response")
                 (funcall wrapped-cb nil (list :tool-use '((:name "test_tool"))))
                 (expect cb-called :to-equal "")))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "prevents duplicate hook handler accumulation on repeated transformations"
+      (let* ((buf (generate-new-buffer "test-duplicate-handlers-buf"))
+             (mock-ctx (make-macher-agent-context :project-root "/mock/dup/"))
+             (fsm (gptel-make-fsm :info (list :buffer buf))))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (setq-local macher-agent--persistent-context mock-ctx)
+                (setq-local macher-agent--active-fsm nil)
+                (insert "Prompt text for repeated transforms"))
+
+              ;; Apply transform multiple times on the same FSM instance
+              (macher-agent--fsm-hijack-transform #'ignore fsm)
+              (macher-agent--fsm-hijack-transform #'ignore fsm)
+              (macher-agent--fsm-hijack-transform #'ignore fsm)
+
+              (let ((handlers (gptel-fsm-handlers fsm)))
+                ;; Verify each handler is present exactly once without duplication
+                (expect (cl-count #'macher-agent--inject-media-fsm-logic (alist-get 'WAIT handlers)) :to-equal 1)
+                (expect (cl-count #'macher-agent-gptel--trigger-flush (alist-get 'DONE handlers)) :to-equal 1)
+                (expect (cl-count #'macher-agent-gptel--trigger-flush (alist-get 'ABRT handlers)) :to-equal 1)
+                (expect (cl-count #'macher-agent-gptel--trigger-flush (alist-get 'ERRS handlers)) :to-equal 1)))
           (when (buffer-live-p buf)
             (kill-buffer buf)))))
 
@@ -422,7 +444,91 @@
         (expect (macher-agent--extract-tool-name (cons "alias" mock-tool)) :to-equal "my_tool")
         (expect (macher-agent--extract-tool-name "str_tool") :to-equal "str_tool")
         (expect (macher-agent--extract-tool-name 'sym_tool) :to-equal "sym_tool")
-        (expect (macher-agent--extract-tool-name 12345) :to-be nil)))))
+        (expect (macher-agent--extract-tool-name 12345) :to-be nil))))
+
+  (describe "PTC Tool UI Spoofing"
+    (it "spoofs tool UI display in active FSM and invokes gptel--update-tool-call"
+      (let* ((buf (generate-new-buffer "test-spoof-buf"))
+             (fsm (gptel-make-fsm :info (list :buffer buf)))
+             (update-call-invoked nil)
+             (captured-tool-use nil))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--active-fsm fsm)
+              (cl-letf (((symbol-function 'gptel--update-tool-call)
+                         (lambda (called-fsm)
+                           (setq update-call-invoked called-fsm)
+                           (let* ((info (gptel-fsm-info called-fsm)))
+                             (setq captured-tool-use (plist-get info :tool-use))))))
+                (expect (macher-agent-gptel-spoof-tool-ui buf "my_special_tool") :to-be t)
+                (expect update-call-invoked :to-be fsm)
+                (expect (plist-get (car captured-tool-use) :name) :to-equal "PTC: my-special-tool")
+                (let* ((info (gptel-fsm-info fsm))
+                       (tool-use (plist-get info :tool-use)))
+                  (expect tool-use :to-be nil))))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))
+
+    (it "spoofs tool UI via gptel--update-status when FSM is not active"
+      (let* ((buf (generate-new-buffer "test-spoof-fallback-buf"))
+             (status-msg nil))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--active-fsm nil)
+              (cl-letf (((symbol-function 'gptel--update-status)
+                         (lambda (msg &rest _)
+                           (setq status-msg msg))))
+                (expect (macher-agent-gptel-spoof-tool-ui (buffer-name buf) 'custom-tool) :to-be t)
+                (expect status-msg :to-match "PTC: custom-tool")))
+          (when (buffer-live-p buf)
+            (kill-buffer buf))))))
+
+  (describe "GPTEL Pre-Tool Audit Logging Delegation"
+    (it "resolves context from FSM and delegates to macher-agent-log-tool-intent"
+      (let* ((mock-ctx (make-macher-agent-context :id "ctx-pre-log" :project-root "/mock/log/"))
+             (fsm (gptel-make-fsm :info (list :macher-agent-context mock-ctx)))
+             (logged-args nil))
+        (cl-letf (((symbol-function 'macher-agent-log-tool-intent)
+                   (lambda (ctx type name args)
+                     (setq logged-args (list ctx type name args)))))
+          (macher-agent--log-gptel-pre-tool (list :name "search_files" :args '(:path "dir/")) fsm)
+          (expect (nth 0 logged-args) :to-be mock-ctx)
+          (expect (nth 1 logged-args) :to-equal "gptel-tool")
+          (expect (nth 2 logged-args) :to-equal "search_files")
+          (expect (nth 3 logged-args) :to-equal '(:path "dir/")))))
+
+    (it "resolves context from buffer persistence when FSM is nil"
+      (let* ((buf (generate-new-buffer "test-pre-log-buf"))
+             (mock-ctx (make-macher-agent-context :id "ctx-buf-log" :project-root "/mock/buf-log/"))
+             (logged-ctx nil))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local macher-agent--persistent-context mock-ctx)
+              (cl-letf (((symbol-function 'macher-agent-log-tool-intent)
+                         (lambda (ctx _type _name _args)
+                           (setq logged-ctx ctx))))
+                (macher-agent--log-gptel-pre-tool 'simple_tool nil :arg1 "val1")
+                (expect logged-ctx :to-be mock-ctx)))
+          (when (buffer-live-p buf)
+            (kill-buffer buf))))))
+
+  (describe "Prompt Assignment at Request Initiation"
+    (it "assigns prompt explicitly to context prompt slot during macher-agent-gptel-transmit"
+      (let* ((buf (generate-new-buffer "test-transmit-prompt-buf"))
+             (mock-ctx (make-macher-agent-context :id "ctx-transmit-prompt" :project-root "/mock/prompt/"))
+             (task-ctx (make-macher-agent-task-context
+                        :target-buffer buf
+                        :system-message "Explicit Task System Prompt")))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (setq-local macher-agent--persistent-context mock-ctx))
+              (expect (macher-agent-context-prompt mock-ctx) :to-be nil)
+              (cl-letf (((symbol-function 'gptel-send) #'ignore))
+                (macher-agent-gptel-transmit task-ctx nil))
+              (expect (macher-agent-context-prompt mock-ctx) :to-equal "Explicit Task System Prompt"))
+          (when (buffer-live-p buf)
+            (kill-buffer buf)))))))
 
 (provide 'macher-agent-gptel-test)
 ;;; macher-agent-gptel-test.el ends here

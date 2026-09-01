@@ -48,6 +48,7 @@
                       (macher-agent-execute-ptc-script
                        script
                        ctx
+                       (current-buffer)
                        (lambda (val) (setq success-result val))
                        (lambda (err) (setq error-result err)))
                       (expect error-result :to-be nil)
@@ -75,6 +76,7 @@
                 ;; Multi-form script evaluation
                 (macher-agent-execute-ptc-script
                  multi-script ctx
+                 (current-buffer)
                  (lambda (val) (setq multi-res val))
                  (lambda (err) (setq multi-err err))
                  '(+))
@@ -88,36 +90,39 @@
                 ;; Prevent #. code injection
                 (macher-agent-execute-ptc-script
                  inject-script ctx
+                 (current-buffer)
                  (lambda (val) (setq inject-res val))
                  (lambda (err) (setq inject-err err)))
                 (expect injected :to-be nil)
                 (expect inject-err :not :to-be nil)))
 
           (it "evaluates AST special forms and expressions synchronously in sandbox"
-              ;; Basic arithmetic without iter leaks
-              (expect (macher-agent-sandbox-run '(+ 10 20) nil) :to-equal 30)
-              ;; Apply
-              (expect (macher-agent-sandbox-run '(apply #'+ '(1 2 3)) '(+)) :to-equal 6)
-              ;; Condition-case caught error and normal path
-              (expect (macher-agent-sandbox-run
-                       '(condition-case err (/ 1 0) (error (car err)))
-                       '(/))
-                      :to-equal 'arith-error)
-              (expect (macher-agent-sandbox-run
-                       '(condition-case err (+ 10 5) (error -1))
-                       '(+))
-                      :to-equal 15)
-              ;; Unwind-protect
-              (expect (macher-agent-sandbox-run
-                       '(let ((cleanup nil))
-                          (unwind-protect (+ 20 30) (setq cleanup t)))
-                       '(+))
-                      :to-equal 50)
-              ;; Catch and throw
-              (expect (macher-agent-sandbox-run
-                       '(catch 'done (throw 'done 99) 100)
-                       nil)
-                      :to-equal 99))
+              (let ((ctx (macher-agent--make-context))
+                    (buf (current-buffer)))
+                ;; Basic arithmetic without iter leaks
+                (expect (macher-agent-sandbox-run '(+ 10 20) '(+) ctx buf) :to-equal 30)
+                ;; Apply
+                (expect (macher-agent-sandbox-run '(apply #'+ '(1 2 3)) '(+) ctx buf) :to-equal 6)
+                ;; Condition-case caught error and normal path
+                (expect (macher-agent-sandbox-run
+                         '(condition-case err (/ 1 0) (error (car err)))
+                         '(/) ctx buf)
+                        :to-equal 'arith-error)
+                (expect (macher-agent-sandbox-run
+                         '(condition-case err (+ 10 5) (error -1))
+                         '(+) ctx buf)
+                        :to-equal 15)
+                ;; Unwind-protect
+                (expect (macher-agent-sandbox-run
+                         '(let ((cleanup nil))
+                            (unwind-protect (+ 20 30) (setq cleanup t)))
+                         '(+) ctx buf)
+                        :to-equal 50)
+                ;; Catch and throw
+                (expect (macher-agent-sandbox-run
+                         '(catch 'done (throw 'done 99) 100)
+                         nil ctx buf)
+                        :to-equal 99)))
 
           (it "handles generator yield and normalizes tool call interrupts"
               (let* ((macher-agent--active-ptc-primitives '(spawn-subagent)))
@@ -209,12 +214,8 @@
                   (funcall (gptel-tool-function mock-tool) (lambda (res) (setq ptc-res res)) "hello")
                   (expect ptc-res :to-equal '((status . "success") (value . "hello"))))))
 
-          (it "propagates active FSM context directly to PTC sandbox evaluation and tool calls"
-              (let* ((mock-ctx (macher-agent--make-context :id "ctx-fsm-direct" :project-root "/mock/fsm/"))
-                     (fsm (gptel-make-fsm :info (list :buffer (current-buffer)
-                                                      :macher-agent-context mock-ctx
-                                                      :ptc-primitives '(direct-tool))))
-                     (macher-agent--active-fsm fsm)
+          (it "propagates explicit context directly to PTC sandbox evaluation and tool calls"
+              (let* ((mock-ctx (macher-agent--make-context :id "ctx-direct" :project-root "/mock/direct/"))
                      (received-ctx nil)
                      (mock-tool (macher-agent-make-tool direct-tool
                                     "Direct tool"
@@ -227,13 +228,14 @@
                 (setq-local macher-agent--persistent-context nil)
                 (cl-letf (((symbol-function 'macher-agent-resolve-tool)
                            (lambda (_name &rest _args) mock-tool)))
-                  (macher-agent-execute-ptc-script
-                   "(direct-tool \"arg\")"
-                   nil
-                   #'ignore
-                   #'ignore
-                   '(direct-tool))
-                  (expect received-ctx :to-be mock-ctx))))
+                  (let ((macher-agent--active-ptc-primitives '(direct-tool)))
+                    (macher-agent-execute-ptc-script
+                     "(direct-tool \"arg\")"
+                     mock-ctx
+                     (current-buffer)
+                     #'ignore
+                     #'ignore)
+                    (expect received-ctx :to-be mock-ctx)))))
 
           (it "injects PTC instructions into prompts and transmission state"
               (let* ((tool (gptel-make-tool
@@ -292,6 +294,7 @@
                           (macher-agent--ptc-handle-yielded-value
                            'unrecognized-yield-val
                            nil
+                           (current-buffer)
                            #'ignore
                            error-fn
                            stop-fn)

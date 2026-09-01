@@ -53,16 +53,7 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
            (gptel-model 'mock-model)
            (gptel-tools (hash-table-values (macher-agent-workspace-tools-registry ws))))
 
-       (cl-letf (((symbol-function 'macher-agent-resolve-context)
-                  (lambda (&optional input)
-                    (cond
-                     ((macher-agent-valid-context-p input) input)
-                     ((and (bufferp input) (buffer-live-p input)
-                           (buffer-local-value 'macher-agent--persistent-context input)))
-                     ((and (stringp input) (get-buffer input) (buffer-live-p (get-buffer input))
-                           (buffer-local-value 'macher-agent--persistent-context (get-buffer input))))
-                     (t ctx))))
-                 ((symbol-function 'gptel--get-api-key) 
+       (cl-letf (((symbol-function 'gptel--get-api-key) 
                   (lambda (&rest _) "mock-key"))
                  ((symbol-function 'gptel-curl-get-response)
                   (lambda (info-or-fsm &optional callback)
@@ -76,9 +67,11 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
                       
                       (when fsm
                         (setq info (plist-put info :macher-agent-context ctx))
+                        (setq info (plist-put info :origin-buffer target-buf))
                         (setf (gptel-fsm-info fsm) info)
                         (when target-buf
                           (with-current-buffer target-buf
+                            (setq-local macher-agent--active-fsm fsm)
                             (setq-local gptel--fsm-last fsm))))
                       
                       (let ((run-response
