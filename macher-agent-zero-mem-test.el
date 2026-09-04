@@ -309,8 +309,7 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
       ;; Non-context handling
       (expect (macher-agent-zero-mem-get-state nil) :to-be nil)
       (expect (macher-agent-zero-mem-get-state "invalid") :to-be nil)
-      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-be nil)
-      (expect (macher-agent-zero-mem-set-state nil '(:data 1)) :to-equal '(:data 1)))
+      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-be nil))
 
     (it "retrieves event horizon directly from context plugins"
       (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))

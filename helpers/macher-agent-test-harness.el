@@ -1,5 +1,26 @@
 ;;; macher-agent-test-harness.el --- Shared testing utilities for Macher Agent -*- lexical-binding: t; -*-
 
+(let* ((this-file (or load-file-name buffer-file-name))
+       (this-dir (if this-file
+                     (file-name-directory (expand-file-name this-file))
+                   (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (let ((d (locate-dominating-file this-dir "tests")))
+                       (and d (expand-file-name d)))
+                     (and (file-exists-p (expand-file-name "macher-agent.el" this-dir))
+                          this-dir)
+                     (and (file-exists-p (expand-file-name "macher-agent.el" (expand-file-name ".." this-dir)))
+                          (file-name-as-directory (expand-file-name ".." this-dir)))
+                     this-dir)))
+  (when (and root-dir (file-directory-p root-dir))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir)))
+    (let ((macher-dir (expand-file-name "macher" root-dir)))
+      (when (file-directory-p macher-dir)
+        (add-to-list 'load-path (file-name-as-directory macher-dir))))
+    (let ((gptel-dir (expand-file-name "gptel" root-dir)))
+      (when (file-directory-p gptel-dir)
+        (add-to-list 'load-path (file-name-as-directory gptel-dir))))))
+
 (require 'cl-lib)
 (require 'gptel)
 (require 'macher-agent-core)
@@ -37,12 +58,16 @@ ROUTING-ALIST maps buffer name substrings to a list of raw string responses.
 CALL-COUNTER is a symbol bound in the calling environment that increments on dispatch."
   (declare (indent 2))
   `(let* ((queues (copy-tree ,routing-alist))
-          (ws (make-macher-agent-workspace :project-root default-directory))
+          (ws-root (file-name-as-directory (file-truename default-directory)))
+          (ws (make-macher-agent-workspace :project-root ws-root))
           (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
 
      (setq-local macher-agent--persistent-context ctx)
      (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
+     (puthash (file-truename (expand-file-name default-directory)) ctx macher-agent-active-workspaces)
+     (puthash ws-root ctx macher-agent-active-workspaces)
      (puthash (expand-file-name (macher-agent-root default-directory)) ctx macher-agent-active-workspaces)
+     (puthash (file-truename (expand-file-name (macher-agent-root default-directory))) ctx macher-agent-active-workspaces)
      (macher-agent-initialize-skills
       ctx (or (bound-and-true-p macher-agent--bundled-skills-dir)
               (bound-and-true-p macher-agent-bundled-skills-directory)))

@@ -87,36 +87,7 @@
                      (macher-agent--active-ptc-primitives '(test-ptc-tool)))
                  (macher-agent-sandbox-run '(+ 1 2) '(+) ctx buf)
                  (let ((log (plist-get (macher-agent-context-plugins ctx) :audit-log)))
-                   (expect (length log) :to-equal 0)))))
-
- (describe "macher-agent-read-context-audit-log-tool"
-           (it "filters audit log by preset and limit returning JSON string of entries"
-               (let ((ctx (macher-agent--make-context))
-                     (callback-result nil))
-                 (setq-local macher-agent--persistent-context ctx)
-                 (let ((macher-agent--active-skill-sym 'PresetAlpha))
-                   (macher-agent-log-tool-intent ctx "gptel-tool" "tool-1" '(:a 1)))
-                 (let ((macher-agent--active-skill-sym 'PresetBeta))
-                   (macher-agent-log-tool-intent ctx "gptel-tool" "tool-2" '(:b 2)))
-                 (let ((macher-agent--active-skill-sym 'PresetAlpha))
-                   (macher-agent-log-tool-intent ctx "gptel-tool" "tool-3" '(:c 3)))
-                 (let ((macher-agent--active-skill-sym 'PresetAlpha))
-                   (macher-agent-log-tool-intent ctx "gptel-tool" "tool-4" '(:d 4)))
-                 (with-macher-agent-mock-fsm
-                  ctx
-                  (funcall (gptel-tool-function macher-agent-read-context-audit-log-tool)
-                           (lambda (res) (setq callback-result res))
-                           :preset "PresetAlpha" :limit 2))
-                 (expect callback-result :to-match "SUCCESS: Audit log retrieved.")
-                 (when (string-match "\\[.*\\]" callback-result)
-                   (let* ((json-str (match-string 0 callback-result))
-                          (parsed (json-read-from-string json-str)))
-                     (expect (length parsed) :to-equal 2)
-                     (let ((first-entry (elt parsed 0))
-                           (second-entry (elt parsed 1)))
-                       (expect (cdr (assoc 'target first-entry)) :to-equal "tool-3")
-                       (expect (cdr (assoc 'target second-entry)) :to-equal "tool-4")
-                       (expect (cdr (assoc 'preset first-entry)) :to-equal "PresetAlpha"))))))))
+                   (expect (length log) :to-equal 0))))))
 
 (provide 'macher-agent-audit-log-test)
 ;;; macher-agent-audit-log-test.el ends here

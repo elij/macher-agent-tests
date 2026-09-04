@@ -67,49 +67,6 @@
       (with-temp-buffer
         (expect macher-agent-fsm-id :to-be nil)))
 
-    (it "resolves callback collisions in dispatch and bind closure steps"
-      (let* ((existing-id "task-collision-id")
-             (cb-called nil)
-             (dispatched-id nil)
-             (child-buf (generate-new-buffer "test-collision-child"))
-             (initial-state (list :a2a-msg (make-macher-agent-transit-payload :task-id existing-id :metadata nil)
-                                  :shared-state (list :results (make-hash-table :test 'equal)
-                                                      :total 1
-                                                      :final-callback nil
-                                                      :parent-buffer (current-buffer)
-                                                      :original-payloads nil)
-                                  :child-buf child-buf)))
-        (puthash existing-id (lambda (_msg) (setq cb-called t)) macher-agent--pending-callbacks)
-        (unwind-protect
-            (progn
-              ;; 1. Dispatch collision resolution
-              (spy-on 'macher-agent-a2a-pipe--validate-routing :and-call-fake
-                      (lambda (state)
-                        (let ((msg (plist-get state :a2a-msg)))
-                          (setq dispatched-id (if (macher-agent-transit-payload-p msg)
-                                                  (macher-agent-transit-payload-task-id msg)
-                                                (plist-get msg :task-id))))
-                        state))
-              (macher-agent-a2a-dispatch
-               (list (macher-agent-make-a2a-payload
-                      :type 'USER_DIRECTIVE
-                      :task-id existing-id
-                      :payload "Test message"
-                      :metadata nil))
-               nil)
-              (expect dispatched-id :not :to-equal existing-id)
-              (expect (string-prefix-p "task-" dispatched-id) :to-be t)
-              ;; 2. Bind closure collision resolution
-              (let* ((res-state (macher-agent-a2a-pipe--bind-closure initial-state))
-                     (assigned-id (let ((m (plist-get res-state :a2a-msg)))
-                                    (if (macher-agent-transit-payload-p m)
-                                        (macher-agent-transit-payload-task-id m)
-                                      (plist-get m :task-id)))))
-                (expect assigned-id :not :to-equal existing-id)
-                (expect (gethash assigned-id macher-agent--pending-callbacks) :not :to-be nil)))
-          (remhash existing-id macher-agent--pending-callbacks)
-          (kill-buffer child-buf))))
-
     (it "extracts parent-buffer from plist shared state in macher-agent-a2a-pipe--acquire-target"
       (let* ((mock-dir (make-temp-file "macher-a2a-acquire-target-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))

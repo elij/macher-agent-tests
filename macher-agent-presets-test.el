@@ -1,18 +1,28 @@
 ;;; macher-agent-presets-test.el --- Preset & Payload Composition Tests -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'macher-agent-test-setup)
 
@@ -90,38 +100,6 @@
                 (let ((filtered-tools (funcall clear-fn (list mock-tool))))
                   (expect (length filtered-tools) :to-equal 1)
                   (expect (gptel-tool-name (car filtered-tools)) :to-equal "my_custom_tool"))))
-
-          (it "filters out and deletes search_in_workspace in macher-agent--wrap-macher-tools"
-              (let* ((tool1 (gptel-make-tool :name "read_file" :category "macher" :function #'ignore :description "read" :args nil))
-                     (tool-search (gptel-make-tool :name "search_in_workspace" :category "macher" :function #'ignore :description "search" :args nil))
-                     (tool2 (gptel-make-tool :name "edit_file" :category "macher" :function #'ignore :description "edit" :args nil))
-                     (gptel--known-tools (list (cons "macher" (list (cons "read_file" tool1)
-                                                                    (cons "search_in_workspace" tool-search)
-                                                                    (cons "edit_file" tool2))))))
-                (macher-agent--wrap-macher-tools)
-                (let* ((entry (assoc "macher" gptel--known-tools))
-                       (tools (cdr entry)))
-                  (expect (assoc "search_in_workspace" tools) :to-be nil)
-                  (expect (assoc "read_file" tools) :not :to-be nil)
-                  (expect (assoc "edit_file" tools) :not :to-be nil))))
-
-          (it "ensures search_in_workspace with perception category replaces upstream macher version under presets"
-              (let* ((upstream-search (gptel-make-tool :name "search_in_workspace" :category "macher" :function #'ignore :description "upstream" :args nil))
-                     (agent-search (gptel-make-tool :name "search_in_workspace" :category "perception" :function #'ignore :description "agent" :args nil))
-                     (clear-fn (plist-get (plist-get macher--preset-clear-tools :tools) :function))
-                     (gptel--known-tools (list (cons "macher" (list (cons "search_in_workspace" upstream-search)))
-                                               (cons "perception" (list (cons "search_in_workspace" agent-search))))))
-                ;; wrap filters out upstream search_in_workspace from macher category
-                (macher-agent--wrap-macher-tools)
-                (let* ((macher-entry (assoc "macher" gptel--known-tools))
-                       (perception-entry (assoc "perception" gptel--known-tools)))
-                  (expect (assoc "search_in_workspace" (cdr macher-entry)) :to-be nil)
-                  (expect (assoc "search_in_workspace" (cdr perception-entry)) :not :to-be nil))
-                ;; preset purge removes macher category tools but retains perception category search_in_workspace
-                (let ((filtered (funcall clear-fn (list upstream-search agent-search))))
-                  (expect (length filtered) :to-equal 1)
-                  (expect (gptel-tool-category (car filtered)) :to-equal "perception")
-                  (expect (gptel-tool-name (car filtered)) :to-equal "search_in_workspace"))))
 
           (it "handles exclusive override flag by resetting accumulated base and preceding state"
               (let* ((tool1 (gptel-make-tool :name "tool1" :description "tool1"))

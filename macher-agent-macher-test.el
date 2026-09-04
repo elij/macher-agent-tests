@@ -1,18 +1,28 @@
 ;;; macher-agent-macher-test.el --- Tests for macher-agent-macher bridge -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'buttercup)
 (require 'cl-lib)
@@ -200,7 +210,30 @@
           (let ((mc-args (car make-context-calls)))
             (expect (plist-get mc-args :workspace) :to-equal (cons 'agent canonical-root))
             (expect (plist-get mc-args :contents) :to-equal expected-upstream)
-            (expect (plist-get mc-args :prompt) :to-equal prompt-str))))))
+            (expect (plist-get mc-args :prompt) :to-equal prompt-str)))))
+
+    (it "passes canonical relative paths to make-macher-context fallback"
+      (let* ((proj-root "/mock/fallback-project")
+             (canonical-root (file-truename (expand-file-name proj-root)))
+             (abs-file (expand-file-name "pkg/feature.el" canonical-root))
+             (files (list (make-macher-agent-vfs-entry :path abs-file :orig "a" :curr "b")))
+             (expected-upstream '(("pkg/feature.el" "a" . "b")))
+             (agent-ctx (make-macher-agent-context :project-root proj-root))
+             (make-macher-context-calls nil))
+        (cl-letf (((symbol-function 'macher--make-context) nil)
+                  ((symbol-function 'make-macher-context)
+                   (lambda (&rest args)
+                     (setq make-macher-context-calls (append make-macher-context-calls (list args)))
+                     (list :mock-context-fallback t)))
+                  ((symbol-function 'macher--build-patch)
+                   (lambda (_c _f) 'patch-fallback-ok)))
+          (let ((res (macher-agent-macher-build-patch agent-ctx "Fallback test" files)))
+            (expect res :to-equal 'patch-fallback-ok)
+            (expect (length make-macher-context-calls) :to-equal 1)
+            (let ((mc-args (car make-macher-context-calls)))
+              (expect (plist-get mc-args :workspace) :to-equal (cons 'agent canonical-root))
+              (expect (plist-get mc-args :contents) :to-equal expected-upstream)
+              (expect (plist-get mc-args :prompt) :to-equal "Fallback test")))))))
 
   (describe "macher-agent-macher-workspace-name"
     (it "resolves workspace name via macher--workspace-name when available"

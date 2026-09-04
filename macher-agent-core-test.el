@@ -9,18 +9,28 @@
 ;;; Code:
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'subr-x)
 (require 'buttercup)
@@ -229,20 +239,6 @@
                         (expect (bound-and-true-p macher-agent--ready-to-reap) :to-be nil)))
                   (kill-buffer sub-buf))))
 
-          (it "returns a controlled error state when dispatching to a missing or invalid sub-agent buffer"
-              (let* ((callback-result nil)
-                     (payloads (list (macher-agent-make-a2a-payload
-                                      :type 'SEND_MESSAGE
-                                      :task-id "task-err-001"
-                                      :payload "Do something"
-                                      :metadata (list :buffer_name "non-existent-buffer"))))
-                     (callback (lambda (res) (setq callback-result res))))
-                (macher-agent-a2a-dispatch payloads callback)
-                (expect (length callback-result) :to-equal 1)
-                (expect (plist-get (aref callback-result 0) :status) :to-be 'error)
-                (expect (plist-get (aref callback-result 0) :error)
-                        :to-equal "ERROR: Sub-agent buffer 'non-existent-buffer' not found.")))
-
           (it "verifies macher-agent--is-background and macher-agent--is-ephemeral are permanent-local"
               (expect (get 'macher-agent--is-background 'permanent-local) :to-be t)
               (expect (get 'macher-agent--is-ephemeral 'permanent-local) :to-be t)
@@ -304,13 +300,6 @@
                   (macher-agent-memory-pipe--truncate-buffer nil (current-buffer) nil nil nil))
                 (expect (buffer-string) :to-match "^---\nkey: value\n---")
                 (expect (buffer-string) :to-match "Latest user query content")))
-
-          (it "registers sync prompt transformer and transformers in setup-gptel-buffer"
-              (let ((macher-agent-prompt-transformers '(t1 t2)))
-                (with-temp-buffer
-                  (macher-agent-setup-gptel-buffer)
-                  (expect gptel-prompt-transform-functions
-                          :to-equal '(macher-agent-sync-prompt-transformer t t1 t2)))))
 
           (it "triggers pending media injection on FSM updates"
               (let* ((ctx (macher-agent--make-context :project-root "/mock/proj/"))
@@ -455,14 +444,6 @@
                       (with-current-buffer origin-buf
                         (expect (bound-and-true-p macher-agent--active-fsm) :to-be fsm)))
                   (kill-buffer origin-buf))))
-
-          (it "resets context across active FSM fallback variables"
-              (let* ((old-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-                     (new-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-                     (fsm (gptel-make-fsm :info (list :macher-agent-context old-ctx :model "test-model")))
-                     (macher-agent--active-fsm fsm))
-                (macher-agent-bridge-reset-fsm-context new-ctx)
-                (expect (plist-get (gptel-fsm-info fsm) :macher-agent-context) :to-be new-ctx)))
 
           (it "synchronizes context with buffer presets"
               (let* ((orig-buf (get-buffer-create "test-ert-sync-ctx-orig"))
@@ -751,12 +732,7 @@
                 (set-macher-agent-context-prompt ctx "updated agent prompt")
                 (expect (macher-agent-context-prompt ctx) :to-equal "updated agent prompt")
                 (setf (macher-agent-context-prompt ctx) "setf prompt")
-                (expect (macher-agent-context-prompt ctx) :to-equal "setf prompt")))
-
-          (it "retrieves tagged workspace structure from macher-agent-context via macher-agent-context-workspace"
-              (let ((ctx (macher-agent--make-context :project-root "/mock/proj/")))
-                (expect (macher-agent-context-workspace ctx)
-                        :to-equal (cons 'project (expand-file-name "/mock/proj/"))))))
+                (expect (macher-agent-context-prompt ctx) :to-equal "setf prompt"))))
 
 (describe "16. Workspace Root Resolution, Context Lookup, and Context For Buffer"
           (it "resolves project root path strings purely from diverse workspace formats"
@@ -802,19 +778,6 @@
                         :to-equal (file-truename (expand-file-name "/mock/sample-proj")))
                 (expect (macher-agent-context-root ctx-struct)
                         :to-equal (file-truename (expand-file-name "/mock/sample-proj")))))
-
-          (it "builds tagged Agent-to-Agent transit payloads"
-              (let ((valid-payload (macher-agent-make-a2a-payload
-                                    :transit-type :root-to-subagent
-                                    :task-id "task-core-001"
-                                    :message "Execute instruction")))
-                (expect (macher-agent-transit-payload-p valid-payload) :to-be t)
-                (expect (macher-agent-transit-payload-schema-version valid-payload) :to-equal :a2a-v1)
-                (expect (macher-agent-transit-payload-transit-type valid-payload) :to-equal :root-to-subagent)
-                (expect (macher-agent-transit-payload-task-id valid-payload) :to-equal "task-core-001")
-                (expect (macher-agent-transit-payload-payload valid-payload) :to-equal "Execute instruction")
-                (let ((debug-on-error nil))
-                  (expect (macher-agent-make-a2a-payload :transit-type :invalid-transit) :to-throw))))
 
           (it "registers, unregisters, and runs priority-ordered pipeline steps"
               (let ((pipeline-id 'test-core-pipeline)

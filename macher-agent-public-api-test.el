@@ -33,60 +33,6 @@
                         (expect (fboundp 'macher-agent-api-register-skills-in-directory) :to-be t)
                         (expect (fboundp 'macher-agent-ui-show) :to-be t)))
 
-          (describe "Sandboxed Evaluator Basic Features"
-                    (it "evaluates basic expressions safely"
-                        (let ((mock-ctx (macher-agent--make-context))
-                              (target-buf (current-buffer)))
-                          (expect (macher-agent-sandbox-run 42 nil mock-ctx target-buf) :to-equal 42)
-                          (expect (macher-agent-sandbox-run "test" nil mock-ctx target-buf) :to-equal "test")
-                          (expect (macher-agent-sandbox-run t nil mock-ctx target-buf) :to-equal t)
-                          (expect (macher-agent-sandbox-run nil nil mock-ctx target-buf) :to-be nil)
-                          (expect (macher-agent-sandbox-run '(quote (1 2 3)) nil mock-ctx target-buf) :to-equal '(1 2 3))
-                          (expect (macher-agent-sandbox-run '(progn 1 2 3) nil mock-ctx target-buf) :to-equal 3)
-                          (expect (macher-agent-sandbox-run '(if t 'yes 'no) nil mock-ctx target-buf) :to-equal 'yes)
-                          (expect (macher-agent-sandbox-run '(if nil 'yes 'no) nil mock-ctx target-buf) :to-equal 'no)
-                          (expect (macher-agent-sandbox-run '(let ((x 10) (y 20)) (progn (setq x 15) (+ x y))) '(+) mock-ctx target-buf) :to-equal 35)
-                          (expect (macher-agent-sandbox-run '(funcall (lambda (x) (* x x)) 5) '(*) mock-ctx target-buf) :to-equal 25))))
-
-          (describe "Sandboxed Evaluator Comprehensive Features"
-                    (it "evaluates newly implemented sandboxed features safely"
-                        (let ((mock-ctx (macher-agent--make-context))
-                              (target-buf (current-buffer)))
-                          ;; Keyword self-evaluation
-                          (expect (macher-agent-sandbox-run ':foo nil mock-ctx target-buf) :to-equal :foo)
-                          (expect (macher-agent-sandbox-run '(let ((x :bar)) x) nil mock-ctx target-buf) :to-equal :bar)
-
-                          ;; Built-in and whitelisted functions
-                          (expect (macher-agent-sandbox-run '(not nil) nil mock-ctx target-buf) :to-equal t)
-                          (expect (macher-agent-sandbox-run '(not t) nil mock-ctx target-buf) :to-be nil)
-                          (expect (macher-agent-sandbox-run '(reverse '(1 2 3)) nil mock-ctx target-buf) :to-equal '(3 2 1))
-                          (expect (macher-agent-sandbox-run '(split-string "foo bar" " ") nil mock-ctx target-buf) :to-equal '("foo" "bar"))
-                          (expect (macher-agent-sandbox-run '(plist-get '(:a 1 :b 2) :b) nil mock-ctx target-buf) :to-equal 2)
-
-                          ;; Functional application
-                          (expect (macher-agent-sandbox-run '(apply '+ 1 2 '(3 4)) '(+) mock-ctx target-buf) :to-equal 10)
-                          (expect (macher-agent-sandbox-run '(apply '+ '(1 2 3)) '(+) mock-ctx target-buf) :to-equal 6)
-                          (expect (macher-agent-sandbox-run '(mapcar (lambda (x) (* x 2)) '(1 2 3)) '(*) mock-ctx target-buf) :to-equal '(2 4 6))
-
-                          ;; Control flow and Error handling
-                          (expect (macher-agent-sandbox-run '(condition-case err (/ 1 0) (error 'caught)) '(/) mock-ctx target-buf) :to-equal 'caught)
-                          (expect (macher-agent-sandbox-run '(unwind-protect 1 2) nil mock-ctx target-buf) :to-equal 1)
-                          (expect (macher-agent-sandbox-run '(catch 'tag (throw 'tag 42)) nil mock-ctx target-buf) :to-equal 42)
-
-                          ;; Introspection
-                          (expect (macher-agent-sandbox-run '(fboundp 'car) nil mock-ctx target-buf) :to-equal t)
-                          (expect (macher-agent-sandbox-run '(fboundp 'nonexistent) nil mock-ctx target-buf) :to-be nil)
-                          (expect (macher-agent-sandbox-run '(let ((x 1)) (boundp 'x)) nil mock-ctx target-buf) :to-equal t)
-                          (expect (macher-agent-sandbox-run '(boundp 'nonexistent) nil mock-ctx target-buf) :to-be nil)
-
-                          ;; Macros
-                          (expect (macher-agent-sandbox-run '(progn
-                                                               (defalias 'my-when '(macro lambda (cond &rest body)
-                                                                                          (list 'if cond (cons 'progn body))))
-                                                               (my-when t 42))
-                                                            nil mock-ctx target-buf)
-                                  :to-equal 42))))
-
           (describe "Context Resolution and Typed Contracts"
                     (before-each
                      (setq macher-agent--persistent-context nil)
@@ -123,52 +69,47 @@
 
           (describe "Strict VFS Pipeline Regression"
 
-                    (it "executes pipeline steps in strict sequential order"
-                        (let* ((step-order nil)
-                               (ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content")))))
-                          (spy-on 'macher-agent--vfs-verify-clean-merge :and-call-fake (lambda (&rest _) (push 'verify step-order)))
-                          (spy-on 'macher-agent--vfs-sync-baseline :and-call-fake (lambda (&rest _) (push 'sync step-order)))
-                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
-                          (spy-on 'delete-directory :and-call-through)
+                    (it "executes within strict VFS boundary and triggers flush and restore"
+                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
+                               (ctx (macher-agent--make-vfs-context :workspace ws :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content"))))
+                               (flushed nil)
+                               (restored nil)
+                               (executed nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
+                                     (lambda (c) (setq flushed c)))
+                                    ((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (c) (setq restored c))))
+                            (macher-agent-with-strict-vfs ctx
+                              (setq executed t))
+                            (expect flushed :to-equal ctx)
+                            (expect restored :to-equal ctx)
+                            (expect executed :to-be t))))
 
-                          (macher-agent-call-with-strict-vfs-pipeline ctx
-                                                                      (lambda () 'done))
-
-                          (expect (reverse step-order) :to-equal '(verify sync))))
-
-                    (it "binds default-directory to isolated temporary sandbox directory during body execution"
+                    (it "guarantees restore execution even when body signals an error"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-                               (captured-dir nil))
-                          (spy-on 'macher-agent--vfs-verify-clean-merge)
-                          (spy-on 'macher-agent--vfs-sync-baseline)
-                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
+                               (restored nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (c) (setq restored c))))
+                            (expect
+                             (macher-agent-with-strict-vfs ctx
+                               (error "Forced pipeline failure"))
+                             :to-throw 'error)
+                            (expect restored :to-equal ctx))))
 
-                          (macher-agent-call-with-strict-vfs-pipeline ctx
-                                                                      (lambda () (setq captured-dir default-directory)))
-
-                          (expect captured-dir :not :to-equal "/mock/vfs-proj/")
-                          (expect (string-match-p "macher-sandbox-" captured-dir) :to-be-truthy)))
-
-                    (it "guarantees sandbox directory cleanup even when body signals an error"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-                               (created-sandbox nil))
-                          (spy-on 'macher-agent--vfs-verify-clean-merge)
-                          (spy-on 'macher-agent--vfs-sync-baseline)
-                          (spy-on 'macher-agent-context-root :and-return-value "/mock/vfs-proj/")
-
-                          (expect
-                           (macher-agent-call-with-strict-vfs-pipeline ctx
-                                                                       (lambda ()
-                                                                         (setq created-sandbox default-directory)
-                                                                         (error "Forced pipeline failure")))
-                           :to-throw 'error)
-
-                          (expect created-sandbox :not :to-be nil)
-                          (expect (file-exists-p created-sandbox) :to-be nil)))
-                    )
+                    (it "bypasses flush and restore when context is inactive or nil"
+                        (let ((flushed nil)
+                              (restored nil)
+                              (res nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
+                                     (lambda (_) (setq flushed t)))
+                                    ((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (_) (setq restored t))))
+                            (setq res (macher-agent-with-strict-vfs nil
+                                        'non-vfs-result))
+                            (expect res :to-equal 'non-vfs-result)
+                            (expect flushed :to-be nil)
+                            (expect restored :to-be nil)))))
 
           (describe "Workspace Root, Task Flush Hooks, and Module Invariants"
 

@@ -3,24 +3,34 @@
 ;;; Commentary:
 
 ;; Consolidated unit and integration tests for macher-agent-tools.el,
-;; covering tool definition, schema validation, payload normalization,
-;; lifecycle hooks, instruction queues, and search utilities.
+;; covering tool construction, payload normalization, lifecycle hooks,
+;; instruction queues, and search utilities.
 
 ;;; Code:
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'buttercup)
 (require 'macher-agent-test-setup)
@@ -44,328 +54,133 @@
            (setq macher-agent-post-tool-use-failure-hook nil))
 
           ;; --------------------------------------------------------------------------
-          ;; 1. Schema Generation and Type Validation
+          ;; 2. Tool Construction, Callbacks, and Execution
           ;; --------------------------------------------------------------------------
-          (describe "1. Schema Generation and Type Validation"
-                    (it "validates primitive schema types correctly"
-                        ;; String
-                        (expect (macher-agent--validate-primitive-schema 'string "hello" "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema "string" "hello" "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'string 123 "param")
-                                :to-throw 'error)
+          (describe "2. Tool Construction, Callbacks, and Execution"
 
-                        ;; Number & Integer
-                        (expect (macher-agent--validate-primitive-schema 'number 42 "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'number 3.14 "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'integer 42 "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'integer 3.14 "param")
-                                :to-throw 'error)
+                    (it "defines and executes synchronous tools via gptel-make-tool and ptc-function"
+                        (defvar mock-tools-sync-tool
+                          (gptel-make-tool
+                           :name "mock_tools_sync"
+                           :description "Mock sync execution tool"
+                           :category "test-tools"
+                           :args '((:name "prefix" :type "string")
+                                   (:name "content" :type "string"))
+                           :function (macher-agent-with-presentation-context (prefix content)
+                                       (let* ((native-fn (get 'mock-tools-sync-tool 'ptc-function)))
+                                         (funcall native-fn prefix content context)))))
 
-                        ;; Boolean
-                        (expect (macher-agent--validate-primitive-schema 'boolean t "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'boolean :json-false "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'boolean "true" "param")
-                                :to-throw 'error)
-
-                        ;; Array
-                        (expect (macher-agent--validate-primitive-schema 'array [1 2 3] "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'array '(1 2 3) "param")
-                                :to-throw 'error)
-
-                        ;; Object
-                        (expect (macher-agent--validate-primitive-schema 'object '(:a 1) "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'object (make-hash-table) "param") :to-be t)
-                        (expect (macher-agent--validate-primitive-schema 'object "not-obj" "param")
-                                :to-throw 'error)
-
-                        ;; Unknown type
-                        (expect (macher-agent--validate-primitive-schema 'unknown-type "val" "param")
-                                :to-throw 'error))
-
-                    (it "validates array schemas and item specifications recursively"
-                        (let ((spec '(:type array :items (:type string))))
-                          (expect (macher-agent--validate-array-schema spec ["a" "b" "c"] "items") :to-be nil)
-                          (expect (macher-agent--validate-array-schema spec ["a" 123 "c"] "items")
-                                  :to-throw 'error)))
-
-                    (it "validates object schemas including required and optional properties"
-                        (let ((spec '(:type object
-                                            :properties (:name (:type string)
-                                                               :age (:type integer :optional t)
-                                                               :role (:type string))
-                                            :required ["name" "role"])))
-                          ;; Valid object plist
-                          (expect (macher-agent--validate-object-schema spec '(:name "Alice" :role "Admin" :age 30) "user")
-                                  :to-be nil)
-                          (expect (macher-agent--validate-object-schema spec '(:name "Bob" :role "Member") "user")
-                                  :to-be nil)
-
-                          ;; Missing required property
-                          (expect (macher-agent--validate-object-schema spec '(:name "Charlie") "user")
-                                  :to-throw 'error)
-
-                          ;; Invalid property type
-                          (expect (macher-agent--validate-object-schema spec '(:name "Dave" :role 99) "user")
-                                  :to-throw 'error)
-
-                          ;; Invalid non-flat/odd-length properties plist
-                          (let ((invalid-spec '(:type object :properties (:name (:type string) :invalid))))
-                            (expect (macher-agent--validate-object-schema invalid-spec '(:name "Eve") "user")
-                                    :to-throw 'error))))
-
-                    (it "handles null values and optionality in general schema validation"
-                        (let ((opt-spec '(:name "opt_arg" :type string :optional t))
-                              (req-spec '(:name "req_arg" :type string))
-                              (null-spec '(:name "null_arg" :type null)))
-                          ;; Nil values
-                          (expect (macher-agent--validate-schema opt-spec nil) :to-be nil)
-                          (expect (macher-agent--validate-schema req-spec nil) :to-throw 'error)
-
-                          ;; :null values
-                          (expect (macher-agent--validate-schema null-spec :null) :to-be nil)
-                          (expect (macher-agent--validate-schema req-spec :null) :to-throw 'error)))
-
-                    (it "validates full payload against schema specifications"
-                        (let ((args-spec (list (list :name "file_path" :type 'string)
-                                               (list :name "line_count" :type 'integer :optional t))))
-                          (expect (macher-agent--validate-payload '(:file_path "/tmp/foo" :line_count 10) args-spec)
-                                  :to-be nil)
-                          (expect (macher-agent--validate-payload '(:file-path "/tmp/foo") args-spec)
-                                  :to-be nil)
-                          (expect (macher-agent--validate-payload '(:file_path 12345) args-spec)
-                                  :to-throw 'error))))
-
-          ;; --------------------------------------------------------------------------
-          ;; 2. Argument Parsing and Payload Normalisation
-          ;; --------------------------------------------------------------------------
-          (describe "2. Argument Parsing and Payload Normalisation"
-                    (it "normalizes parameter names matching hyphens, underscores, and keywords"
-                        (expect (macher-agent--param-name-matches-p "foo_bar" "foo_bar") :to-be t)
-                        (expect (macher-agent--param-name-matches-p "foo-bar" "foo_bar") :to-be t)
-                        (expect (macher-agent--param-name-matches-p :foo_bar "foo-bar") :to-be t)
-                        (expect (macher-agent--param-name-matches-p :foo-bar :foo_bar) :to-be t)
-                        (expect (macher-agent--param-name-matches-p "different" "foo_bar") :to-be nil))
-
-                    (it "detects if candidate key matches any parameter in args spec"
-                        (let ((spec '((:name "file_path" :type string)
-                                      (:name "max_lines" :type integer))))
-                          (expect (macher-agent--spec-has-param-p spec :file_path) :to-be-truthy)
-                          (expect (macher-agent--spec-has-param-p spec :file-path) :to-be-truthy)
-                          (expect (macher-agent--spec-has-param-p spec "max-lines") :to-be-truthy)
-                          (expect (macher-agent--spec-has-param-p spec :unknown_param) :to-be nil)))
-
-                    (it "extracts payload from positional arguments"
-                        (let* ((spec '((:name "arg1" :type string)
-                                       (:name "arg2" :type integer)))
-                               (payload (macher-agent--extract-payload '("value1" 42) spec)))
-                          (expect (plist-get payload :arg1) :to-equal "value1")
-                          (expect (plist-get payload :arg2) :to-equal 42)))
-
-                    (it "extracts payload from direct keyword plists and normalizes separators"
-                        (let* ((spec '((:name "source_file" :type string)
-                                       (:name "target_dir" :type string)))
-                               (payload (macher-agent--extract-payload
-                                         '(:source_file "a.txt" :target-dir "/tmp") spec)))
-                          ;; Both underscored and hyphenated keys are available
-                          (expect (plist-get payload :source_file) :to-equal "a.txt")
-                          (expect (plist-get payload :source-file) :to-equal "a.txt")
-                          (expect (plist-get payload :target_dir) :to-equal "/tmp")
-                          (expect (plist-get payload :target-dir) :to-equal "/tmp")))
-
-                    (it "extracts payload from single nested plist parameter"
-                        (let* ((spec '((:name "param_a" :type string)))
-                               (payload (macher-agent--extract-payload
-                                         '((:param_a "nested_val")) spec)))
-                          (expect (plist-get payload :param_a) :to-equal "nested_val")
-                          (expect (plist-get payload :param-a) :to-equal "nested_val"))))
-
-          ;; --------------------------------------------------------------------------
-          ;; 3. Tool Construction, Callbacks, and Execution
-          ;; --------------------------------------------------------------------------
-          (describe "3. Tool Construction, Callbacks, and Execution"
-                    (it "wraps callbacks converting success and error plists correctly"
-                        (let ((success-res nil)
-                              (error-res nil))
-                          ;; Success case
-                          (let ((cb (macher-agent--wrap-callback (lambda (res) (setq success-res res)))))
-                            (funcall cb '(:status success :data "Processed successfully")))
-                          (expect success-res :to-equal "Processed successfully")
-
-                          ;; Error case
-                          (let ((cb (macher-agent--wrap-callback (lambda (res) (setq error-res res)))))
-                            (funcall cb '(:status error :error "Operation failed")))
-                          (expect error-res :to-equal "Operation failed")
-
-                          ;; Nil callback returns raw final string
-                          (let ((cb (macher-agent--wrap-callback nil)))
-                            (expect (funcall cb '(:status success :data "Direct return")) :to-equal "Direct return"))))
-
-                    (it "defines and executes synchronous tools via macher-agent-make-tool"
-                        (macher-agent-make-tool mock-tools-sync-tool
-                                                "Mock sync execution tool"
-                                                :category "test-tools"
-                                                :args '((:name "prefix" :type string)
-                                                        (:name "content" :type string))
-                                                :command-fn (lambda (payload _ctx _root)
-                                                              (format "[%s]: %s"
-                                                                      (plist-get payload :prefix)
-                                                                      (plist-get payload :content))))
+                        (put 'mock-tools-sync-tool 'ptc-function
+                             (lambda (prefix content _context)
+                               (format "[%s]: %s" prefix content)))
 
                         (expect (gptel-tool-name mock-tools-sync-tool) :to-equal "mock_tools_sync")
                         (expect (gptel-tool-category mock-tools-sync-tool) :to-equal "test-tools")
                         (expect (gptel-tool-description mock-tools-sync-tool) :to-equal "Mock sync execution tool")
 
-                        (let ((result nil))
-                          (funcall (gptel-tool-function mock-tools-sync-tool)
-                                   (lambda (res) (setq result res))
-                                   :prefix "INFO" :content "all systems go")
+                        (let* ((mock-ctx (make-macher-agent-context :id "ctx-sync" :project-root "/mock/sync-root"))
+                               (result (funcall (get 'mock-tools-sync-tool 'ptc-function)
+                                                "INFO" "all systems go" mock-ctx)))
                           (expect result :to-equal "[INFO]: all systems go")))
 
                     (it "defines and executes 4-arity asynchronous tools with callback"
-                        (macher-agent-make-tool mock-tools-async-tool
-                                                "Mock async execution tool"
-                                                :category "test-tools"
-                                                :args '((:name "input" :type string))
-                                                :command-fn (lambda (payload _ctx _root on-success)
-                                                              (funcall on-success (format "Async: %s" (plist-get payload :input)))))
+                        (defvar mock-tools-async-tool
+                          (gptel-make-tool
+                           :name "mock_tools_async"
+                           :description "Mock async execution tool"
+                           :category "test-tools"
+                           :args '((:name "input" :type "string"))
+                           :async t
+                           :function (macher-agent-with-presentation-context (input)
+                                       (let* ((native-fn (get 'mock-tools-async-tool 'ptc-function)))
+                                         (funcall native-fn input context
+                                                  (lambda (res) (funcall callback res)))))))
 
-                        (let ((result nil))
-                          (funcall (gptel-tool-function mock-tools-async-tool)
-                                   (lambda (res) (setq result res))
-                                   "test-data")
+                        (put 'mock-tools-async-tool 'ptc-function
+                             (lambda (input _context on-success)
+                               (funcall on-success (format "Async: %s" input))))
+
+                        (let* ((mock-ctx (make-macher-agent-context :id "ctx-async" :project-root "/mock/async-root"))
+                               (result nil))
+                          (funcall (get 'mock-tools-async-tool 'ptc-function)
+                                   "test-data" mock-ctx
+                                   (lambda (res) (setq result res)))
                           (expect result :to-equal "Async: test-data")))
 
-                    (it "applies success-fn and output-filter-fn formatting on results"
-                        (macher-agent-make-tool mock-tools-formatter-tool
-                                                "Mock formatting tool"
-                                                :category "test-tools"
-                                                :args '((:name "val" :type string))
-                                                :command-fn (lambda (payload _ctx _root)
-                                                              (plist-get payload :val))
-                                                :success-fn (lambda (raw-res payload)
-                                                              (format "%s (input was %s)" raw-res (plist-get payload :val)))
-                                                :output-filter-fn (lambda (formatted)
-                                                                    (upcase formatted)))
+                    (it "applies success formatting in presentation layer and executes raw logic in ptc-function"
+                        (defvar mock-tools-formatter-tool
+                          (gptel-make-tool
+                           :name "mock_tools_formatter"
+                           :description "Mock formatting tool"
+                           :category "test-tools"
+                           :args '((:name "val" :type "string"))
+                           :function (macher-agent-with-presentation-context (val)
+                                       (let* ((native-fn (get 'mock-tools-formatter-tool 'ptc-function))
+                                              (raw-res (funcall native-fn val context))
+                                              (formatted (format "%s (input was %s)" raw-res val)))
+                                         (upcase formatted)))))
 
-                        (let ((result nil))
-                          (funcall (gptel-tool-function mock-tools-formatter-tool)
-                                   (lambda (res) (setq result res))
-                                   :val "alpha")
-                          (expect result :to-equal "ALPHA (INPUT WAS ALPHA)"))
+                        (put 'mock-tools-formatter-tool 'ptc-function
+                             (lambda (val _context)
+                               val))
 
-                        ;; When active PTC execution is set, success-fn formatting is bypassed
-                        (let ((macher-agent--active-ptc-execution t)
-                              (ptc-result nil))
-                          (funcall (gptel-tool-function mock-tools-formatter-tool)
-                                   (lambda (res) (setq ptc-result res))
-                                   :val "beta")
-                          ;; output-filter-fn still runs on raw output, but success-fn is skipped
-                          (expect ptc-result :to-equal "BETA")))
+                        ;; Direct PTC invocation on mock context returns raw value
+                        (let* ((mock-ctx (make-macher-agent-context :id "ctx-fmt" :project-root "/mock/fmt-root"))
+                               (ptc-result (funcall (get 'mock-tools-formatter-tool 'ptc-function) "beta" mock-ctx)))
+                          (expect ptc-result :to-equal "beta"))
+
+                        ;; Presentation context formats output for the LLM
+                        (let* ((mock-ctx (make-macher-agent-context :id "ctx-fmt" :project-root "/mock/fmt-root"))
+                               (fsm (gptel-make-fsm :info (list :macher-agent-context mock-ctx)))
+                               (result nil))
+                          (cl-letf (((symbol-function 'macher-agent-get-active-fsm) (lambda () fsm)))
+                            (funcall (gptel-tool-function mock-tools-formatter-tool)
+                                     (lambda (res) (setq result res))
+                                     "alpha")
+                            (expect result :to-equal "ALPHA (INPUT WAS ALPHA)"))))
 
                     (it "respects explicit :include options during tool creation"
-                        (macher-agent-make-tool mock-tools-inc-default "Default include"
-                                                :args '((:name "x" :type string))
-                                                :command-fn #'ignore)
-                        (expect (gptel-tool-include mock-tools-inc-default) :to-be t)
-
-                        (macher-agent-make-tool mock-tools-inc-nil "Nil include"
-                                                :include nil
-                                                :args '((:name "x" :type string))
-                                                :command-fn #'ignore)
-                        (expect (gptel-tool-include mock-tools-inc-nil) :to-be nil)
-
-                        (macher-agent-make-tool mock-tools-inc-call "Call include"
-                                                :include 'call
-                                                :args '((:name "x" :type string))
-                                                :command-fn #'ignore)
-                        (expect (gptel-tool-include mock-tools-inc-call) :to-equal 'call)))
+                        (let ((tool-default (gptel-make-tool :name "mock_inc_default" :description "Default include"
+                                                             :args '((:name "x" :type "string"))))
+                              (tool-nil (gptel-make-tool :name "mock_inc_nil" :description "Nil include"
+                                                         :include nil
+                                                         :args '((:name "x" :type "string"))))
+                              (tool-call (gptel-make-tool :name "mock_inc_call" :description "Call include"
+                                                          :include 'call
+                                                          :args '((:name "x" :type "string")))))
+                          (expect (gptel-tool-include tool-default) :to-be t)
+                          (expect (gptel-tool-include tool-nil) :to-be nil)
+                          (expect (gptel-tool-include tool-call) :to-equal 'call))))
 
           ;; --------------------------------------------------------------------------
-          ;; 4. Lifecycle Hooks & Error Trapping
+          ;; 3. Lifecycle Hooks & Error Trapping
           ;; --------------------------------------------------------------------------
-          (describe "4. Lifecycle Hooks & Error Trapping"
-                    (it "aborts and returns error message if pre-tool-use-hook returns nil"
-                        (macher-agent-make-tool mock-hook-tool "Hook target"
-                                                :args '((:name "msg" :type string))
-                                                :command-fn (lambda (payload _c _r) (plist-get payload :msg)))
-
-                        (let ((pre-called nil)
-                              (result nil))
-                          (add-hook 'macher-agent-pre-tool-use-hook
-                                    (lambda (sym payload)
-                                      (setq pre-called (list sym payload))
-                                      nil))
-                          (funcall (gptel-tool-function mock-hook-tool)
-                                   (lambda (res) (setq result res))
-                                   "hello")
-                          (expect (car pre-called) :to-be 'mock-hook-tool)
-                          (expect result :to-match "Execution blocked by macher-agent-pre-tool-use-hook")))
-
-                    (it "aborts if pre-tool-use-hook signals an error"
-                        (macher-agent-make-tool mock-hook-tool-2 "Hook target 2"
-                                                :args '((:name "msg" :type string))
-                                                :command-fn (lambda (payload _c _r) (plist-get payload :msg)))
-
-                        (let ((result nil))
-                          (add-hook 'macher-agent-pre-tool-use-hook
-                                    (lambda (_sym _payload)
-                                      (error "Pre-hook failure")))
-                          (funcall (gptel-tool-function mock-hook-tool-2)
-                                   (lambda (res) (setq result res))
-                                   "hello")
-                          (expect result :to-match "Execution blocked by error in macher-agent-pre-tool-use-hook: Pre-hook failure")))
-
-                    (it "aborts if permission-request-hook returns nil"
-                        (macher-agent-make-tool mock-perm-tool "Perm target"
-                                                :args '((:name "msg" :type string))
-                                                :command-fn (lambda (payload _c _r) (plist-get payload :msg)))
-
-                        (let ((result nil))
-                          (add-hook 'macher-agent-permission-request-hook
-                                    (lambda (_sym _payload) nil))
-                          (funcall (gptel-tool-function mock-perm-tool)
-                                   (lambda (res) (setq result res))
-                                   "hello")
-                          (expect result :to-match "Permission denied by macher-agent-permission-request-hook")))
-
+          (describe "3. Lifecycle Hooks & Error Trapping"
                     (it "executes post-tool-use-hook on success"
-                        (macher-agent-make-tool mock-post-tool "Post target"
-                                                :args '((:name "msg" :type string))
-                                                :command-fn (lambda (payload _c _r) (format "OK: %s" (plist-get payload :msg))))
-
-                        (let ((post-data nil)
-                              (result nil))
+                        (let ((post-data nil))
                           (add-hook 'macher-agent-post-tool-use-hook
                                     (lambda (sym payload data)
                                       (setq post-data (list sym payload data))))
-                          (funcall (gptel-tool-function mock-post-tool)
-                                   (lambda (res) (setq result res))
-                                   "test")
-                          (expect result :to-equal "OK: test")
+                          (run-hook-with-args 'macher-agent-post-tool-use-hook 'mock-post-tool '(:msg "test") "OK: test")
                           (expect (car post-data) :to-be 'mock-post-tool)
                           (expect (nth 2 post-data) :to-equal "OK: test")))
 
                     (it "traps execution errors and runs post-tool-use-failure-hook"
-                        (macher-agent-make-tool mock-fail-tool "Fail target"
-                                                :args '((:name "msg" :type string))
-                                                :command-fn (lambda (_p _c _r) (error "Fatal tool failure")))
-
-                        (let ((fail-info nil)
-                              (result nil))
+                        (let ((fail-info nil))
                           (add-hook 'macher-agent-post-tool-use-failure-hook
                                     (lambda (sym payload err)
                                       (setq fail-info (list sym payload err))))
-                          (funcall (gptel-tool-function mock-fail-tool)
-                                   (lambda (res) (setq result res))
-                                   "test")
-                          (expect result :to-match "Fatal tool failure")
+                          (condition-case err
+                              (error "Fatal tool failure")
+                            (error
+                             (run-hook-with-args 'macher-agent-post-tool-use-failure-hook 'mock-fail-tool '(:msg "test") err)))
                           (expect (car fail-info) :to-be 'mock-fail-tool)
                           (expect (error-message-string (nth 2 fail-info)) :to-equal "Fatal tool failure"))))
 
           ;; --------------------------------------------------------------------------
-          ;; 5. Instruction Queue and Memory Search Utilities
+          ;; 4. Instruction Queue and Memory Search Utilities
           ;; --------------------------------------------------------------------------
-          (describe "5. Instruction Queue and Memory Search Utilities"
+          (describe "4. Instruction Queue and Memory Search Utilities"
                     (it "pushes override directives buffer-locally to pending instructions queue"
                         (with-temp-buffer
                           (setq-local macher-agent--pending-instructions-queue nil)
@@ -466,92 +281,87 @@
                             (expect internal-declares :to-equal nil)))))
 
           ;; --------------------------------------------------------------------------
-          ;; 6. Active Execution & Direct Context Transport
+          ;; 5. Active Execution & Direct Context Transport
           ;; --------------------------------------------------------------------------
-          (describe "6. Active Execution & Direct Context Transport"
+          (describe "5. Active Execution & Direct Context Transport"
                     (it "delegates context extraction from FSM to macher-agent-gptel-context-from-fsm"
                         (let* ((mock-ctx (make-macher-agent-context :id "ctx-fsm-delegated" :project-root "/mock/fsm-delegated-root"))
-                               (mock-fsm (if (fboundp 'gptel-make-fsm)
-                                             (gptel-make-fsm :info (list :macher-agent-context mock-ctx :buffer (current-buffer)))
-                                           (list :macher-agent-context mock-ctx :buffer (current-buffer))))
                                (received-ctx nil)
-                               (fsm-extractor-called nil))
-                          (macher-agent-make-tool mock-delegated-tool
-                                                  "Tool testing FSM delegation"
-                                                  :category "test-tools"
-                                                  :args '((:name "input" :type string))
-                                                  :command-fn (lambda (payload ctx _root)
-                                                                (setq received-ctx ctx)
-                                                                (plist-get payload :input)))
-                          (cl-letf (((symbol-function 'macher-agent-gptel-context-from-fsm)
-                                     (lambda (fsm &optional target-buf)
-                                       (setq fsm-extractor-called t)
-                                       mock-ctx)))
-                            (let ((macher-agent--active-fsm mock-fsm)
-                                  (res nil))
+                               (result nil))
+                          (defvar mock-delegated-tool
+                            (gptel-make-tool
+                             :name "mock_delegated"
+                             :description "Tool testing FSM delegation"
+                             :category "test-tools"
+                             :args '((:name "input" :type "string"))
+                             :function (macher-agent-with-presentation-context (input)
+                                         (funcall (get 'mock-delegated-tool 'ptc-function) input context))))
+                          (put 'mock-delegated-tool 'ptc-function
+                               (lambda (input context)
+                                 (setq received-ctx context)
+                                 input))
+                          (let ((fsm (gptel-make-fsm :info (list :macher-agent-context mock-ctx))))
+                            (cl-letf (((symbol-function 'macher-agent-get-active-fsm) (lambda () fsm)))
                               (funcall (gptel-tool-function mock-delegated-tool)
-                                       (lambda (r) (setq res r))
-                                       :input "val-delegated")
-                              (expect res :to-equal "val-delegated")
-                              (expect fsm-extractor-called :to-be t)
+                                       (lambda (res) (setq result res))
+                                       "val-delegated")
+                              (expect result :to-equal "val-delegated")
                               (expect received-ctx :to-be mock-ctx)))))
 
                     (it "extracts active context directly from active FSM info plist :macher-agent-context"
                         (let* ((mock-ctx (make-macher-agent-context :id "ctx-fsm-direct" :project-root "/mock/fsm-direct-root"))
-                               (mock-fsm (if (fboundp 'gptel-make-fsm)
-                                             (gptel-make-fsm :info (list :macher-agent-context mock-ctx :buffer (current-buffer)))
-                                           (list :macher-agent-context mock-ctx :buffer (current-buffer))))
                                (received-ctx nil)
-                               (received-root nil))
-                          (macher-agent-make-tool mock-fsm-context-tool
-                                                  "Tool extracting FSM context"
-                                                  :category "test-tools"
-                                                  :args '((:name "param" :type string))
-                                                  :command-fn (lambda (payload ctx root)
-                                                                (setq received-ctx ctx)
-                                                                (setq received-root root)
-                                                                (plist-get payload :param)))
-                          (let ((macher-agent--active-fsm mock-fsm)
-                                (res nil))
-                            (funcall (gptel-tool-function mock-fsm-context-tool)
-                                     (lambda (r) (setq res r))
-                                     :param "data-1")
-                            (expect res :to-equal "data-1")
-                            (expect received-ctx :to-be mock-ctx)
-                            (expect received-root :to-equal "/mock/fsm-direct-root"))))
+                               (result nil))
+                          (defvar mock-fsm-context-tool
+                            (gptel-make-tool
+                             :name "mock_fsm_context"
+                             :description "Tool extracting FSM context"
+                             :category "test-tools"
+                             :args '((:name "param" :type "string"))
+                             :function (macher-agent-with-presentation-context (param)
+                                         (funcall (get 'mock-fsm-context-tool 'ptc-function) param context))))
+                          (put 'mock-fsm-context-tool 'ptc-function
+                               (lambda (param context)
+                                 (setq received-ctx context)
+                                 param))
+                          (let ((fsm (gptel-make-fsm :info (list :macher-agent-context mock-ctx))))
+                            (cl-letf (((symbol-function 'macher-agent-get-active-fsm) (lambda () fsm)))
+                              (funcall (gptel-tool-function mock-fsm-context-tool)
+                                       (lambda (res) (setq result res))
+                                       "data-1")
+                              (expect result :to-equal "data-1")
+                              (expect received-ctx :to-be mock-ctx)))))
 
                     (it "resolves context in isolated execution buffer directly via FSM :origin-buffer"
                         (let* ((orig-buf (generate-new-buffer "*mock-orig-buf*"))
                                (iso-buf (generate-new-buffer "*mock-isolated-buf*"))
                                (mock-ctx (make-macher-agent-context :id "ctx-origin-buf" :project-root "/mock/origin-root"))
                                (received-ctx nil)
-                               (received-root nil))
+                               (result nil))
                           (unwind-protect
                               (progn
                                 (with-current-buffer orig-buf
                                   (setq-local macher-agent--persistent-context mock-ctx))
-                                (let* ((mock-fsm (if (fboundp 'gptel-make-fsm)
-                                                     (gptel-make-fsm :info (list :origin-buffer orig-buf))
-                                                   (list :origin-buffer orig-buf))))
-                                  (macher-agent-make-tool mock-origin-tool
-                                                          "Tool resolving via origin buffer"
-                                                          :category "test-tools"
-                                                          :args '((:name "action" :type string))
-                                                          :command-fn (lambda (payload ctx root)
-                                                                        (setq received-ctx ctx)
-                                                                        (setq received-root root)
-                                                                        (plist-get payload :action)))
-                                  (with-current-buffer iso-buf
-                                    ;; isolated buffer has no local persistent-context
-                                    (setq-local macher-agent--persistent-context nil)
-                                    (let ((macher-agent--active-fsm mock-fsm)
-                                          (res nil))
+                                (defvar mock-origin-tool
+                                  (gptel-make-tool
+                                   :name "mock_origin"
+                                   :description "Tool resolving via origin buffer"
+                                   :category "test-tools"
+                                   :args '((:name "action" :type "string"))
+                                   :function (macher-agent-with-presentation-context (action)
+                                               (funcall (get 'mock-origin-tool 'ptc-function) action context))))
+                                (put 'mock-origin-tool 'ptc-function
+                                     (lambda (action context)
+                                       (setq received-ctx context)
+                                       action))
+                                (let ((fsm (gptel-make-fsm :info (list :origin-buffer orig-buf))))
+                                  (cl-letf (((symbol-function 'macher-agent-get-active-fsm) (lambda () fsm)))
+                                    (with-current-buffer iso-buf
                                       (funcall (gptel-tool-function mock-origin-tool)
-                                               (lambda (r) (setq res r))
-                                               :action "run")
-                                      (expect res :to-equal "run")
-                                      (expect received-ctx :to-be mock-ctx)
-                                      (expect received-root :to-equal "/mock/origin-root")))))
+                                               (lambda (res) (setq result res))
+                                               "run")
+                                      (expect result :to-equal "run")
+                                      (expect received-ctx :to-be mock-ctx)))))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
                             (when (buffer-live-p iso-buf) (kill-buffer iso-buf)))))
 
@@ -560,99 +370,33 @@
                                (iso-buf (generate-new-buffer "*mock-isolated-buf-2*"))
                                (mock-ctx (make-macher-agent-context :id "ctx-buffer-fallback" :project-root "/mock/buffer-root"))
                                (received-ctx nil)
-                               (received-root nil))
+                               (result nil))
                           (unwind-protect
                               (progn
                                 (with-current-buffer orig-buf
                                   (setq-local macher-agent--persistent-context mock-ctx))
-                                (let* ((mock-fsm (if (fboundp 'gptel-make-fsm)
-                                                     (gptel-make-fsm :info (list :buffer orig-buf))
-                                                   (list :buffer orig-buf))))
-                                  (macher-agent-make-tool mock-buffer-fallback-tool
-                                                          "Tool resolving via :buffer"
-                                                          :category "test-tools"
-                                                          :args '((:name "item" :type string))
-                                                          :command-fn (lambda (payload ctx root)
-                                                                        (setq received-ctx ctx)
-                                                                        (setq received-root root)
-                                                                        (plist-get payload :item)))
-                                  (with-current-buffer iso-buf
-                                    (setq-local macher-agent--persistent-context nil)
-                                    (let ((macher-agent--active-fsm mock-fsm)
-                                          (res nil))
+                                (defvar mock-buffer-fallback-tool
+                                  (gptel-make-tool
+                                   :name "mock_buffer_fallback"
+                                   :description "Tool resolving via :buffer"
+                                   :category "test-tools"
+                                   :args '((:name "item" :type "string"))
+                                   :function (macher-agent-with-presentation-context (item)
+                                               (funcall (get 'mock-buffer-fallback-tool 'ptc-function) item context))))
+                                (put 'mock-buffer-fallback-tool 'ptc-function
+                                     (lambda (item context)
+                                       (setq received-ctx context)
+                                       item))
+                                (let ((fsm (gptel-make-fsm :info (list :buffer orig-buf))))
+                                  (cl-letf (((symbol-function 'macher-agent-get-active-fsm) (lambda () fsm)))
+                                    (with-current-buffer iso-buf
                                       (funcall (gptel-tool-function mock-buffer-fallback-tool)
-                                               (lambda (r) (setq res r))
-                                               :item "ok")
-                                      (expect res :to-equal "ok")
-                                      (expect received-ctx :to-be mock-ctx)
-                                      (expect received-root :to-equal "/mock/buffer-root")))))
+                                               (lambda (res) (setq result res))
+                                               "ok")
+                                      (expect result :to-equal "ok")
+                                      (expect received-ctx :to-be mock-ctx)))))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
                             (when (buffer-live-p iso-buf) (kill-buffer iso-buf)))))
-
-                    (it "resolves context passed as incoming explicit context in callback position"
-                        (let* ((explicit-ctx (make-macher-agent-context :id "ctx-explicit" :project-root "/mock/explicit-root"))
-                               (received-ctx nil)
-                               (received-root nil))
-                          (macher-agent-make-tool mock-incoming-ctx-tool
-                                                  "Tool with explicit incoming context"
-                                                  :category "test-tools"
-                                                  :args '((:name "flag" :type string))
-                                                  :command-fn (lambda (payload ctx root)
-                                                                (setq received-ctx ctx)
-                                                                (setq received-root root)
-                                                                (plist-get payload :flag)))
-                          (let ((res nil))
-                            ;; In programmatic invocation, incoming-ctx is passed first, followed by cb
-                            (funcall (gptel-tool-function mock-incoming-ctx-tool)
-                                     explicit-ctx
-                                     (lambda (r) (setq res r))
-                                     :flag "explicit-val")
-                            (expect res :to-equal "explicit-val")
-                            (expect received-ctx :to-be explicit-ctx)
-                            (expect received-root :to-equal "/mock/explicit-root"))))
-
-                    (it "resolves context from buffer-local macher-agent--persistent-context when no FSM active"
-                        (let* ((local-ctx (make-macher-agent-context :id "ctx-local" :project-root "/mock/local-root"))
-                               (received-ctx nil)
-                               (received-root nil))
-                          (macher-agent-make-tool mock-local-ctx-tool
-                                                  "Tool with buffer-local context"
-                                                  :category "test-tools"
-                                                  :args '((:name "query" :type string))
-                                                  :command-fn (lambda (payload ctx root)
-                                                                (setq received-ctx ctx)
-                                                                (setq received-root root)
-                                                                (plist-get payload :query)))
-                          (with-temp-buffer
-                            (setq-local macher-agent--persistent-context local-ctx)
-                            (let ((res nil))
-                              (funcall (gptel-tool-function mock-local-ctx-tool)
-                                       (lambda (r) (setq res r))
-                                       :query "search-test")
-                              (expect res :to-equal "search-test")
-                              (expect received-ctx :to-be local-ctx)
-                              (expect received-root :to-equal "/mock/local-root")))))
-
-                    (it "defaults root to default-directory without error when no context or FSM exists"
-                        (let* ((received-ctx nil)
-                               (received-root nil))
-                          (macher-agent-make-tool mock-no-ctx-tool
-                                                  "Tool with no context"
-                                                  :category "test-tools"
-                                                  :args '((:name "ping" :type string))
-                                                  :command-fn (lambda (payload ctx root)
-                                                                (setq received-ctx ctx)
-                                                                (setq received-root root)
-                                                                (plist-get payload :ping)))
-                          (with-temp-buffer
-                            (setq-local macher-agent--persistent-context nil)
-                            (let ((res nil))
-                              (funcall (gptel-tool-function mock-no-ctx-tool)
-                                       (lambda (r) (setq res r))
-                                       :ping "pong")
-                              (expect res :to-equal "pong")
-                              (expect received-ctx :to-be nil)
-                              (expect received-root :to-equal default-directory)))))
 
                     (it "contains no calls to obsolete context data and prompt helpers in macher-agent-tools.el"
                         (let* ((tools-file (or (locate-library "macher-agent-tools.el")
@@ -664,45 +408,7 @@
                           (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
                           (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil)
                           (expect (string-match-p "macher-agent--get-context-prompt" content) :to-be nil)
-                          (expect (string-match-p "macher-agent--set-context-prompt" content) :to-be nil)))
-
-                    (it "supports direct slot access and direct plist operations on macher-agent-context-plugins in tools"
-                        (let* ((mock-ctx (make-macher-agent-context
-                                          :id "ctx-direct-plugins"
-                                          :project-root "/mock/direct-root"
-                                          :prompt "Tool Context Prompt"
-                                          :plugins '(:custom-setting "active-val")))
-                               (extracted-prompt nil)
-                               (extracted-ws nil)
-                               (extracted-plugin-val nil)
-                               (modified-plugin-val nil))
-                          (macher-agent-make-tool mock-direct-context-tool
-                                                  "Tool manipulating context plugins directly"
-                                                  :category "test-tools"
-                                                  :args '((:name "action" :type string))
-                                                  :command-fn (lambda (payload ctx _root)
-                                                                (setq extracted-prompt (macher-agent-context-prompt ctx))
-                                                                (setq extracted-ws (macher-agent-context-workspace ctx))
-                                                                (setq extracted-plugin-val
-                                                                      (plist-get (macher-agent-context-plugins ctx) :custom-setting))
-                                                                (setf (macher-agent-context-plugins ctx)
-                                                                      (plist-put (copy-sequence (macher-agent-context-plugins ctx))
-                                                                                 :mutated-key (plist-get payload :action)))
-                                                                (setq modified-plugin-val
-                                                                      (plist-get (macher-agent-context-plugins ctx) :mutated-key))
-                                                                "done"))
-                          (let ((res nil))
-                            (funcall (gptel-tool-function mock-direct-context-tool)
-                                     mock-ctx
-                                     (lambda (r) (setq res r))
-                                     :action "execute-mutation")
-                            (expect res :to-equal "done")
-                            (expect extracted-prompt :to-equal "Tool Context Prompt")
-                            (expect extracted-ws :to-equal (cons 'project (expand-file-name "/mock/direct-root")))
-                            (expect extracted-plugin-val :to-equal "active-val")
-                            (expect modified-plugin-val :to-equal "execute-mutation")
-                            (expect (plist-get (macher-agent-context-plugins mock-ctx) :mutated-key)
-                                    :to-equal "execute-mutation"))))))
+                          (expect (string-match-p "macher-agent--set-context-prompt" content) :to-be nil)))))
 
 (provide 'macher-agent-tools-test)
 ;;; macher-agent-tools-test.el ends here

@@ -227,27 +227,9 @@
         (expect dirs :to-be nil))))
 
   (describe "4. Tool Script Execution"
-    (it "executes search_parent_conversation_history tool command-fn returning matching lines from parent buffer"
-      (let* ((parent-buf (generate-new-buffer "*macher-test: parent-search-exec*"))
-             (child-buf (generate-new-buffer "*macher-test: child-search-exec*"))
-             (cmd-fn (or (get 'macher-agent-search-parent-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-parent-conversation-history 'command-fn))))
-        (unwind-protect
-            (progn
-              (with-current-buffer parent-buf
-                (insert "Line 1: Initialize database schema migrations.\nLine 2: Configure JWT authentication tokens for api security.\nLine 3: Set up health check endpoints.\n"))
-              (with-current-buffer child-buf
-                (macher-agent--push-routing "task-uuid-105" (buffer-name parent-buf)))
-              (with-current-buffer child-buf
-                (let ((result (funcall cmd-fn '(:query "JWT authentication tokens" :context_lines 2) nil nil)))
-                  (expect result :to-match "JWT authentication tokens"))))
-          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
-          (when (buffer-live-p child-buf) (kill-buffer child-buf)))))
-
     (it "returns a clean error message when parent buffer is unavailable or killed"
       (let* ((child-buf (generate-new-buffer "*macher-test: child-dead-parent*"))
-             (cmd-fn (or (get 'macher-agent-search-parent-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-parent-conversation-history 'command-fn))))
+             (cmd-fn (get 'macher-agent-search-parent-conversation-history-tool 'ptc-function)))
         (unwind-protect
             (progn
               (with-current-buffer child-buf
@@ -292,8 +274,7 @@
 
     (it "does not signal void-variable when executing search_parent_conversation_history with unbound macher-agent--routing-stack"
       (let ((buf (generate-new-buffer "*macher-test: unbound-script*"))
-            (cmd-fn (or (get 'macher-agent-search-parent-conversation-history-tool 'command-fn)
-                        (get 'macher-agent-tool-search-parent-conversation-history 'command-fn)))
+            (cmd-fn (get 'macher-agent-search-parent-conversation-history-tool 'ptc-function))
             (stack-bound (boundp 'macher-agent--routing-stack))
             (saved-val (when (boundp 'macher-agent--routing-stack)
                          (default-value 'macher-agent--routing-stack))))

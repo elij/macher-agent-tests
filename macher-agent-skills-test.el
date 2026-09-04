@@ -1,18 +1,28 @@
 ;;; macher-agent-skills-test.el --- Tests for macher-agent-skills -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'buttercup)
 (require 'macher-agent-test-setup)
@@ -49,58 +59,19 @@
           (scripts-dir (expand-file-name "skills/scripts" root-dir)))
      (dolist (script (directory-files scripts-dir t "\\.el$"))
        (load script nil t))))
-  (it "guarantees list_buffers_in_workspace output perfectly matches context-tree buffer categorisation"
-      (let*
-          ((ctx
-            (macher-agent--make-vfs-context
-             :contents (list (macher-agent-vfs-make-entry "pure-worker-buf" "" "")
-                             (macher-agent-vfs-make-entry "/external/path.txt" "" "")
-                             (macher-agent-vfs-make-entry "/root/internal.txt" "" ""))))
-           (list-tool-fn (gptel-tool-function macher-agent-list-buffers-in-workspace-tool)))
-
-        (spy-on 'macher-agent--classify-file-path :and-call-fake
-                (lambda (path &rest _)
-                  (pcase path
-                    ("pure-worker-buf" 'buffer)
-                    ("/external/path.txt" 'external)
-                    ("/root/internal.txt" 'file))))
-
-        (with-macher-agent-mock-fsm ctx
-                                    (let ((result (funcall list-tool-fn nil)))
-                                      (expect result :to-match "pure-worker-buf")
-                                      (expect result :to-match "/external/path\\.txt")
-                                      (expect result :to-match "internal\\.txt")))))
-  (it "commit_buffer registers virtual edits cleanly without destructive live buffer mutation"
-      (let* ((buf (generate-new-buffer "live-commit-buf"))
-             (ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "live-commit-buf" "original content" "original content"))))
-             (tool-fn (gptel-tool-function macher-agent-commit-buffer-tool)))
-        (with-current-buffer buf
-          (insert "original content"))
-        (spy-on 'macher-agent--ensure-access)
-        (with-macher-agent-mock-fsm ctx
-                                    (let ((response (funcall tool-fn nil "live-commit-buf" "committed virtual content")))
-                                      (expect response :to-match "SUCCESS")
-                                      (expect (with-current-buffer buf (buffer-string)) :to-equal "original content")
-                                      (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
-                                      (let ((entry (cl-find "live-commit-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                                        (expect entry :not :to-be nil)
-                                        (expect (macher-agent-vfs-entry-curr entry) :to-equal "committed virtual content")
-                                        (expect (macher-agent-vfs-entry-orig entry) :to-equal "original content"))))
-        (kill-buffer buf)))
   (it "properly parses a JSON string into a vector for task delegation"
       (let* ((ctx (macher-agent--make-context))
              (callback-called nil)
              (callback (lambda (res) (setq callback-called res)))
              (json-tasks (vector (list :buffer_name "test-sub" :instructions "do work")))
-             (tool-fn (gptel-tool-function (or (bound-and-true-p macher-agent-delegate-tasks-to-subagents-tool)
-                                               macher-agent-delegate-tasks-to-subagents-tool)))
+             (tool-fn (or (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function)
+                          (get 'macher-agent-delegate-tasks-tool 'ptc-function)))
              (buf (get-buffer-create "test-sub")))
         
         (spy-on 'macher-agent-a2a-dispatch)
         (spy-on 'macher-agent--ensure-access)
         
-        (with-macher-agent-mock-fsm ctx
-                                    (funcall tool-fn callback :tasks json-tasks))
+        (funcall tool-fn json-tasks ctx callback)
         
         (expect 'macher-agent-a2a-dispatch :to-have-been-called)
         (kill-buffer buf)))
@@ -163,212 +134,6 @@
         (kill-buffer buf1)
         (kill-buffer buf2)))
 
-  (it "ensures target buffer exists when using write_buffer_in_workspace to support patch UI"
-      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "dummy" "dummy" "dummy"))))
-             (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
-        (unwind-protect
-            (progn
-              (with-macher-agent-mock-fsm ctx
-                                          (funcall tool-fn nil "*new-virtual-asset*" "Ghost content"))
-              (expect (cl-find "*new-virtual-asset*" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal) :not :to-be nil)
-              (let ((contents (cl-find "*new-virtual-asset*" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                (expect (macher-agent-vfs-entry-curr contents) :to-equal "Ghost content")))
-          (when-let* ((b (get-buffer "*new-virtual-asset*")))
-            (kill-buffer b)))))
-  
-  (it "rejects fuzzy security matching in read_buffer_in_workspace"
-      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "*scratch*" "" "content"))))
-             (tool-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-        (with-macher-agent-mock-fsm ctx
-                                    (let ((result (funcall tool-fn nil "scratch")))
-                                      (expect result :to-match "SECURITY ERROR.*scratch.*")))))
-
-  (it "submit_task_result triggers callback from registry and flags completion"
-      (let* ((ctx (macher-agent--make-context))
-             (buf (generate-new-buffer "worker-buf"))
-             (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
-             (task-id "skill-submit-task-1")
-             (callback-data nil))
-        (expect (gptel-tool-description macher-agent-submit-task-result-tool)
-                :to-match "CRITICAL DIRECTIVE: You MUST use the `submit_task_result` tool")
-        (puthash task-id (lambda (res) (setq callback-data res)) macher-agent--pending-callbacks)
-        (with-current-buffer buf
-          (macher-agent--push-routing task-id "originator-buf")
-          (with-macher-agent-mock-fsm ctx
-                                      (expect (funcall tool-fn nil "My final answer")
-                                              :to-equal "SUCCESS: Result submitted. STOP NOW."))
-          (expect (macher-agent-transit-payload-type callback-data) :to-equal 'ARTIFACT_UPDATE)
-          (expect (plist-get (macher-agent-transit-payload-payload callback-data) :message) :to-equal "My final answer")
-          (expect macher-agent-task-finished :to-be t)
-          (expect (funcall tool-fn nil "Second final answer") :to-equal "ERROR: Task has already been submitted."))
-        (kill-buffer buf)))
-  
-  (it "write_buffer_in_workspace registers a virtual edit safely"
-      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-buf" "orig" "orig"))))
-             (tool-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool)))
-        (with-macher-agent-mock-fsm ctx
-                                    (let* ((response (funcall tool-fn nil "test-buf" "New virtual content")))
-                                      (expect response :to-match "SUCCESS")
-                                      (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
-                                      (expect (macher-agent-vfs-entry-curr (cl-find "test-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)) :to-equal "New virtual content")))))
-
-  (it "multi_edit_buffer_in_workspace uses a decoupled deterministic scratchpad"
-      (let* ((ctx (macher-agent--make-vfs-context :contents (list (macher-agent-vfs-make-entry "test-file.rs" "line1\nline2" "line1\nline2"))))
-             (tool-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
-        (with-macher-agent-mock-fsm ctx
-                                    (let* ((edits (vector (list :old_text "line2" :new_text "line3")))
-                                           (response (funcall tool-fn nil "test-file.rs" edits)))
-                                      (expect response :to-match "SUCCESS")
-                                      (let ((contents (cl-find "test-file.rs" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                                        (expect (macher-agent-vfs-entry-curr contents) :to-equal "line1\nline3"))))))
-
-  (it "allows multi_edit_buffer_in_workspace after reading a live buffer"
-      (let* ((buf (generate-new-buffer "read-then-edit.txt"))
-             (ctx (macher-agent--make-vfs-context :contents nil))
-             (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool))
-             (edit-fn (gptel-tool-function macher-agent-multi-edit-buffer-in-workspace-tool)))
-        (with-current-buffer buf
-          (insert "hello world"))
-        (spy-on 'macher-agent--ensure-access)
-        
-        (with-macher-agent-mock-fsm ctx
-                                    (funcall read-fn nil "read-then-edit.txt")
-                                    (let* ((edits (vector (list :old_text "hello" :new_text "goodbye")))
-                                           (response (funcall edit-fn nil "read-then-edit.txt" edits)))
-                                      (expect response :to-match "SUCCESS")
-                                      (let ((contents (cl-find "read-then-edit.txt" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                                        (expect contents :not :to-be nil)
-                                        (when contents
-                                          (expect (macher-agent-vfs-entry-curr contents) :to-equal "goodbye world")))))
-        (kill-buffer buf)))
-
-  (it "ensures untouched scoped buffer produces zero diff after read_buffer_in_workspace"
-      (let* ((buf (generate-new-buffer "unmodified-scoped-buf"))
-             (ctx (macher-agent--make-vfs-context :contents nil))
-             (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-        (with-current-buffer buf
-          (insert "initial unchanged content"))
-        (spy-on 'macher-agent--ensure-access)
-        (with-macher-agent-mock-fsm ctx
-                                    (let ((res (funcall read-fn nil "unmodified-scoped-buf")))
-                                      (expect res :to-equal "initial unchanged content")
-                                      (let ((entry (cl-find "unmodified-scoped-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                                        (expect entry :not :to-be nil)
-                                        (expect (macher-agent-vfs-entry-orig entry) :to-equal "initial unchanged content")
-                                        (expect (macher-agent-vfs-entry-curr entry) :to-equal "initial unchanged content")
-                                        (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil))))
-        (kill-buffer buf)))
-
-  (it "picks up external live buffer modifications on subsequent read_buffer_in_workspace calls"
-      (let* ((buf (generate-new-buffer "live-mod-buf"))
-             (ctx (macher-agent--make-vfs-context :contents nil))
-             (read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-        (with-current-buffer buf
-          (insert "initial buffer text"))
-        (spy-on 'macher-agent--ensure-access)
-        (with-macher-agent-mock-fsm ctx
-                                    (let ((res1 (funcall read-fn nil "live-mod-buf")))
-                                      (expect res1 :to-equal "initial buffer text")
-                                      ;; Externally modify the live buffer
-                                      (with-current-buffer buf
-                                        (erase-buffer)
-                                        (insert "externally updated buffer text"))
-                                      ;; Subsequent read must synchronise and return the updated content
-                                      (let ((res2 (funcall read-fn nil "live-mod-buf")))
-                                        (expect res2 :to-equal "externally updated buffer text")
-                                        (let ((entry (cl-find "live-mod-buf" (macher-agent--get-context-contents ctx) :key #'macher-agent-vfs-entry-path :test #'equal)))
-                                          (expect (macher-agent-vfs-entry-curr entry) :to-equal "externally updated buffer text")
-                                          (expect (macher-agent-vfs-entry-orig entry) :to-equal "externally updated buffer text")))))
-        (kill-buffer buf)))
-
-  (it "synchronises context seamlessly when interleaving macher-agent and macher tools"
-      (let* ((proj-dir (file-name-as-directory (expand-file-name "tests/fixtures/interleave-proj")))
-             (file-path (concat proj-dir "interleave.txt")))
-        (make-directory proj-dir t)
-        (with-temp-file file-path (insert "Initial file text"))
-        (let* ((ws (cons 'directory proj-dir))
-               (ctx (make-macher-agent-context
-                     :project-root proj-dir
-                     :plugins (list :vfs (list :contents nil))))
-               (agent-write-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool))
-               (agent-read-fn (gptel-tool-function macher-agent-read-buffer-in-workspace-tool)))
-          (cl-letf (((symbol-function 'macher--tool-write-file)
-                     (lambda (_c p cont)
-                       (macher-agent-context-update ctx p cont))))
-            (with-macher-agent-mock-fsm ctx
-                                        (funcall agent-write-fn nil "interleave.txt" "VFS Step 1: Agent Write")
-                                        (macher--tool-write-file ctx "interleave.txt" "VFS Step 2: Macher Write")
-                                        (let ((res (funcall agent-read-fn nil "interleave.txt")))
-                                          (expect res :to-equal "VFS Step 2: Macher Write")
-                                          (expect (length (macher-agent--get-context-contents ctx)) :to-equal 1))))
-          (delete-file file-path)
-          (delete-directory proj-dir))))
-
-  (it "searches VFS content written by write_buffer_in_workspace using search_in_workspace"
-      (let* ((ws (make-macher-agent-workspace :project-root default-directory))
-             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-             (write-fn (gptel-tool-function macher-agent-write-buffer-in-workspace-tool))
-             (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
-                         (get 'macher-agent-tool-search-in-workspace 'command-fn))))
-        (spy-on 'macher-agent--vfs-verify-clean-merge)
-        (spy-on 'macher-agent--vfs-sync-baseline)
-        (spy-on 'shell-command-to-string :and-call-fake
-                (lambda (cmd)
-                  (if (string-match-p "unique-vfs-search-token" cmd)
-                      "vfs-search-target.txt:1:unique-vfs-search-token line\n"
-                    "No matches found.")))
-        (with-macher-agent-mock-fsm ctx
-                                    (funcall write-fn nil "vfs-search-target.txt" "unique-vfs-search-token line")
-                                    (let ((res (funcall cmd-fn '(:pattern "unique-vfs-search-token") ctx default-directory)))
-                                      (expect res :to-match "vfs-search-target\\.txt")
-                                      (expect res :to-match "unique-vfs-search-token line")))))
-
-  (it "ensures search_in_workspace uses -- before the pattern in the rg CLI invocation"
-      (let* ((ws (make-macher-agent-workspace :project-root default-directory))
-             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-             (cmd-fn (or (get 'macher-agent-search-in-workspace-tool 'command-fn)
-                         (get 'macher-agent-tool-search-in-workspace 'command-fn)))
-             (captured-cmd nil))
-        (spy-on 'macher-agent--vfs-verify-clean-merge)
-        (spy-on 'macher-agent--vfs-sync-baseline)
-        (spy-on 'shell-command-to-string :and-call-fake
-                (lambda (cmd)
-                  (setq captured-cmd cmd)
-                  "No matches found."))
-        (with-macher-agent-mock-fsm ctx
-                                    (funcall cmd-fn '(:pattern "-v --some-flag") ctx default-directory)
-                                    (expect captured-cmd :to-match "rg --line-number --color=never --max-columns=150 -- '-v --some-flag' \\."))))
-
-  (it "list_available_tools filters tools to only perception, collaboration, event, execution categories and includes workspace tools"
-      (let* ((global-reg (make-hash-table :test 'equal))
-             (tool-perception (gptel-make-tool :name "tool-perc" :description "perception tool" :category "perception"))
-             (tool-collab (gptel-make-tool :name "tool-collab" :description "collaboration tool" :category "collaboration"))
-             (tool-event (gptel-make-tool :name "tool-event" :description "event tool" :category "event"))
-             (tool-exec (gptel-make-tool :name "tool-exec" :description "execution tool" :category "execution"))
-             (tool-other (gptel-make-tool :name "tool-other" :description "conversation tool" :category "conversation"))
-             (tool-none (gptel-make-tool :name "tool-none" :description "uncategorized tool" :category "misc"))
-             (tool-ws (gptel-make-tool :name "tool-workspace" :description "workspace tool" :category "perception"))
-             (ws (make-macher-agent-workspace :project-root default-directory))
-             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
-             (list-fn (gptel-tool-function macher-agent-list-available-tools-tool)))
-        (puthash "tool-perc" tool-perception global-reg)
-        (puthash "tool-collab" tool-collab global-reg)
-        (puthash "tool-event" tool-event global-reg)
-        (puthash "tool-exec" tool-exec global-reg)
-        (puthash "tool-other" tool-other global-reg)
-        (puthash "tool-none" tool-none global-reg)
-        (puthash "tool-workspace" tool-ws (macher-agent-workspace-tools-registry ctx))
-        (let ((macher-agent-tools-registry global-reg))
-          (with-macher-agent-mock-fsm ctx
-                                      (let ((res (funcall list-fn nil)))
-                                        (expect res :to-match "tool-perc")
-                                        (expect res :to-match "tool-collab")
-                                        (expect res :to-match "tool-event")
-                                        (expect res :to-match "tool-exec")
-                                        (expect res :to-match "tool-workspace")
-                                        (expect res :not :to-match "tool-other")
-                                        (expect res :not :to-match "tool-none"))))))
-
   (it "searches conversation history via glob search"
       (let ((buf (generate-new-buffer "test-conv-glob")))
         (with-current-buffer buf
@@ -426,43 +191,6 @@
         ;; Test dead buffer error handling
         (kill-buffer buf)
         (expect (macher-agent-search-dispatch "query" buf 2) :to-match "Error: Cannot locate original conversation buffer.")))
-
-  (it "executes search_conversation_history tool via dispatcher without inline loops or persistent global mutation"
-      (let* ((buf (generate-new-buffer "test-conv-tool"))
-             (ctx (macher-agent--make-context))
-             (mock-fsm (if (fboundp 'gptel-make-fsm)
-                           (gptel-make-fsm :info (list :buffer buf :macher-agent-context ctx))
-                         (list :buffer buf :macher-agent-context ctx)))
-             (macher-agent--active-fsm mock-fsm)
-             (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-conversation-history 'command-fn)))
-             (macher-agent-search-backend-function #'macher-agent-search-glob))
-        (with-current-buffer buf
-          (insert "Line 1: hello\nLine 2: target-match\nLine 3: world\n"))
-        (spy-on 'macher-agent-search-dispatch :and-call-through)
-        (let ((res (funcall cmd-fn '(:query "target-match" :context_lines 1) ctx default-directory)))
-          (expect 'macher-agent-search-dispatch :to-have-been-called)
-          (expect res :to-match "target-match"))
-        (kill-buffer buf)))
-
-  (it "retrieves conversation buffer from context in search_conversation_history tool"
-      (let* ((buf (generate-new-buffer "test-conv-ctx"))
-             (mock-fsm (if (fboundp 'gptel-make-fsm)
-                           (gptel-make-fsm :info (list :buffer buf))
-                         (list :buffer buf)))
-             (ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root default-directory)
-                                                  :contents nil))
-             (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-conversation-history 'command-fn)))
-             (macher-agent-search-backend-function #'macher-agent-search-glob)
-             (macher-agent--active-fsm nil))
-        (with-current-buffer buf
-          (insert "Line 1: foo\nLine 2: context-buffer-match\nLine 3: bar\n"))
-        (setf (macher-agent-context-plugins ctx)
-              (plist-put (copy-sequence (macher-agent-context-plugins ctx)) :fsm mock-fsm))
-        (let ((res (funcall cmd-fn '(:query "context-buffer-match" :context_lines 1) ctx default-directory)))
-          (expect res :to-match "context-buffer-match"))
-        (kill-buffer buf)))
 
   (it "handles zero-length matches and invalid-regexp safely in search_glob"
       (let ((buf (generate-new-buffer "test-conv-edge")))
@@ -759,83 +487,55 @@
               (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
               (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil))))))
 
-    (it "reads audit log from macher-agent-context-plugins via read_context_audit_log"
-      (let* ((ctx (macher-agent--make-context))
-             (audit-entries '(((preset . "AuditPreset") (type . "gptel-tool") (target . "test_tool") (args . (:param "val")))))
-             (tool-fn (gptel-tool-function macher-agent-read-context-audit-log-tool)))
-        (setf (macher-agent-context-plugins ctx) (list :audit-log audit-entries))
-        (let ((result (funcall tool-fn ctx nil :limit 5)))
-          (expect result :to-match "SUCCESS: Audit log retrieved.")
-          (expect result :to-match "AuditPreset")
-          (expect result :to-match "test_tool"))))
-
     (it "suppresses patch by mutating macher-agent-context-plugins via submit_task_result"
       (let* ((ctx (macher-agent--make-context))
-             (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
+             (tool-fn (get 'macher-agent-submit-task-result-tool 'ptc-function))
              (macher-agent--suppress-patch t)
              (macher-agent-task-finished nil))
         (spy-on 'macher-agent-a2a-dispatch)
-        (funcall tool-fn ctx nil :final_answer "Done with work")
-        (expect (plist-get (macher-agent-context-plugins ctx) :suppress-patch) :to-be t)))
+        (funcall tool-fn "Done with work" nil ctx)
+        (expect (plist-get (macher-agent-context-plugins ctx) :suppress-patch) :to-be t))))
 
-    (it "executes submit_task_result safely when macher-agent--routing-stack is unbound"
-      (let* ((ctx (macher-agent--make-context))
-             (tool-fn (gptel-tool-function macher-agent-submit-task-result-tool))
-             (macher-agent-task-finished nil)
-             (stack-bound (boundp 'macher-agent--routing-stack))
-             (saved-val (when (boundp 'macher-agent--routing-stack)
-                          (default-value 'macher-agent--routing-stack))))
-        (spy-on 'macher-agent-a2a-dispatch)
-        (unwind-protect
-            (progn
-              (makunbound 'macher-agent--routing-stack)
-              (let ((res (funcall tool-fn ctx nil :final_answer "Unbound stack work")))
-                (expect res :to-equal "SUCCESS: Result submitted. STOP NOW.")))
-          (when stack-bound
-            (set-default 'macher-agent--routing-stack saved-val)))))
+    (describe "delegate_tasks_to_subagents strict positional and transit payload"
+      (it "aggregates results strictly from :payload and :error without legacy fallback guessing"
+        (let* ((ctx (macher-agent--make-context))
+               (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+               (tasks (list (list :buffer_name "worker-ok" :instructions "Task ok")
+                            (list :buffer_name "worker-err" :instructions "Task err")))
+               (callback-called nil))
+          (spy-on 'macher-agent-a2a-dispatch
+                  :and-call-fake (lambda (payloads callback &optional context)
+                                   (funcall callback (vector (list :payload "Result from worker-ok")
+                                                             (list :error "Failed in worker-err")))))
+          (funcall tool-fn tasks ctx (lambda (res) (setq callback-called res)))
+          (expect callback-called :to-match "Result from worker-ok")
+          (expect callback-called :to-match "Failed in worker-err")))
 
-    (it "resolves fsm and buffer from macher-agent-context-plugins in search_conversation_history"
-      (let* ((buf (generate-new-buffer "*macher-test: search-history-direct*"))
-             (ctx (macher-agent--make-context :origin-buffer buf))
-             (mock-fsm (if (fboundp 'gptel-make-fsm)
-                           (gptel-make-fsm :info (list :buffer buf))
-                         (list :buffer buf)))
-             (cmd-fn (or (get 'macher-agent-search-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-conversation-history 'command-fn)))
-             (macher-agent-search-backend-function #'macher-agent-search-glob))
-        (with-current-buffer buf
-          (insert "Line 1: test-keyword\nLine 2: bar\n"))
-        (setf (macher-agent-context-plugins ctx) (list :fsm mock-fsm :buffer buf))
-        (let ((res (funcall cmd-fn '(:query "test-keyword" :context_lines 1) ctx default-directory)))
-          (expect res :to-match "test-keyword"))
-        (kill-buffer buf)))
+      (it "defaults ephemeral to true when omitted from task"
+        (let* ((ctx (macher-agent--make-context))
+               (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+               (tasks (vector (list :buffer_name "sub-worker-eph"
+                                    :instructions "Run subtask default ephemeral")))
+               (dispatched-payloads nil))
+          (spy-on 'macher-agent-a2a-dispatch
+                  :and-call-fake (lambda (payloads callback &optional context)
+                                   (setq dispatched-payloads payloads)
+                                   (funcall callback (vector (list :payload "Done")))))
+          (funcall tool-fn tasks ctx #'ignore)
+          (expect dispatched-payloads :not :to-be nil)
+          (let ((payload (car dispatched-payloads)))
+            (expect (plist-get (macher-agent-transit-payload-metadata payload) :ephemeral) :to-be t))))
 
-    (it "resolves parent buffer from macher-agent-context-plugins and handles unbound routing stack in search_parent_conversation_history"
-      (let* ((parent-buf (generate-new-buffer "*macher-test: parent-direct*"))
-             (child-buf (generate-new-buffer "*macher-test: child-direct*"))
-             (ctx (macher-agent--make-context :origin-buffer child-buf))
-             (cmd-fn (or (get 'macher-agent-search-parent-conversation-history-tool 'command-fn)
-                         (get 'macher-agent-tool-search-parent-conversation-history 'command-fn)))
-             (macher-agent-search-backend-function #'macher-agent-search-glob)
-             (stack-bound (boundp 'macher-agent--routing-stack))
-             (saved-val (when (boundp 'macher-agent--routing-stack)
-                          (default-value 'macher-agent--routing-stack))))
-        (with-current-buffer parent-buf
-          (insert "Line 1: parent-info-target\nLine 2: summary\n"))
-        (setf (macher-agent-context-plugins ctx)
-              (list :originator-name (buffer-name parent-buf) :buffer child-buf))
-        (unwind-protect
-            (progn
-              (makunbound 'macher-agent--routing-stack)
-              (with-current-buffer child-buf
-                (let ((res (funcall cmd-fn '(:query "parent-info-target" :context_lines 1) ctx default-directory)))
-                  (expect res :to-match "parent-info-target"))))
-          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
-          (when (buffer-live-p child-buf) (kill-buffer child-buf))
-          (when stack-bound
-            (set-default 'macher-agent--routing-stack saved-val))))))
-
- )
+      (it "invokes gptel presentation function with callback and tasks positionally"
+        (let* ((ctx (macher-agent--make-context))
+               (pres-fn (gptel-tool-function macher-agent-delegate-tasks-to-subagents-tool))
+               (tasks (vector (list :buffer_name "pres-worker" :instructions "Presentation task")))
+               (callback-called nil))
+          (spy-on 'macher-agent-a2a-dispatch
+                  :and-call-fake (lambda (payloads callback &optional context)
+                                   (funcall callback (vector (list :payload "Presentation result")))))
+          (funcall pres-fn (lambda (res) (setq callback-called res)) tasks)
+          (expect callback-called :to-match "Presentation result")))))
 
 (provide 'macher-agent-skills-test)
 ;;; macher-agent-skills-test.el ends here

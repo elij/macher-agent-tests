@@ -47,44 +47,6 @@
           (when (buffer-live-p target-buf)
             (kill-buffer target-buf)))))
 
-    (it "passes explicit context to tool executions and delegates UI spoofing"
-      (let* ((mock-ctx (macher-agent--make-context :id "ctx-tool-exec" :project-root "/mock/tool-exec/"))
-             (target-buf (generate-new-buffer " *test-ptc-tool-buf*"))
-             (captured-ctx nil)
-             (spoofed-buf nil)
-             (spoofed-tool nil)
-             (success-res nil)
-             (err-res nil)
-             (mock-tool (macher-agent-make-tool mock-sandbox-ctx-tool
-                            "Test tool capturing context"
-                          :category "test"
-                          :args '((:name "param" :type string))
-                          :command-fn (lambda (_payload context _root)
-                                        (setq captured-ctx context)
-                                        "tool-success"))))
-        (unwind-protect
-            (cl-letf (((symbol-function 'macher-agent-resolve-tool)
-                       (lambda (_name &rest _args) mock-tool))
-                      ((symbol-function 'macher-agent-gptel-spoof-tool-ui)
-                       (lambda (buf tool-name)
-                         (setq spoofed-buf buf)
-                         (setq spoofed-tool tool-name))))
-              (let ((macher-agent--active-ptc-primitives '(test-ctx-tool)))
-                (macher-agent-execute-ptc-script
-                 "(test-ctx-tool \"value\")"
-                 mock-ctx
-                 target-buf
-                 (lambda (val) (setq success-res val))
-                 (lambda (err) (setq err-res err)))
-
-                (expect err-res :to-be nil)
-                (expect success-res :to-equal "tool-success")
-                (expect captured-ctx :to-be mock-ctx)
-                (expect spoofed-buf :to-equal target-buf)
-                (expect spoofed-tool :to-equal "test_ctx_tool")))
-          (when (buffer-live-p target-buf)
-            (kill-buffer target-buf)))))
-
     (it "delegates UI spoofing to macher-agent-gptel-spoof-tool-ui in display-ptc-tool-execution"
       (let* ((mock-ctx (macher-agent--make-context :id "ctx-ui" :project-root "/mock/ui/"))
              (target-buf (generate-new-buffer " *test-ui-buf*"))

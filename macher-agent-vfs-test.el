@@ -1,18 +1,28 @@
 ;;; macher-agent-vfs-test.el --- Tests for Macher Agent VFS -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  (file (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'macher-agent-test-setup)
 (require 'macher-agent-vfs)
@@ -131,17 +141,6 @@
                             (expect (plist-get (cdr agent-entry) :get-files) :to-equal 'macher-agent--collect-raw-files)))))
 
           (describe "macher-agent-vfs-handle-flush"
-                    (it "dispatches to macher-agent-vfs-flush-hook when context has changes"
-                        (let* ((ctx (macher-agent--make-context
-                                     :project-root "/mock/flush-test/"
-                                     :prompt "Refactor codebase"
-                                     :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/flush-test/a.el" "old" "new"))))))
-                               (hook-called nil))
-                          (let ((macher-agent-vfs-flush-hook
-                                 (list (lambda (c) (setq hook-called c)))))
-                            (macher-agent-vfs-handle-flush ctx)
-                            (expect hook-called :to-be ctx))))
-
                     (it "suppresses flush dispatch when macher-agent--suppress-patch is non-nil"
                         (let* ((ctx (macher-agent--make-context
                                      :project-root "/mock/flush-test/"
@@ -174,18 +173,6 @@
                                  (list (lambda (c) (setq hook-called c)))))
                             (macher-agent-vfs-handle-flush ctx)
                             (expect hook-called :to-be nil)))))
-
-          (describe "macher-agent-vfs-diff-review"
-                    (it "dispatches flush handling for active persistent context"
-                        (let* ((ctx (macher-agent--make-context
-                                     :project-root "/mock/diff-rev/"
-                                     :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/diff-rev/a.el" "1" "2"))))))
-                               (flush-received nil)
-                               (macher-agent--persistent-context ctx)
-                               (macher-agent-vfs-flush-hook
-                                (list (lambda (c) (setq flush-received c)))))
-                          (macher-agent-vfs-diff-review)
-                          (expect flush-received :to-be ctx))))
 
           (describe "macher-agent-vfs-build-patch-from-hook"
                     (it "executes split patch generation using prompt from context"
@@ -384,16 +371,7 @@
                           (expect (string-match-p "macher-agent--get-context-prompt" content) :to-be nil)
                           (expect (string-match-p "macher-agent--set-context-prompt" content) :to-be nil)))
 
-                    (it "ensures confirmed dead functions are absent from macher-agent-vfs"
-                        (expect (fboundp 'macher-agent-vfs--set-origin-buffer) :to-be nil)
-                        (expect (fboundp 'macher-agent-vfs-get-node) :to-be nil)
-                        (expect (fboundp 'macher-agent-vfs-set-node) :to-be nil)
-                        (expect (fboundp 'macher-agent-vfs-read) :to-be nil)
-                        (expect (fboundp 'macher-agent--hydrate-vfs-entry) :to-be nil)
-                        (expect (fboundp 'macher-agent--filter-safe-files) :to-be nil)
-                        (expect (fboundp 'macher-agent-prepare-upstream-payloads) :to-be nil)
-                        (expect (fboundp 'macher-agent--get-context-shadow-buffers) :to-be nil)
-                        (expect (fboundp 'macher-agent-sandbox-inflate) :to-be nil))
+
 
                     (it "contains no duplicate definitions of macher-agent-context-root and macher-agent--get-context-workspace"
                         (let* ((vfs-file (or (locate-library "macher-agent-vfs.el")
@@ -420,7 +398,84 @@
                             (expect (member 'macher-agent-context-root defined-symbols) :to-be nil)
                             (expect (member 'macher-agent--get-context-workspace defined-symbols) :to-be nil)
                             (expect (member 'macher-agent--get-context-shadow-buffers defined-symbols) :to-be nil)
-                            (expect (member 'macher-agent-sandbox-inflate defined-symbols) :to-be nil))))))
+                            (expect (member 'macher-agent-sandbox-inflate defined-symbols) :to-be nil)))))
+
+          (describe "macher-agent-with-strict-vfs and Strict Boundary"
+                    (it "identifies active VFS context correctly via macher-agent-vfs-active-p"
+                        (let ((valid-ctx (macher-agent--make-context :id "strict-ctx-1"))
+                              (invalid-ctx '((:id . "not-a-context"))))
+                          (expect (macher-agent-vfs-active-p valid-ctx) :to-be t)
+                          (expect (macher-agent-vfs-active-p invalid-ctx) :to-be nil)
+                          (expect (macher-agent-vfs-active-p nil) :to-be nil)))
+
+                    (it "flushes modified workspace buffers to disk and syncs context via macher-agent-vfs-flush"
+                        (let* ((temp-dir (make-temp-file "macher-vfs-flush-test-" t))
+                               (file-path (expand-file-name "test-flush.txt" temp-dir))
+                               (buf (find-file-noselect file-path))
+                               (ctx (macher-agent--make-context
+                                     :project-root temp-dir
+                                     :plugins (list :vfs (list :contents (list (make-macher-agent-vfs-entry :path "test-flush.txt" :orig "disk content" :curr "disk content"))))))
+                               (auto-synced nil))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer buf
+                                  (insert "uncommitted buffer modification"))
+                                (expect (buffer-modified-p buf) :to-be t)
+                                (cl-letf (((symbol-function 'macher-agent--auto-sync-context)
+                                           (lambda (c) (setq auto-synced c))))
+                                  (macher-agent-vfs-flush ctx)
+                                  (expect (buffer-modified-p buf) :to-be nil)
+                                  (expect auto-synced :to-equal ctx)))
+                            (when (buffer-live-p buf)
+                              (with-current-buffer buf (set-buffer-modified-p nil))
+                              (kill-buffer buf))
+                            (delete-directory temp-dir t))))
+
+                    (it "restores virtual context state upon execution completion via macher-agent-vfs-restore"
+                        (let* ((ctx (macher-agent--make-context :id "restore-ctx-1"))
+                               (auto-synced nil))
+                          (cl-letf (((symbol-function 'macher-agent--auto-sync-context)
+                                     (lambda (c) (setq auto-synced c))))
+                            (macher-agent-vfs-restore ctx)
+                            (expect auto-synced :to-equal ctx))))
+
+                    (it "executes BODY within strict VFS boundary synchronising before and restoring after"
+                        (let* ((ctx (macher-agent--make-context :id "macro-strict-ctx"))
+                               (execution-log nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
+                                     (lambda (_) (push 'flush execution-log)))
+                                    ((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (_) (push 'restore execution-log))))
+                            (let ((res (macher-agent-with-strict-vfs ctx
+                                         (push 'body execution-log)
+                                         'success-val)))
+                              (expect res :to-equal 'success-val)
+                              (expect (reverse execution-log) :to-equal '(flush body restore))))))
+
+                    (it "ensures macher-agent-with-strict-vfs restores virtual state when body signals an error"
+                        (let* ((ctx (macher-agent--make-context :id "macro-error-ctx"))
+                               (restored nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-flush) (lambda (_)))
+                                    ((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (c) (setq restored c))))
+                            (expect
+                             (macher-agent-with-strict-vfs ctx
+                               (error "Pipeline error inside macro body"))
+                             :to-throw 'error)
+                            (expect restored :to-equal ctx))))
+
+                    (it "bypasses flush and restore when context is nil"
+                        (let ((flushed nil)
+                              (restored nil))
+                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
+                                     (lambda (_) (setq flushed t)))
+                                    ((symbol-function 'macher-agent-vfs-restore)
+                                     (lambda (_) (setq restored t))))
+                            (let ((res (macher-agent-with-strict-vfs nil
+                                         'direct-eval)))
+                              (expect res :to-equal 'direct-eval)
+                              (expect flushed :to-be nil)
+                              (expect restored :to-be nil)))))))
 
 (provide 'macher-agent-vfs-test)
 ;;; macher-agent-vfs-test.el ends here

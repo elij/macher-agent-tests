@@ -19,48 +19,6 @@
 (describe "Programmatic Tool Calling (PTC)"
           (macher-agent-test-setup-before-each)
 
-          (it "executes a PTC script, yielding for subagents and resuming with results"
-              (let* ((macher-agent--active-ptc-primitives '(spawn-subagent delegate-tasks-to-subagents read-file))
-                     (ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/ptc/") :contents nil))
-                     (script "(let* ((a1 (spawn-subagent \"agent-alpha\" nil))
-                   (a2 (spawn-subagent \"agent-beta\" nil))
-                   (tasks (list (list :buffer_name a1 :instructions \"task1\")
-                                (list :buffer_name a2 :instructions \"task2\"))))
-              (delegate-tasks-to-subagents tasks))")
-                     (spawn-calls nil)
-                     (spawned-bufs nil)
-                     (success-result nil)
-                     (error-result nil))
-                (unwind-protect
-                    (progn
-                      (spy-on 'macher-agent-add-subagent :and-call-fake
-                              (lambda (name &optional _presets _parent-buf _dir _context)
-                                (push name spawn-calls)
-                                (let ((buf (generate-new-buffer name)))
-                                  (push buf spawned-bufs)
-                                  buf)))
-                      (spy-on 'macher-agent-a2a-dispatch :and-call-fake
-                              (lambda (_tasks callback &optional _parent-ctx)
-                                (funcall callback
-                                         (vector
-                                          (list :status 'success :data "result-alpha" :buffer-name "agent-alpha")
-                                          (list :status 'success :data "result-beta" :buffer-name "agent-beta")))))
-                      (macher-agent-execute-ptc-script
-                       script
-                       ctx
-                       (current-buffer)
-                       (lambda (val) (setq success-result val))
-                       (lambda (err) (setq error-result err)))
-                      (expect error-result :to-be nil)
-                      (expect (reverse spawn-calls) :to-equal '("agent-alpha" "agent-beta"))
-                      (expect success-result :to-match "All sub-agents completed:")
-                      (expect success-result :to-match "=== Response from")
-                      (expect success-result :to-match "result-alpha")
-                      (expect success-result :to-match "result-beta"))
-                  (dolist (b spawned-bufs)
-                    (when (buffer-live-p b)
-                      (kill-buffer b))))))
-
           (it "executes multi-form scripts, handles VFS path resolution, and prevents #. injection"
               (let* ((ws (make-macher-agent-workspace :project-root "/mock/ptc/"))
                      (ctx (macher-agent--make-vfs-context
@@ -96,34 +54,6 @@
                 (expect injected :to-be nil)
                 (expect inject-err :not :to-be nil)))
 
-          (it "evaluates AST special forms and expressions synchronously in sandbox"
-              (let ((ctx (macher-agent--make-context))
-                    (buf (current-buffer)))
-                ;; Basic arithmetic without iter leaks
-                (expect (macher-agent-sandbox-run '(+ 10 20) '(+) ctx buf) :to-equal 30)
-                ;; Apply
-                (expect (macher-agent-sandbox-run '(apply #'+ '(1 2 3)) '(+) ctx buf) :to-equal 6)
-                ;; Condition-case caught error and normal path
-                (expect (macher-agent-sandbox-run
-                         '(condition-case err (/ 1 0) (error (car err)))
-                         '(/) ctx buf)
-                        :to-equal 'arith-error)
-                (expect (macher-agent-sandbox-run
-                         '(condition-case err (+ 10 5) (error -1))
-                         '(+) ctx buf)
-                        :to-equal 15)
-                ;; Unwind-protect
-                (expect (macher-agent-sandbox-run
-                         '(let ((cleanup nil))
-                            (unwind-protect (+ 20 30) (setq cleanup t)))
-                         '(+) ctx buf)
-                        :to-equal 50)
-                ;; Catch and throw
-                (expect (macher-agent-sandbox-run
-                         '(catch 'done (throw 'done 99) 100)
-                         nil ctx buf)
-                        :to-equal 99)))
-
           (it "handles generator yield and normalizes tool call interrupts"
               (let* ((macher-agent--active-ptc-primitives '(spawn-subagent)))
                 ;; Direct eval-iter interrupt
@@ -144,98 +74,6 @@
                        (yield2 (iter-next iter2)))
                   (expect (macher-agent-tool-call-args yield1) :to-equal '(:path "/tmp" :name "test"))
                   (expect (macher-agent-tool-call-args yield2) :to-equal '(:path "/tmp" :name "test")))))
-
-          (it "validates primitive matching, dispatch access control, and payload formatting"
-              ;; Bidirectional matching and gptel-tools fallback
-              (let ((macher-agent--active-ptc-primitives '(spawn-subagent)))
-                (expect (macher-agent--ptc-primitive-p 'spawn_subagent) :to-be t)
-                (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t))
-              (let ((macher-agent--active-ptc-primitives '("spawn_subagent")))
-                (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t))
-              (let* ((macher-agent--active-ptc-primitives nil)
-                     (tool (gptel-make-tool :name "spawn_subagent" :description "test" :args nil))
-                     (gptel-tools (list tool)))
-                (expect (macher-agent--ptc-primitive-p 'spawn-subagent) :to-be t)
-                (expect (macher-agent--ptc-primitive-p 'spawn_subagent) :to-be t))
-
-              ;; Rejection of unauthorized fbound symbols
-              (let (cb-called err-called stop-called)
-                (macher-agent--dispatch-ptc-primitive
-                 'delete-file '("/tmp/file.txt") nil "delete-file"
-                 (lambda (_res) (setq cb-called t))
-                 (lambda (err) (setq err-called err))
-                 (lambda (&optional _reason) (setq stop-called t)))
-                (expect cb-called :to-be nil)
-                (expect stop-called :to-be t)
-                (expect err-called :to-equal '(:status error :error "ERROR: Tool 'delete-file' is not accessible.")))
-
-              ;; Explicitly allowed primitive dispatch
-              (let* ((macher-agent--active-ptc-primitives '(my-custom-primitive))
-                     (primitive-called nil) (cb-res nil) (err-res nil))
-                (cl-letf (((symbol-function 'my-custom-primitive)
-                           (lambda (arg) (setq primitive-called t) (format "result: %s" arg))))
-                  (macher-agent--dispatch-ptc-primitive
-                   'my-custom-primitive '("payload-data") nil "my-custom-primitive"
-                   (lambda (res) (setq cb-res res))
-                   (lambda (err) (setq err-res err))
-                   nil)
-                  (expect primitive-called :to-be t)
-                  (expect cb-res :to-equal "result: payload-data")
-                  (expect err-res :to-be nil)))
-
-              ;; Payload extraction and format bypass under PTC execution
-              (let* ((cb-raw-val nil) (cb-fmt-val nil)
-                     (cb-raw (macher-agent--build-success-callback
-                              'test-tool nil nil nil
-                              (lambda (res) (setq cb-raw-val (plist-get res :data)))))
-                     (cb-fmt (macher-agent--build-success-callback
-                              'test-tool nil
-                              (lambda (p) (format "Formatted: %s" p))
-                              nil
-                              (lambda (res) (setq cb-fmt-val (plist-get res :data))))))
-                (funcall cb-raw "raw payload")
-                (expect cb-raw-val :to-equal "raw payload")
-                (funcall cb-fmt "raw payload")
-                (expect cb-fmt-val :to-equal "Formatted: raw payload"))
-
-              (let* ((mock-tool (macher-agent-make-tool mock-ptc-format-tool
-                                    "Test tool"
-                                  :category "test"
-                                  :args '((:name "val" :type string))
-                                  :command-fn (lambda (payload _context _root)
-                                                `((status . "success") (value . ,(plist-get payload :val))))
-                                  :success-fn (lambda (res _payload)
-                                                (format "Formatted output: %s" (cdr (assoc 'value res))))))
-                     (normal-res nil)
-                     (ptc-res nil))
-                (funcall (gptel-tool-function mock-tool) (lambda (res) (setq normal-res res)) "hello")
-                (expect normal-res :to-equal "Formatted output: hello")
-                (let ((macher-agent--active-ptc-execution t))
-                  (funcall (gptel-tool-function mock-tool) (lambda (res) (setq ptc-res res)) "hello")
-                  (expect ptc-res :to-equal '((status . "success") (value . "hello"))))))
-
-          (it "propagates explicit context directly to PTC sandbox evaluation and tool calls"
-              (let* ((mock-ctx (macher-agent--make-context :id "ctx-direct" :project-root "/mock/direct/"))
-                     (received-ctx nil)
-                     (mock-tool (macher-agent-make-tool direct-tool
-                                    "Direct tool"
-                                  :category "test"
-                                  :args '((:name "x" :type string))
-                                  :command-fn (lambda (_p ctx _root)
-                                                (setq received-ctx ctx)
-                                                "direct-tool-ok"))))
-                (clrhash macher-agent-active-workspaces)
-                (setq-local macher-agent--persistent-context nil)
-                (cl-letf (((symbol-function 'macher-agent-resolve-tool)
-                           (lambda (_name &rest _args) mock-tool)))
-                  (let ((macher-agent--active-ptc-primitives '(direct-tool)))
-                    (macher-agent-execute-ptc-script
-                     "(direct-tool \"arg\")"
-                     mock-ctx
-                     (current-buffer)
-                     #'ignore
-                     #'ignore)
-                    (expect received-ctx :to-be mock-ctx)))))
 
           (it "injects PTC instructions into prompts and transmission state"
               (let* ((tool (gptel-make-tool

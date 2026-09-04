@@ -1,19 +1,28 @@
 ;;; tests/macher-agent-test.el --- Tests for Macher Agent Main Module -*- lexical-binding: t; -*-
 
 (let* ((file (or load-file-name buffer-file-name))
+       (this-dir (if file (file-name-directory (expand-file-name file)) (expand-file-name default-directory)))
+       (root-dir (or (locate-dominating-file this-dir "macher-agent.el")
+                     (locate-dominating-file default-directory "macher-agent.el")
+                     (locate-dominating-file default-directory "tests")
+                     default-directory))
        (test-dir (cond
-                  ((and file (file-exists-p (expand-file-name "macher-agent-test-setup.el" (file-name-directory (expand-file-name file)))))
-                   (file-name-directory (expand-file-name file)))
+                  ((file-exists-p (expand-file-name "macher-agent-test-setup.el" this-dir))
+                   this-dir)
+                  ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" root-dir))
+                   (expand-file-name "tests" root-dir))
                   ((file-exists-p (expand-file-name "macher-agent-test-setup.el" default-directory))
                    (expand-file-name default-directory))
                   ((file-exists-p (expand-file-name "tests/macher-agent-test-setup.el" default-directory))
                    (expand-file-name "tests" default-directory))
-                  (t (or (locate-dominating-file default-directory "tests") default-directory))))
-       (root-dir (locate-dominating-file (or file default-directory) "macher-agent.el")))
+                  (t (or (locate-dominating-file default-directory "tests") (expand-file-name "tests" root-dir))))))
   (when root-dir
-    (add-to-list 'load-path (expand-file-name root-dir)))
-  (add-to-list 'load-path (expand-file-name test-dir))
-  (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name root-dir))))
+  (add-to-list 'load-path (expand-file-name "tests" default-directory))
+  (add-to-list 'load-path (file-name-directory (or load-file-name (buffer-file-name) default-directory)))
+  (when test-dir
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
+    (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'macher-agent-test-setup)
 (require 'macher-agent)
@@ -49,18 +58,14 @@
     (it "sets up gptel mode and tools when enabled"
       (with-temp-buffer
         (let ((mode-setup-called nil)
-              (buf-setup-called nil)
-              (wrap-tools-called nil))
+              (buf-setup-called nil))
           (cl-letf (((symbol-function 'macher-agent-gptel-mode-setup)
                      (lambda () (setq mode-setup-called t)))
                     ((symbol-function 'macher-agent-setup-gptel-buffer)
-                     (lambda () (setq buf-setup-called t)))
-                    ((symbol-function 'macher-agent--wrap-macher-tools)
-                     (lambda () (setq wrap-tools-called t))))
+                     (lambda () (setq buf-setup-called t))))
             (macher-agent-mode 1)
             (expect mode-setup-called :to-be t)
-            (expect buf-setup-called :to-be t)
-            (expect wrap-tools-called :to-be t)))))
+            (expect buf-setup-called :to-be t)))))
 
     (it "cleans up hooks when disabled"
       (with-temp-buffer
@@ -133,7 +138,30 @@
         (setf (macher-agent-context-prompt ctx) "test prompt")
         (expect (macher-agent-context-prompt ctx) :to-equal "test prompt")
         (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (directory-file-name (expand-file-name "/mock/root"))))
-        (expect (macher-agent-context-root ctx) :to-equal (file-truename (expand-file-name "/mock/root")))))))
+        (expect (macher-agent-context-root ctx) :to-equal (file-truename (expand-file-name "/mock/root"))))))
+
+  (describe "macher-agent-test-setup dynamic load-path and helper requirement"
+    (it "ensures tests/helpers is in load-path and helpers are required"
+      (let ((helpers-in-load-path
+             (cl-some (lambda (path)
+                        (and (stringp path)
+                             (string-suffix-p "helpers" (directory-file-name path))))
+                      load-path)))
+        (expect helpers-in-load-path :to-be-truthy))
+      (expect (featurep 'macher-agent-test-harness) :to-be-truthy)
+      (expect (featurep 'macher-agent-snippet-extractor) :to-be-truthy))
+
+    (it "evaluates test-setup load-path expansion logic dynamically"
+      (let* ((setup-file (locate-dominating-file default-directory "tests/macher-agent-test-setup.el"))
+             (setup-path (if setup-file
+                             (expand-file-name "tests/macher-agent-test-setup.el" setup-file)
+                           (expand-file-name "macher-agent-test-setup.el" default-directory)))
+             (file-content (with-temp-buffer
+                             (insert-file-contents setup-path)
+                             (buffer-string))))
+        (expect (string-match-p "(add-to-list 'load-path (expand-file-name \"helpers\"" file-content) :to-be-truthy)
+        (expect (string-match-p "(require 'macher-agent-test-harness)" file-content) :to-be-truthy)
+        (expect (string-match-p "(require 'macher-agent-snippet-extractor)" file-content) :to-be-truthy)))))
 
 (provide 'tests/macher-agent-test)
 (provide 'macher-agent-test)

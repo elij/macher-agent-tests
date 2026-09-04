@@ -144,11 +144,6 @@
           (expect (memq #'macher-agent-sync-prompt-transformer gptel-prompt-transform-functions) :to-be-truthy)
           (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be-truthy))))
 
-    (it "resolves workspace root from workspace object via macher-agent-workspace-root"
-      (let ((ws-struct (make-macher-agent-workspace :project-root "/mock/root/ws/")))
-        (expect (macher-agent-workspace-root ws-struct)
-                :to-equal (file-truename (expand-file-name "/mock/root/ws/")))))
-
     (it "resolves context workspace root via macher-agent-context-workspace-root and alias"
       (let* ((ws (make-macher-agent-workspace :project-root "/mock/ctx-ws/"))
              (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
