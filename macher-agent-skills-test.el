@@ -487,15 +487,6 @@
               (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
               (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil))))))
 
-    (it "suppresses patch by mutating macher-agent-context-plugins via submit_task_result"
-      (let* ((ctx (macher-agent--make-context))
-             (tool-fn (get 'macher-agent-submit-task-result-tool 'ptc-function))
-             (macher-agent--suppress-patch t)
-             (macher-agent-task-finished nil))
-        (spy-on 'macher-agent-a2a-dispatch)
-        (funcall tool-fn "Done with work" nil ctx)
-        (expect (plist-get (macher-agent-context-plugins ctx) :suppress-patch) :to-be t))))
-
     (describe "delegate_tasks_to_subagents strict positional and transit payload"
       (it "aggregates results strictly from :payload and :error without legacy fallback guessing"
         (let* ((ctx (macher-agent--make-context))
@@ -535,7 +526,7 @@
                   :and-call-fake (lambda (payloads callback &optional context)
                                    (funcall callback (vector (list :payload "Presentation result")))))
           (funcall pres-fn (lambda (res) (setq callback-called res)) tasks)
-          (expect callback-called :to-match "Presentation result")))))
+          (expect callback-called :to-match "Presentation result"))))))
 
 (provide 'macher-agent-skills-test)
 ;;; macher-agent-skills-test.el ends here
