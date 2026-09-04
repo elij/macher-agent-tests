@@ -24,6 +24,7 @@
     (add-to-list 'load-path (file-name-as-directory (expand-file-name test-dir)))
     (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
+(require 'cl-lib)
 (require 'macher-agent-test-setup)
 (require 'macher-agent-core)
 (require 'macher-agent-gptel)
@@ -152,7 +153,88 @@
               (expect (macher-agent-gptel--fsm-target-buffer fsm) :to-equal buf)
               (expect (macher-agent-gptel-context-from-fsm fsm) :to-equal ctx))
           (when (buffer-live-p buf)
-            (kill-buffer buf)))))))
+            (kill-buffer buf))))))
+
+  (describe "8. Bridge Abort Operation"
+    (it "defaults to current buffer when BUF argument is nil or omitted"
+      (let ((called-with nil)
+            (active-buf nil))
+        (cl-letf (((symbol-function 'gptel-abort)
+                   (lambda (&optional target)
+                     (setq called-with target)
+                     (setq active-buf (current-buffer))
+                     :aborted)))
+          (with-temp-buffer
+            (let ((res (macher-agent-bridge-abort)))
+              (expect res :to-equal :aborted)
+              (expect called-with :to-equal (current-buffer))
+              (expect active-buf :to-equal (current-buffer)))))))
+
+    (it "passes explicit buffer and sets buffer context"
+      (let ((called-with nil)
+            (active-buf nil)
+            (target-buf (generate-new-buffer "*test-abort-target*")))
+        (unwind-protect
+            (cl-letf (((symbol-function 'gptel-abort)
+                       (lambda (&optional target)
+                         (setq called-with target)
+                         (setq active-buf (current-buffer))
+                         :aborted)))
+              (let ((res (macher-agent-bridge-abort target-buf)))
+                (expect res :to-equal :aborted)
+                (expect called-with :to-equal target-buf)
+                (expect active-buf :to-equal target-buf)))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
+
+    (it "resolves buffer name string to live buffer"
+      (let ((called-with nil)
+            (target-buf (generate-new-buffer "*test-abort-str-buf*")))
+        (unwind-protect
+            (cl-letf (((symbol-function 'gptel-abort)
+                       (lambda (&optional target)
+                         (setq called-with target)
+                         :aborted-str)))
+              (let ((res (macher-agent-bridge-abort "*test-abort-str-buf*")))
+                (expect res :to-equal :aborted-str)
+                (expect called-with :to-equal target-buf)))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))
+
+    (it "ensures buffer safety by not calling gptel-abort when buffer is dead or invalid"
+      (let ((called nil)
+            (dead-buf (generate-new-buffer "*test-abort-dead*")))
+        (kill-buffer dead-buf)
+        (cl-letf (((symbol-function 'gptel-abort)
+                   (lambda (&rest _args) (setq called t))))
+          (expect (macher-agent-bridge-abort dead-buf) :to-be nil)
+          (expect (macher-agent-bridge-abort "*non-existent-buffer-12345*") :to-be nil)
+          (expect (macher-agent-bridge-abort 12345) :to-be nil)
+          (expect called :to-be nil))))
+
+    (it "does not signal error and returns nil when gptel-abort is not bound"
+      (let ((orig (when (fboundp 'gptel-abort) (symbol-function 'gptel-abort))))
+        (unwind-protect
+            (progn
+              (fmakunbound 'gptel-abort)
+              (with-temp-buffer
+                (expect (macher-agent-bridge-abort (current-buffer)) :to-be nil)))
+          (when orig
+            (fset 'gptel-abort orig)))))
+
+    (it "handles zero-argument gptel-abort arity via condition-case fallback"
+      (let ((called nil)
+            (target-buf (generate-new-buffer "*test-abort-zero-arg*")))
+        (unwind-protect
+            (cl-letf (((symbol-function 'gptel-abort)
+                       (lambda ()
+                         (setq called (current-buffer))
+                         :zero-arg-aborted)))
+              (let ((res (macher-agent-bridge-abort target-buf)))
+                (expect res :to-equal :zero-arg-aborted)
+                (expect called :to-equal target-buf)))
+          (when (buffer-live-p target-buf)
+            (kill-buffer target-buf)))))))
 
 (provide 'tests/macher-agent-gptel-test)
 (provide 'macher-agent-gptel-test)
