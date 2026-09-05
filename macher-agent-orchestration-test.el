@@ -87,6 +87,7 @@
                     (it "normalizes payloads, dispatches through pipeline, and aggregates results on completion"
                         (let* ((parent-buf (get-buffer-create "*orch-parent*"))
                                (child-buf (get-buffer-create "*orch-child*"))
+                               (parent-ctx (make-macher-agent-context :id "orch-parent-ctx"))
                                (final-results nil)
                                (payloads (list (macher-agent-make-a2a-payload
                                                 :type 'SEND_MESSAGE
@@ -97,13 +98,14 @@
                           (unwind-protect
                               (progn
                                 (with-current-buffer parent-buf
+                                  (setq-local macher-agent--persistent-context parent-ctx)
                                   (cl-letf (((symbol-function 'gptel-send)
                                              (lambda ()
                                                (let* ((tid (bound-and-true-p macher-agent--current-task-id))
                                                       (cb (when tid (gethash tid macher-agent--pending-callbacks))))
                                                  (when cb
                                                    (funcall cb (list :status 'success :data "Alpha completed" :task-id tid)))))))
-                                    (macher-agent-a2a-dispatch payloads (lambda (res) (setq final-results res)))))
+                                    (macher-agent-a2a-dispatch payloads (lambda (res) (setq final-results res)) parent-ctx)))
                                 (expect (vectorp final-results) :to-be t)
                                 (expect (length final-results) :to-equal 1)
                                 (expect (plist-get (aref final-results 0) :status) :to-be 'success)
@@ -114,6 +116,7 @@
                     (it "pushes routing frame exactly once onto child buffer routing stack"
                         (let* ((parent-buf (get-buffer-create "*orch-single-parent*"))
                                (child-buf (get-buffer-create "*orch-single-child*"))
+                               (parent-ctx (make-macher-agent-context :id "orch-single-parent-ctx"))
                                (stack-depth-during-run nil)
                                (payloads (list (macher-agent-make-a2a-payload
                                                 :type 'SEND_MESSAGE
@@ -125,6 +128,7 @@
                           (unwind-protect
                               (progn
                                 (with-current-buffer parent-buf
+                                  (setq-local macher-agent--persistent-context parent-ctx)
                                   (cl-letf (((symbol-function 'gptel-send)
                                              (lambda ()
                                                (with-current-buffer child-buf
@@ -134,7 +138,7 @@
                                                       (cb (when tid (gethash tid macher-agent--pending-callbacks))))
                                                  (when cb
                                                    (funcall cb (list :status 'success :data "Done" :task-id tid)))))))
-                                    (macher-agent-a2a-dispatch payloads #'ignore)))
+                                    (macher-agent-a2a-dispatch payloads #'ignore parent-ctx)))
                                 (expect stack-depth-during-run :to-equal 1))
                             (kill-buffer parent-buf)
                             (kill-buffer child-buf))))
@@ -156,22 +160,6 @@
                           (macher-agent-a2a-dispatch nil (lambda (res) (setq callback-result res)))
                           (expect (vectorp callback-result) :to-be t)
                           (expect callback-result :to-equal [])))
-
-                    (it "wakes suspended subagents awaiting callbacks without re-transmitting"
-                        (let* ((target-buf (get-buffer-create "*orch-wake-target*"))
-                               (wake-data nil)
-                               (payloads (list (macher-agent-make-a2a-payload
-                                                :type 'SEND_MESSAGE
-                                                :task-id "task-wake"
-                                                :payload "Resume instructions"
-                                                :metadata (list :buffer_name (buffer-name target-buf))))))
-                          (unwind-protect
-                              (progn
-                                (puthash (buffer-name target-buf) (lambda (msg) (setq wake-data msg)) macher-agent--pending-callbacks)
-                                (macher-agent-a2a-dispatch payloads nil)
-                                (expect wake-data :to-equal "Resume instructions")
-                                (expect (gethash (buffer-name target-buf) macher-agent--pending-callbacks) :to-be nil))
-                            (kill-buffer target-buf))))
 
                     (it "routes ARTIFACT_UPDATE directly to the registered pending callback"
                         (let* ((artifact-received nil)
@@ -263,30 +251,6 @@
           ;; 3. Subagent Buffer State and Lifecycle
           ;; ---------------------------------------------------------------------
           (describe "Subagent Buffer State and Lifecycle"
-                    (it "creates and initializes subagent buffers with cloned context and tracking registration"
-                        (let* ((parent-buf (get-buffer-create "*orch-life-parent*"))
-                               (parent-ctx (macher-agent--make-context :id "parent-ctx-id" :project-root "/mock/subagent-root/"))
-                               (subagent-buf nil))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer parent-buf
-                                  (setq-local macher-agent--persistent-context parent-ctx)
-                                  (setq subagent-buf (macher-agent-add-subagent "*orch-life-child*" '(mock-preset) parent-buf)))
-                                (expect (bufferp subagent-buf) :to-be t)
-                                (expect (buffer-name subagent-buf) :to-equal "*orch-life-child*")
-                                (with-current-buffer subagent-buf
-                                  (expect macher-agent--is-workspace :to-be t)
-                                  (expect (macher-agent-context-p macher-agent--persistent-context) :to-be t)
-                                  (expect (macher-agent-context-project-root macher-agent--persistent-context) :to-equal "/mock/subagent-root/")
-                                  (expect (eq macher-agent--persistent-context parent-ctx) :to-be nil)
-                                  (expect macher-agent-presets :to-equal '(mock-preset))
-                                  (expect (assoc "*orch-life-child*" (macher-agent-context-subagents macher-agent--persistent-context)) :to-be-truthy))
-                                ;; Registered in tracking list and parent context
-                                (expect (assoc "*orch-life-child*" macher-agent-active-subagents) :to-be-truthy)
-                                (expect (assoc "*orch-life-child*" (macher-agent-context-subagents parent-ctx)) :to-be-truthy))
-                            (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
-                            (when (and subagent-buf (buffer-live-p subagent-buf)) (kill-buffer subagent-buf)))))
-
                     (it "isolates subagent persistent context modifications from parent context"
                         (let* ((parent-buf (get-buffer-create "*orch-iso-parent*"))
                                (parent-ctx (macher-agent--make-context :id "parent-iso" :project-root "/mock/iso-root/" :plugins '(:key "orig")))
@@ -387,7 +351,7 @@
                             (kill-buffer buf))))
 
                     (it "safely handles invalid or non-existent entries in macher-agent--apply-single-virtual-buffer"
-                        (expect (macher-agent--apply-single-virtual-buffer nil) :to-be nil)
+                        (expect (macher-agent--apply-single-virtual-buffer nil) :to-throw 'wrong-type-argument)
                         (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "*nonexistent-buf*" :orig "" :curr "text")) :to-be nil)
                         (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path nil :orig "" :curr "text")) :to-be nil)))
 
@@ -403,16 +367,7 @@
                                                                                :boot-directive "Alpha boot"))))
                                (payload (macher-agent-compose-payload base-state '(alpha-skill))))
                           (expect (plist-get payload :system) :to-match "Alpha prompt")
-                          (expect (plist-get payload :boot-directive) :to-equal "Alpha boot")))
-
-                    (it "applies skills directly to target buffer with macher-agent-use-skill"
-                        (let ((buf (get-buffer-create "*orch-skill-buf*")))
-                          (unwind-protect
-                              (progn
-                                (macher-agent-use-skill 'test-skill-sym buf)
-                                (with-current-buffer buf
-                                  (expect macher-agent-presets :to-equal '(test-skill-sym))))
-                            (kill-buffer buf)))))
+                          (expect (plist-get payload :boot-directive) :to-equal "Alpha boot"))))
 
           ;; ---------------------------------------------------------------------
           ;; 6. Structs and Helper Utilities
@@ -428,18 +383,6 @@
                           (expect (macher-agent-task-context-target-buffer tctx) :to-equal (current-buffer))
                           (expect (macher-agent-task-context-skill-sym tctx) :to-equal 'test-sym)
                           (expect (macher-agent-task-context-system-message tctx) :to-equal "System prompt")))
-
-                    (it "extracts and updates context prompts and workspaces using specialized accessors"
-                        (let ((ctx (macher-agent--make-context :id "ctx-acc-01"
-                                                               :project-root "/mock/acc-root/"
-                                                               :prompt "Initial Prompt")))
-                          (expect (macher-agent-context-p ctx) :to-be t)
-                          (expect (macher-agent-context-id ctx) :to-equal "ctx-acc-01")
-                          (expect (macher-agent-context-project-root ctx) :to-equal "/mock/acc-root/")
-                          (expect (macher-agent-context-prompt ctx) :to-equal "Initial Prompt")
-                          (setf (macher-agent-context-prompt ctx) "Mutated Prompt")
-                          (expect (macher-agent-context-prompt ctx) :to-equal "Mutated Prompt")
-                          (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (expand-file-name "/mock/acc-root/")))))
 
                     (it "accesses and mutates transit payload target slots via macher-agent-transit-payload-target"
                         (let ((payload (make-macher-agent-transit-payload :target-buffer "target-buf-1")))

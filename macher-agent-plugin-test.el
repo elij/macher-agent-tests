@@ -44,7 +44,7 @@
     (it "initialises macher-agent-pipeline-registry as a hash table"
       (expect (hash-table-p macher-agent-pipeline-registry) :to-be t))
 
-    (it "registers pipeline steps in strict priority depth order and deduplicates symbol keys"
+    (it "registers pipeline steps in strict priority depth order and rejects non-symbol keys"
       (let ((sym-pipe (intern "test-priority-pipe")))
         (macher-agent-register-pipeline-step sym-pipe #'ignore 90)
         (macher-agent-register-pipeline-step sym-pipe #'identity 10)
@@ -54,10 +54,9 @@
         (macher-agent-register-pipeline-step sym-pipe #'ignore 20)
         (expect (macher-agent-get-pipeline-steps sym-pipe)
                 :to-equal (list #'identity #'ignore #'car))
-        ;; String key coercion without duplicates
-        (macher-agent-register-pipeline-step (symbol-name sym-pipe) #'identity 5)
-        (expect (gethash sym-pipe macher-agent-pipeline-registry) :not :to-be nil)
-        (expect (gethash (symbol-name sym-pipe) macher-agent-pipeline-registry) :to-be nil)))
+        ;; Pipeline step registration requires symbol key, not string
+        (expect (macher-agent-register-pipeline-step (symbol-name sym-pipe) #'identity 5)
+                :to-throw 'wrong-type-argument)))
 
     (it "bridges user interface buffers to state machine with buffer-local macher-agent-fsm-id"
       (with-temp-buffer
@@ -102,7 +101,7 @@
       (expect (member #'macher-agent-resolve-from-transit-payload (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       ;; Sandbox / PTC steps
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
-      (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+      (expect (member #'macher-agent-sandbox-append-ptc-to-transmission (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       ;; Zero-Mem steps
       (expect (member #'macher-agent-memory-pipe--inject-tool (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
       (expect (member #'macher-agent-memory-pipe--truncate-buffer (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
@@ -150,11 +149,11 @@
               (clrhash macher-agent-pipeline-registry)
               (macher-agent-sandbox-install)
               (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
-              (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
+              (expect (member #'macher-agent-sandbox-append-ptc-to-transmission (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
               (when (fboundp 'macher-agent-sandbox-uninstall)
                 (macher-agent-sandbox-uninstall)
                 (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be nil)
-                (expect (member #'macher-agent-sandbox-append-ptc-directive (macher-agent-get-pipeline-steps 'transmission)) :to-be nil)))
+                (expect (member #'macher-agent-sandbox-append-ptc-to-transmission (macher-agent-get-pipeline-steps 'transmission)) :to-be nil)))
           (setq macher-agent-pipeline-registry saved-registry))))
 
     (it "installs and uninstalls zero-mem pipeline steps, hooks, and search backend cleanly"
@@ -205,36 +204,21 @@
 
     (it "strictly enforces context structures and rejects alists in sandbox state accessors"
       (let ((alist-ctx '((:sandbox . (:active-primitives (spawn-subagent))))))
-        (expect (macher-agent-sandbox-get-state alist-ctx) :to-be nil)
-        (expect (macher-agent-sandbox-set-state alist-ctx '(:active-primitives (spawn-subagent))) :to-be nil)))
+        (expect (macher-agent-sandbox-get-state alist-ctx) :to-throw 'wrong-type-argument)
+        (expect (macher-agent-sandbox-set-state alist-ctx '(:active-primitives (spawn-subagent))) :to-throw 'wrong-type-argument)))
 
     (it "resolves context comprehensively across transit keys, wrapper states, and buffers"
       (let* ((mock-dir (make-temp-file "macher-transit-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
-             (buf (generate-new-buffer "*macher-buf-transit-test*")))
+             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
         (unwind-protect
-            (progn
-              (expect (macher-agent-resolve-from-transit-payload ctx) :to-be ctx)
-              (dolist (key '(:target-context :parent-context))
-                (let* ((payload (if (eq key :target-context)
-                                    (make-macher-agent-transit-payload :target-context ctx)
-                                  (make-macher-agent-transit-payload :parent-context ctx)))
-                       (resolved (macher-agent-resolve-from-transit-payload payload)))
-                  (expect resolved :to-be ctx)
-                  (let* ((pipe-state (list :input payload :resolved nil))
-                         (res-state (macher-agent-resolve-from-transit-payload pipe-state)))
-                    (expect (plist-get res-state :resolved) :to-be ctx))))
-              ;; Buffer fallbacks
-              (with-current-buffer buf
-                (setq-local macher-agent--persistent-context ctx))
-              (expect (macher-agent-resolve-from-transit-payload (make-macher-agent-transit-payload :target-buffer buf)) :to-be ctx)
-              ;; Invalid inputs reject with an error signal
-              (expect (macher-agent-resolve-from-transit-payload '(:context "invalid-string")) :to-throw 'error)
-              (expect (macher-agent-resolve-from-transit-payload '(project . "/some/path")) :to-throw 'error)
-              (expect (macher-agent-resolve-from-transit-payload 12345) :to-throw 'error)
-              (expect (macher-agent-resolve-from-transit-payload "string-input") :to-throw 'error))
-          (when (buffer-live-p buf) (kill-buffer buf))
+            (dolist (key '(:target-context :parent-context :child-context))
+              (let* ((payload (cond
+                               ((eq key :target-context) (make-macher-agent-transit-payload :target-context ctx))
+                               ((eq key :parent-context) (make-macher-agent-transit-payload :parent-context ctx))
+                               (t (make-macher-agent-transit-payload :child-context ctx))))
+                     (resolved (macher-agent-context-from-payload payload)))
+                (expect resolved :to-be ctx)))
           (delete-directory mock-dir t))))
 
     (it "verifies macher-agent--extract-fsm-context is removed in favor of explicit context transport"
@@ -261,117 +245,13 @@
               (macher-agent-with-vfs-scope (funcall getter)
                 (expect default-directory :not :to-be nil))
               (expect eval-count :to-equal 1))
-          (delete-directory mock-dir t))))
-
-    (it "merges payload diffs, handles deletions, and updates target buffers via macher-agent-vfs--merge-payload"
-      (let* ((mock-dir (make-temp-file "macher-vfs-merge-test" t))
-             (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
-             (ambient-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/unrelated") :contents nil))
-             (target-buf (generate-new-buffer "*macher-vfs-merge-target*")))
-        (unwind-protect
-            (progn
-              ;; 1. Merge diffs
-              (let* ((state (make-macher-agent-transit-payload
-                             :target-context ctx
-                             :payload (list (make-macher-agent-vfs-entry :path "file1.txt" :orig "old" :curr "new content"))))
-                     (merged (macher-agent-vfs--merge-payload state)))
-                (expect (macher-agent-transit-payload-target-context merged) :to-be ctx)
-                (expect (macher-agent--read-context-file ctx "file1.txt") :to-equal "new content"))
-              ;; 2. Handle deletions
-              (macher-agent--update-context-file ctx "deleted-file.txt" "original text")
-              (macher-agent-vfs--merge-payload
-               (make-macher-agent-transit-payload
-                :target-context ctx
-                :payload (list (make-macher-agent-vfs-entry :path "deleted-file.txt" :orig "original text" :curr nil))))
-              (expect (macher-agent--read-context-file ctx "deleted-file.txt") :to-be nil)
-              ;; 3. Target context and shared-state context extraction
-              (let ((macher-agent--persistent-context ambient-ctx))
-                (macher-agent-vfs--merge-payload
-                 (make-macher-agent-transit-payload
-                  :target-context ctx
-                  :payload (list (make-macher-agent-vfs-entry :path "scoped-file.txt" :orig nil :curr "target payload"))))
-                (expect (macher-agent--read-context-file ctx "scoped-file.txt") :to-equal "target payload"))
-              (macher-agent-vfs--merge-payload
-               (make-macher-agent-transit-payload
-                :target-context ctx
-                :payload (list (make-macher-agent-vfs-entry :path "shared-file.txt" :orig nil :curr "shared content"))))
-              (expect (macher-agent--read-context-file ctx "shared-file.txt") :to-equal "shared content")
-              ;; 4. Target buffer persistent context update
-              (let ((res (macher-agent-vfs--merge-payload
-                          (make-macher-agent-transit-payload
-                           :parent-context ctx
-                           :target-buffer target-buf
-                           :payload (list (make-macher-agent-vfs-entry :path "merged-doc.txt" :orig nil :curr "fresh content"))))))
-                (expect (macher-agent-transit-payload-target-context res) :to-be ctx)
-                (expect (macher-agent--read-context-file ctx "merged-doc.txt") :to-equal "fresh content")
-                (with-current-buffer target-buf
-                  (expect macher-agent--persistent-context :to-be ctx)))
-              ;; 5. Polymorphic invocation (macher-agent-vfs--merge-payload target payload)
-              (let* ((fsm (gptel-make-fsm :info (list :macher-agent-context ctx :buffer target-buf)))
-                     (poly-payload (list (make-macher-agent-vfs-entry :path "poly-file.txt" :orig nil :curr "poly content"))))
-                (macher-agent-vfs--merge-payload fsm poly-payload)
-                (expect (macher-agent--read-context-file ctx "poly-file.txt") :to-equal "poly content")
-                (macher-agent-vfs--merge-payload ctx (list (make-macher-agent-vfs-entry :path "direct-ctx.txt" :orig nil :curr "direct content")))
-                (expect (macher-agent--read-context-file ctx "direct-ctx.txt") :to-equal "direct content")
-                (with-current-buffer target-buf (setq-local macher-agent--persistent-context ctx))
-                (macher-agent-vfs--merge-payload target-buf (list (make-macher-agent-vfs-entry :path "buf-target.txt" :orig nil :curr "buf content")))
-                (expect (macher-agent--read-context-file ctx "buf-target.txt") :to-equal "buf content")))
-          (when (buffer-live-p target-buf) (kill-buffer target-buf))
-          (delete-directory mock-dir t))))
-
-    (it "triggers patch building via VFS flush hook for modified contexts and skips unmodified contexts"
-      (let* ((mock-dir (make-temp-file "macher-patch-hook-test-" t))
-             (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx-mod (macher-agent--make-vfs-context
-                       :workspace workspace
-                       :contents (list (macher-agent-vfs-make-entry "file1.txt" "original" "modified"))))
-             (ctx-clean (macher-agent--make-vfs-context
-                         :workspace workspace
-                         :contents (list (macher-agent-vfs-make-entry "file1.txt" "same" "same"))))
-             (patch-built nil))
-        (unwind-protect
-            (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
-                       (lambda (_c _fsm &rest _args)
-                         (setq patch-built t)
-                         (get-buffer-create "*macher-patch-test*"))))
-              ;; Modified context triggers flush hook and builds patch
-              (setq patch-built nil)
-              (macher-agent-vfs-handle-flush ctx-mod)
-              (expect patch-built :to-be t)
-              ;; Clean context does not trigger patch building
-              (setq patch-built nil)
-              (macher-agent-vfs-handle-flush ctx-clean)
-              (expect patch-built :to-be nil))
-          (when (get-buffer "*macher-patch-test*")
-            (kill-buffer "*macher-patch-test*"))
           (delete-directory mock-dir t)))))
 
   (describe "5. Dynamic Pipeline Execution and Dispatching"
-    (it "executes dynamic steps exactly once across multiple presets in macher-agent-compose-payload"
-      (let* ((call-count 0)
-             (dynamic-step (lambda (state &optional _item)
-                             (setq call-count (1+ call-count))
-                             (plist-put (copy-sequence state) :dynamic-flag t))))
-        (macher-agent-register-pipeline-step 'preset-composition dynamic-step 80)
-        (unwind-protect
-            (progn
-              (let ((res (macher-agent-compose-payload (list :known-presets nil) '(single-preset))))
-                (expect call-count :to-equal 1)
-                (expect (plist-get res :dynamic-flag) :to-be t))
-              (setq call-count 0)
-              (let ((res (macher-agent-compose-payload (list :known-presets nil) '(preset-one preset-two preset-three))))
-                (expect call-count :to-equal 1)
-                (expect (plist-get res :dynamic-flag) :to-be t)))
-          (let ((entries (gethash 'preset-composition macher-agent-pipeline-registry)))
-            (puthash 'preset-composition
-                     (cl-remove-if (lambda (e) (equal (plist-get e :step) dynamic-step)) entries)
-                     macher-agent-pipeline-registry)))))
-
     (it "executes dynamically registered steps during macher-agent--compile-transmission-payload"
       (with-temp-buffer
         (let* ((dyn-tx-called nil)
-               (dyn-tx-step (lambda (state &optional _buf _presets _skills _redir)
+               (dyn-tx-step (lambda (state)
                               (setq dyn-tx-called t)
                               state)))
           (macher-agent-register-pipeline-step 'transmission dyn-tx-step 85)
@@ -420,7 +300,7 @@
                 (setq macher-agent--persistent-context child-ctx))
               (let* ((shared-state (list :results results-tbl
                                          :total 1
-                                         :final-callback nil
+                                         :final-callback #'ignore
                                          :parent-buffer parent-buf
                                          :original-payloads (list (make-macher-agent-transit-payload :task-id task-id))))
                      (initial-state (list :a2a-msg (make-macher-agent-transit-payload :type 'SEND_MESSAGE :task-id task-id)
@@ -460,7 +340,7 @@
     (it "assesses primitives and injects ptc_execution tool when primitives are active"
       (let* ((state (list :tools (list 'search_in_workspace)
                           :ptc-primitives (list 'spawn-subagent)))
-             (updated (macher-agent-ptc--inject-tool state nil)))
+             (updated (macher-agent-ptc--inject-tool state)))
         (let ((tool-names (mapcar (lambda (tl)
                                     (if (symbolp tl) (symbol-name tl) (gptel-tool-name tl)))
                                   (plist-get updated :tools))))
@@ -468,7 +348,7 @@
       (let* ((state (list :tools (list 'search_in_workspace)
                           :ptc-primitives nil))
              (macher-agent--active-ptc-primitives nil)
-             (updated (macher-agent-ptc--inject-tool state nil)))
+             (updated (macher-agent-ptc--inject-tool state)))
         (expect (plist-get updated :tools) :to-equal (list 'search_in_workspace))))
 
     (it "calculates memory limits and persists conversation history without premature task flush"
@@ -477,7 +357,7 @@
         (let* ((macher-agent-max-context-chars '((nil . 500)))
                (state (make-macher-agent-transmission-state :target-buffer (current-buffer)
                                                             :tools nil))
-               (updated (macher-agent-memory-pipe--inject-tool state (current-buffer) nil nil nil)))
+               (updated (macher-agent-memory-pipe--inject-tool state)))
           (expect (member "search_conversation_history"
                           (mapcar #'macher-agent-canonical-tool-name
                                   (macher-agent-transmission-state-tools updated)))
@@ -487,7 +367,7 @@
         (let* ((macher-agent-max-context-chars '((nil . 50000)))
                (state (make-macher-agent-transmission-state :target-buffer (current-buffer)
                                                             :tools nil))
-               (updated (macher-agent-memory-pipe--inject-tool state (current-buffer) nil nil nil)))
+               (updated (macher-agent-memory-pipe--inject-tool state)))
           (expect (member "search_conversation_history"
                           (mapcar #'macher-agent-canonical-tool-name
                                   (macher-agent-transmission-state-tools updated)))

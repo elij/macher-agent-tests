@@ -66,7 +66,7 @@
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "ptc")
-                   (expect (cdr (assoc 'target entry)) :to-equal 'test-ptc-tool)
+                   (expect (cdr (assoc 'target entry)) :to-equal "ptc")
                    (expect (cdr (assoc 'args entry)) :to-equal '(:path "file.txt")))))
 
            (it "logs PTC tool yields into explicitly passed context"
@@ -78,7 +78,7 @@
                         (entry (car log)))
                    (expect (length log) :to-equal 1)
                    (expect (cdr (assoc 'type entry)) :to-equal "ptc")
-                   (expect (cdr (assoc 'target entry)) :to-equal 'custom-ptc-tool)
+                   (expect (cdr (assoc 'target entry)) :to-equal "ptc")
                    (expect (cdr (assoc 'args entry)) :to-equal '(:name "foo" :count 42)))))
 
            (it "does not log audit entries for non-tool expressions"

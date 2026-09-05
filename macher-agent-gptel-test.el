@@ -35,27 +35,6 @@
 (describe "Macher Agent gptel Boundary Suite"
   (macher-agent-test-setup-before-each)
 
-  (describe "1. FSM Hijack Transform and Lifecycle Callbacks"
-    (it "injects origin-buffer, context, and handlers into FSM"
-      (let* ((target-buf (generate-new-buffer "*test-target-ctx*"))
-             (ctx (make-macher-agent-context :id "ctx-fsm-1" :project-root "/tmp/test-proj"))
-             (fsm (gptel-make-fsm :info (list :buffer target-buf))))
-        (unwind-protect
-            (progn
-              (with-current-buffer target-buf
-                (setq-local macher-agent--persistent-context ctx)
-                (insert "Agent prompt query"))
-              (macher-agent--fsm-hijack-transform nil fsm)
-              (let ((info (gptel-fsm-info fsm))
-                    (handlers (gptel-fsm-handlers fsm)))
-                (expect (plist-get info :origin-buffer) :to-equal target-buf)
-                (expect (plist-get info :macher-agent-context) :to-equal ctx)
-                (expect (plist-get info :prompt) :to-equal "Agent prompt query")
-                (expect (memq #'macher-agent--inject-media-fsm-logic (alist-get 'WAIT handlers)) :to-be-truthy)
-                (expect (memq #'macher-agent-gptel--trigger-flush (alist-get 'DONE handlers)) :to-be-truthy)))
-          (when (buffer-live-p target-buf)
-            (kill-buffer target-buf))))))
-
   (describe "2. Prompt Transformation and Inline Skill Extraction"
     (it "extracts and strips inline @skill tags matching known presets"
       (with-temp-buffer
@@ -93,7 +72,32 @@
         (expect (macher-agent--transformer-detect-redirect nil (point-min) '(coder)) :to-be nil))
       (with-temp-buffer
         (insert "some actual task instruction")
-        (expect (macher-agent--transformer-detect-redirect t (point-min) '(coder)) :to-be nil))))
+        (expect (macher-agent--transformer-detect-redirect t (point-min) '(coder)) :to-be nil)))
+
+(it "operates exclusively in the prompt buffer without mutating originating buffer model or tools"
+      (let* ((orig-buf (generate-new-buffer "*test-orig-isolation*"))
+             (temp-buf (generate-new-buffer " *test-prompt*"))
+             (fsm (gptel-make-fsm))
+             (tool (gptel-make-tool :name "test_iso_tool" :description "test tool" :category "test")))
+        (unwind-protect
+            (progn
+              (with-current-buffer orig-buf
+                (setq default-directory "/Users/elij/Documents/projects/external/macher-agent-suite/macher-agent/")
+                (setq-local gptel-model 'custom-orig-model)
+                (setq-local gptel-tools (list tool))
+                (setq-local gptel-system-prompt "Original prompt")
+                (setq-local macher-agent--persistent-context (make-macher-agent-context :project-root default-directory))
+                (insert "Turn prompt"))
+              (setf (gptel-fsm-info fsm) (list :buffer orig-buf :data temp-buf))
+              (with-current-buffer temp-buf
+                (insert "Turn prompt")
+                (macher-agent-sync-prompt-transformer nil fsm))
+              (with-current-buffer orig-buf
+                (expect gptel-model :to-equal 'custom-orig-model)
+                (expect gptel-tools :to-equal (list tool))
+                (expect gptel-system-prompt :to-equal "Original prompt")))
+          (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+          (when (buffer-live-p temp-buf) (kill-buffer temp-buf))))))
 
   (describe "3. Tool Deduplication Transformer"
     (it "omits duplicate tool call blocks exceeding max duplicate limit"
@@ -137,8 +141,10 @@
 
   (describe "7. Context Clearing and FSM Resolution"
     (it "clears persistent context and resets to physical baseline"
-      (with-temp-buffer
-        (let* ((ctx (make-macher-agent-context :id "ctx-to-clear" :project-root "/tmp/clean-test")))
+      (let* ((ws (make-macher-agent-workspace :project-root "/tmp/clean-test"))
+             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+        (setf (macher-agent-context-id ctx) "ctx-to-clear")
+        (with-temp-buffer
           (setq-local macher-agent--persistent-context ctx)
           (macher-agent-clear-context)
           (expect (macher-agent-valid-context-p macher-agent--persistent-context) :to-be t)
@@ -156,21 +162,7 @@
             (kill-buffer buf))))))
 
   (describe "8. Bridge Abort Operation"
-    (it "defaults to current buffer when BUF argument is nil or omitted"
-      (let ((called-with nil)
-            (active-buf nil))
-        (cl-letf (((symbol-function 'gptel-abort)
-                   (lambda (&optional target)
-                     (setq called-with target)
-                     (setq active-buf (current-buffer))
-                     :aborted)))
-          (with-temp-buffer
-            (let ((res (macher-agent-bridge-abort)))
-              (expect res :to-equal :aborted)
-              (expect called-with :to-equal (current-buffer))
-              (expect active-buf :to-equal (current-buffer)))))))
-
-    (it "passes explicit buffer and sets buffer context"
+    (it "passes explicit live buffer and sets buffer context"
       (let ((called-with nil)
             (active-buf nil)
             (target-buf (generate-new-buffer "*test-abort-target*")))
@@ -187,29 +179,18 @@
           (when (buffer-live-p target-buf)
             (kill-buffer target-buf)))))
 
-    (it "resolves buffer name string to live buffer"
-      (let ((called-with nil)
-            (target-buf (generate-new-buffer "*test-abort-str-buf*")))
-        (unwind-protect
-            (cl-letf (((symbol-function 'gptel-abort)
-                       (lambda (&optional target)
-                         (setq called-with target)
-                         :aborted-str)))
-              (let ((res (macher-agent-bridge-abort "*test-abort-str-buf*")))
-                (expect res :to-equal :aborted-str)
-                (expect called-with :to-equal target-buf)))
-          (when (buffer-live-p target-buf)
-            (kill-buffer target-buf)))))
+    (it "strictly requires a buffer object and signals type errors for invalid inputs"
+      (expect (macher-agent-bridge-abort "*non-existent-buffer-12345*") :to-throw 'wrong-type-argument)
+      (expect (macher-agent-bridge-abort 12345) :to-throw 'wrong-type-argument)
+      (expect (macher-agent-bridge-abort nil) :to-throw 'wrong-type-argument))
 
-    (it "ensures buffer safety by not calling gptel-abort when buffer is dead or invalid"
+    (it "ensures buffer safety by not calling gptel-abort when buffer is dead"
       (let ((called nil)
             (dead-buf (generate-new-buffer "*test-abort-dead*")))
         (kill-buffer dead-buf)
         (cl-letf (((symbol-function 'gptel-abort)
                    (lambda (&rest _args) (setq called t))))
           (expect (macher-agent-bridge-abort dead-buf) :to-be nil)
-          (expect (macher-agent-bridge-abort "*non-existent-buffer-12345*") :to-be nil)
-          (expect (macher-agent-bridge-abort 12345) :to-be nil)
           (expect called :to-be nil))))
 
     (it "does not signal error and returns nil when gptel-abort is not bound"

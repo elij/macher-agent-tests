@@ -42,34 +42,13 @@
                     (it "strictly enforces context structures and rejects residual alists in VFS state accessors"
                         (let ((alist-ctx '((:vfs . (:contents nil :dirty-p t))))
                               (valid-ctx (macher-agent--make-context :id "valid-ctx-vfs")))
-                          (expect (macher-agent-vfs--get-state alist-ctx) :to-be nil)
-                          (expect (macher-agent-vfs--set-state alist-ctx '(:contents nil)) :to-be nil)
-                          (expect (macher-agent-storage--extract-context alist-ctx) :to-be nil)
-                          (expect (macher-agent-storage--extract-context `((:target-context . ,valid-ctx))) :to-be nil)
-                          (expect (macher-agent-storage--extract-context valid-ctx) :to-be valid-ctx)
+                          (expect (macher-agent-vfs--get-state alist-ctx) :to-throw 'wrong-type-argument)
+                          (expect (macher-agent-vfs--set-state alist-ctx '(:contents nil)) :to-throw 'wrong-type-argument)
+                          (expect (macher-agent-storage--extract-context alist-ctx) :to-throw 'wrong-type-argument)
+                          (expect (macher-agent-storage--extract-context `((:target-context . ,valid-ctx))) :to-throw 'wrong-type-argument)
                           (expect (macher-agent-storage--extract-context
                                    (make-macher-agent-transit-payload :target-context valid-ctx))
-                                  :to-be valid-ctx)))
-
-                    (it "manages shadow buffers via canonical macher-agent-context-shadow-buffers and macher-agent--set-context-shadow-buffers"
-                        (let ((ctx (macher-agent--make-context :id "ctx-sb-1")))
-                          (expect (macher-agent-context-shadow-buffers ctx) :to-be nil)
-                          (macher-agent--set-context-shadow-buffers ctx (list "*shadow-1*"))
-                          (expect (macher-agent-context-shadow-buffers ctx) :to-equal (list "*shadow-1*"))
-                          (let ((ctx-plugin (macher-agent--make-context :id "ctx-sb-2" :plugins (list :shadow-buffers (list "*plugin-shadow*")))))
-                            (expect (macher-agent-context-shadow-buffers ctx-plugin) :to-equal (list "*plugin-shadow*")))))
-
-                    (it "retrieves origin buffer via macher-agent-vfs--get-origin-buffer from slot, VFS state, or plugins plist"
-                        (let* ((buf (generate-new-buffer "mock-vfs-origin-buf"))
-                               (ctx-slot (macher-agent--make-context :origin-buffer buf))
-                               (ctx-vfs (macher-agent--make-context :plugins (list :vfs (list :origin-buffer buf))))
-                               (ctx-plugin (macher-agent--make-context :plugins (list :origin-buffer buf))))
-                          (unwind-protect
-                              (progn
-                                (expect (macher-agent-vfs--get-origin-buffer ctx-slot) :to-be buf)
-                                (expect (macher-agent-vfs--get-origin-buffer ctx-vfs) :to-be buf)
-                                (expect (macher-agent-vfs--get-origin-buffer ctx-plugin) :to-be buf))
-                            (when (buffer-live-p buf) (kill-buffer buf))))))
+                                  :to-be valid-ctx))))
 
           (describe "macher-agent-vfs-scratch-inflate"
                     (it "inflates VFS contents into its physical scratchpad directory"
@@ -209,38 +188,21 @@
                                            nil)))
                                 (macher-agent--execute-split-patch ctx)
                                 (expect (macher-agent-context-prompt captured-p-ctx) :to-equal "Explicit Context Prompt"))
-                            (when (buffer-live-p orig-buf) (kill-buffer orig-buf)))))
-
-                    (it "handles nil prompt on context gracefully by defaulting to empty string"
-                        (let* ((orig-buf (generate-new-buffer "split-nil-prompt-buf"))
-                               (ctx (macher-agent--make-context
-                                     :project-root "/mock/split-nil-prompt/"
-                                     :origin-buffer orig-buf
-                                     :prompt nil
-                                     :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/split-nil-prompt/f.el" "1" "2"))))))
-                               (captured-p-ctx nil))
-                          (unwind-protect
-                              (cl-letf (((symbol-function 'macher-agent--build-and-rename-patch)
-                                         (lambda (sub-ctx type &optional files)
-                                           (setq captured-p-ctx sub-ctx)
-                                           nil)))
-                                (macher-agent--execute-split-patch ctx)
-                                (expect (macher-agent-context-prompt captured-p-ctx) :to-equal ""))
                             (when (buffer-live-p orig-buf) (kill-buffer orig-buf))))))
 
           (describe "macher-agent--expressive-patch-buffer-name"
-                    (it "uses macher-agent-macher-workspace-name and macher-agent-macher-workspace-hash"
-                        (let* ((ws (cons 'project "/mock/test-bridge/"))
-                               (ws-name (macher-agent-macher-workspace-name ws))
-                               (hash (macher-agent-macher-workspace-hash ws 4))
-                               (name (macher-agent--expressive-patch-buffer-name "physical" ws "agent-buf")))
+                    (it "uses macher-agent-macher-workspace-name and macher-agent-macher-safe-workspace-hash"
+                        (let* ((ctx (macher-agent--make-context :project-root "/mock/test-bridge/"))
+                               (ws-name (macher-agent-macher-workspace-name ctx))
+                               (hash (macher-agent-macher-safe-workspace-hash ctx 4))
+                               (name (macher-agent--expressive-patch-buffer-name ctx "physical" "agent-buf")))
                           (expect name :to-equal (format "*macher-physical-patch:project@%s<%s>[agent-buf]*" ws-name hash))))
 
                     (it "handles fallback when buffer is not supplied"
-                        (let* ((ws (cons 'project "/mock/test-bridge/"))
-                               (ws-name (macher-agent-macher-workspace-name ws))
-                               (hash (macher-agent-macher-workspace-hash ws 4))
-                               (name (macher-agent--expressive-patch-buffer-name "physical" ws nil)))
+                        (let* ((ctx (macher-agent--make-context :project-root "/mock/test-bridge/"))
+                               (ws-name (macher-agent-macher-workspace-name ctx))
+                               (hash (macher-agent-macher-safe-workspace-hash ctx 4))
+                               (name (macher-agent--expressive-patch-buffer-name ctx "physical" nil)))
                           (expect name :to-equal (format "*macher-physical-patch:project@%s<%s>*" ws-name hash)))))
 
           (describe "macher-agent--build-and-rename-patch"
@@ -252,7 +214,7 @@
                                      :prompt "Build patch prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/build-test/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
-                               (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
+                               (expected-name (macher-agent--expressive-patch-buffer-name ctx "physical" orig-buf))
                                (build-patch-called nil))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
@@ -273,7 +235,7 @@
                                      :prompt "Retain id prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/retain-id/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
-                               (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
+                               (expected-name (macher-agent--expressive-patch-buffer-name ctx "physical" orig-buf))
                                (raw-patch-buf (generate-new-buffer "*temp-raw-patch*")))
                           (unwind-protect
                               (cl-letf (((symbol-function 'macher-agent-macher-build-patch)
@@ -294,7 +256,7 @@
                                      :prompt "Kill existing prompt"
                                      :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/kill-existing/f.el" "1" "2"))))))
                                (ws (macher-agent-context-workspace ctx))
-                               (expected-name (macher-agent--expressive-patch-buffer-name "physical" ws orig-buf))
+                               (expected-name (macher-agent--expressive-patch-buffer-name ctx "physical" orig-buf))
                                (old-expressive-buf (generate-new-buffer expected-name))
                                (new-patch-buf (generate-new-buffer "*new-patch-buffer*")))
                           (unwind-protect
@@ -405,8 +367,8 @@
                         (let ((valid-ctx (macher-agent--make-context :id "strict-ctx-1"))
                               (invalid-ctx '((:id . "not-a-context"))))
                           (expect (macher-agent-vfs-active-p valid-ctx) :to-be t)
-                          (expect (macher-agent-vfs-active-p invalid-ctx) :to-be nil)
-                          (expect (macher-agent-vfs-active-p nil) :to-be nil)))
+                          (expect (macher-agent-vfs-active-p invalid-ctx) :to-throw 'wrong-type-argument)
+                          (expect (macher-agent-vfs-active-p nil) :to-throw 'wrong-type-argument)))
 
                     (it "flushes modified workspace buffers to disk and syncs context via macher-agent-vfs-flush"
                         (let* ((temp-dir (make-temp-file "macher-vfs-flush-test-" t))

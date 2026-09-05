@@ -47,24 +47,6 @@
                             (when (buffer-live-p target-buf)
                               (kill-buffer target-buf)))))
 
-                    (it "delegates UI spoofing to macher-agent-gptel-spoof-tool-ui in display-ptc-tool-execution"
-                        (let* ((mock-ctx (macher-agent--make-context :id "ctx-ui" :project-root "/mock/ui/"))
-                               (target-buf (generate-new-buffer " *test-ui-buf*"))
-                               (spoofed-buf nil)
-                               (spoofed-tool nil))
-                          (unwind-protect
-                              (cl-letf (((symbol-function 'macher-agent-gptel-spoof-tool-ui)
-                                         (lambda (buf tool-name)
-                                           (setq spoofed-buf buf)
-                                           (setq spoofed-tool tool-name)))
-                                        ((symbol-function 'macher-agent-resolve-tool)
-                                         (lambda (_name &rest _) nil)))
-                                (macher-agent--display-ptc-tool-execution 'custom-test-primitive '(:key "val") mock-ctx target-buf)
-                                (expect spoofed-buf :to-equal target-buf)
-                                (expect spoofed-tool :to-equal "custom_test_primitive"))
-                            (when (buffer-live-p target-buf)
-                              (kill-buffer target-buf)))))
-
                     (it "invokes on-error when script execution fails"
                         (let* ((mock-ctx (macher-agent--make-context :id "ctx-err" :project-root "/mock/err/"))
                                (target-buf (generate-new-buffer " *test-err-buf*"))
@@ -191,12 +173,12 @@
                             (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal updated-payload))))
 
                     (it "returns nil gracefully when get-state or set-state is called on non-context objects"
-                        (expect (macher-agent-sandbox-get-state nil) :to-be nil)
-                        (expect (macher-agent-sandbox-get-state '((:sandbox . :dummy))) :to-be nil)
-                        (expect (macher-agent-sandbox-get-state "not-a-context") :to-be nil)
-                        (expect (macher-agent-sandbox-set-state nil '(:active-primitives ())) :to-be nil)
-                        (expect (macher-agent-sandbox-set-state '((:sandbox . :dummy)) '(:active-primitives ())) :to-be nil)
-                        (expect (macher-agent-sandbox-set-state "not-a-context" '(:active-primitives ())) :to-be nil))))
+                        (expect (macher-agent-sandbox-get-state nil) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-get-state '((:sandbox . :dummy))) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-get-state "not-a-context") :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state nil '(:active-primitives ())) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state '((:sandbox . :dummy)) '(:active-primitives ())) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state "not-a-context" '(:active-primitives ())) :to-throw 'wrong-type-argument))))
 
 (provide 'macher-agent-sandbox-test)
 ;;; macher-agent-sandbox-test.el ends here

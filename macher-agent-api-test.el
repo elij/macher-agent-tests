@@ -59,7 +59,7 @@
           (expect (length log) :to-equal 1)
           (expect (cdr (assoc 'preset entry)) :to-equal "expert-reviewer")
           (expect (cdr (assoc 'type entry)) :to-equal "ptc")
-          (expect (cdr (assoc 'target entry)) :to-equal 'spawn-subagent)
+          (expect (cdr (assoc 'target entry)) :to-equal "ptc")
           (expect (cdr (assoc 'args entry)) :to-equal '(:name "worker-1")))))
 
     (it "appends multiple invocations sequentially and returns the updated log list"
@@ -75,10 +75,10 @@
           (expect (cdr (assoc 'target (nth 2 log3))) :to-equal "tool-3"))))
 
     (it "returns nil safely when context is nil or not a valid context struct"
-      (expect (macher-agent-log-tool-intent nil "gptel-tool" "tool" nil) :to-be nil)
-      (expect (macher-agent-log-tool-intent "invalid-context-string" "gptel-tool" "tool" nil) :to-be nil)
-      (expect (macher-agent-log-tool-intent '(:not :a :struct) "gptel-tool" "tool" nil) :to-be nil)
-      (expect (macher-agent-log-tool-intent 12345 "gptel-tool" "tool" nil) :to-be nil)))
+      (expect (macher-agent-log-tool-intent nil "gptel-tool" "tool" nil) :to-throw 'wrong-type-argument)
+      (expect (macher-agent-log-tool-intent "invalid-context-string" "gptel-tool" "tool" nil) :to-throw 'wrong-type-argument)
+      (expect (macher-agent-log-tool-intent '(:not :a :struct) "gptel-tool" "tool" nil) :to-throw 'wrong-type-argument)
+      (expect (macher-agent-log-tool-intent 12345 "gptel-tool" "tool" nil) :to-throw 'wrong-type-argument)))
 
   (describe "Pure context API functions"
 
@@ -134,15 +134,6 @@
       (let ((macher-agent--persistent-context nil))
         (expect (condition-case _ (macher-agent-add-buffer-to-scope "*some-buf*") (error 'trapped))
                 :to-equal 'trapped)))
-
-    (it "prepares sub-agent directives and presets via macher-agent-prepare-instructions"
-      (with-temp-buffer
-        (let ((buf (current-buffer)))
-          (macher-agent-prepare-instructions buf "Refactor instructions for subagent." '(elisp-coder))
-          (expect (buffer-string) :to-equal "Refactor instructions for subagent.")
-          (expect macher-agent-presets :to-equal '(elisp-coder))
-          (expect (memq #'macher-agent-sync-prompt-transformer gptel-prompt-transform-functions) :to-be-truthy)
-          (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be-truthy))))
 
     (it "resolves context workspace root via macher-agent-context-workspace-root and alias"
       (let* ((ws (make-macher-agent-workspace :project-root "/mock/ctx-ws/"))

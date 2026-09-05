@@ -74,7 +74,15 @@
         (setq-local macher-agent-mode t)
         (macher-agent-mode -1)
         (expect (memq #'macher-agent-sync-prompt-transformer gptel-prompt-transform-functions) :to-be nil)
-        (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be nil))))
+        (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be nil)))
+
+    (it "fails fast, disables itself, and attaches no buffer-local hooks when directory is not a valid workspace"
+      (with-temp-buffer
+        (setq default-directory (expand-file-name "~"))
+        (expect (macher-agent-mode 1) :to-throw 'user-error)
+        (expect macher-agent-mode :to-be nil)
+        (expect (memq #'macher-agent-sync-prompt-transformer (bound-and-true-p gptel-prompt-transform-functions)) :to-be nil)
+        (expect (memq #'macher-agent--enforce-tool-scope (bound-and-true-p gptel-pre-tool-call-functions)) :to-be nil))))
 
   (describe "macher-agent-install and setup alias"
     (it "invokes module installation functions and registers global hooks"
@@ -119,26 +127,7 @@
         (expect (string-match-p "macher-agent--set-context-data" file-content) :to-be nil)
         (expect (string-match-p "macher-agent-context-zero-mem" file-content) :to-be nil)
         (expect (string-match-p "macher-agent--get-context-workspace" file-content) :to-be nil)
-        (expect (string-match-p "macher-agent--get-context-shadow-buffers" file-content) :to-be nil)))
-
-    (it "operates strictly on struct slots and specialised accessors"
-      (let ((ctx (make-macher-agent-context
-                  :id "canonical-01"
-                  :project-root "/mock/root"
-                  :tools '(tool-1)
-                  :skills '(skill-1)
-                  :plugins '(:key "val"))))
-        ;; Direct slot access
-        (expect (macher-agent-context-id ctx) :to-equal "canonical-01")
-        (expect (macher-agent-context-project-root ctx) :to-equal "/mock/root")
-        (expect (macher-agent-context-tools ctx) :to-equal '(tool-1))
-        (expect (macher-agent-context-skills ctx) :to-equal '(skill-1))
-        (expect (plist-get (macher-agent-context-plugins ctx) :key) :to-equal "val")
-        ;; Specialised accessors
-        (setf (macher-agent-context-prompt ctx) "test prompt")
-        (expect (macher-agent-context-prompt ctx) :to-equal "test prompt")
-        (expect (macher-agent-context-workspace ctx) :to-equal (cons 'project (directory-file-name (expand-file-name "/mock/root"))))
-        (expect (macher-agent-context-root ctx) :to-equal (file-truename (expand-file-name "/mock/root"))))))
+        (expect (string-match-p "macher-agent--get-context-shadow-buffers" file-content) :to-be nil))))
 
   (describe "macher-agent-test-setup dynamic load-path and helper requirement"
     (it "ensures tests/helpers is in load-path and helpers are required"

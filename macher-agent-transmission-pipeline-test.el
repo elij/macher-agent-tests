@@ -24,8 +24,9 @@
                   (insert resp))
                 (insert "Latest user query content")
                 (let ((macher-agent-max-context-chars '((gpt-4o . 25) (nil . 2000000)))
-                      (gptel-model 'gpt-4o))
-                  (macher-agent-memory-pipe--truncate-buffer nil (current-buffer) nil nil nil))
+                      (gptel-model 'gpt-4o)
+                      (state (make-macher-agent-transmission-state :target-buffer (current-buffer))))
+                  (macher-agent-memory-pipe--truncate-buffer state))
                 (expect (buffer-string) :to-match "Latest user query content")))
 
           (describe "Refactored Unified Transmission Reducer Pipeline"
@@ -42,8 +43,8 @@
                           ;; 1. Core directive when submit_task_result is present
                           (with-current-buffer init-buf
                             (setq-local macher-agent--boot-directive "Execute boot setup now."))
-                          (setq state1 (macher-agent-pipe--init-core-directives state1 init-buf nil nil nil))
-                          (setq state1 (macher-agent-pipe--append-boot-directive state1 init-buf nil nil nil))
+                          (setq state1 (macher-agent-pipe--init-core-directives state1))
+                          (setq state1 (macher-agent-pipe--append-boot-directive state1))
                           (expect (length (macher-agent-transmission-state-directives state1)) :to-equal 2)
                           (expect (car (macher-agent-transmission-state-directives state1)) :to-equal "Execute boot setup now.")
                           (expect (cadr (macher-agent-transmission-state-directives state1)) :to-match "CRITICAL DIRECTIVE:")
@@ -53,7 +54,7 @@
                             (setq-local macher-agent--boot-directive "Execute boot setup now.")
                             (insert "Previous assistant response")
                             (put-text-property (point-min) (point-max) 'gptel 'response))
-                          (setq state2 (macher-agent-pipe--append-boot-directive state2 subseq-buf nil nil nil))
+                          (setq state2 (macher-agent-pipe--append-boot-directive state2))
                           (expect (macher-agent-transmission-state-directives state2) :to-be nil)
 
                           (kill-buffer init-buf)
@@ -70,9 +71,9 @@
                                                                      :args '((:name "path" :type "string")))))))
                           (with-current-buffer orig-buf
                             (macher-agent-add-pending-instruction "Thought 1"))
-                          (setq state (macher-agent-pipe--drain-thought-queue state orig-buf nil nil nil))
-                          (setq state (macher-agent-sandbox-append-ptc-directive state orig-buf nil nil nil))
-                          (setq state (macher-agent-pipe--compile-directives state orig-buf nil nil nil))
+                          (setq state (macher-agent-pipe--drain-thought-queue state))
+                          (setq state (macher-agent-sandbox-append-ptc-directive state))
+                          (setq state (macher-agent-pipe--compile-directives state))
                           (let ((compiled (macher-agent-transmission-state-compiled-prompt state)))
                             (expect compiled :to-match "Base System Prompt")
                             (expect compiled :to-match "USER OVERRIDE DIRECTIVE:\nThought 1")
@@ -81,7 +82,8 @@
 
           (it "triggers flush hook on completion when FSM transitions to DONE"
               (let* ((buf (generate-new-buffer "*test-trigger-flush-hook*"))
-                     (mock-ctx (macher-agent--make-vfs-context :contents nil))
+                     (ws (make-macher-agent-workspace :project-root "/mock/proj"))
+                     (mock-ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
                      (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
                                           :state 'DONE))
                      (flush-called nil)

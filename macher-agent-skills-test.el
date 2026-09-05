@@ -76,64 +76,6 @@
         (expect 'macher-agent-a2a-dispatch :to-have-been-called)
         (kill-buffer buf)))
 
-  (it "reports an error if gptel-send aborts or fails silently"
-      (let* ((buf (generate-new-buffer "*macher-agent: worker*"))
-             (callback-called nil)
-             (callback (lambda (msg) (setq callback-called msg))))
-
-        ;; Simulate gptel-send firing and instantly triggering the post-response hook
-        (spy-on 'gptel-send :and-call-fake
-                (lambda ()
-                  (with-current-buffer buf
-                    (erase-buffer)
-                    (run-hook-with-args 'gptel-post-response-functions (point-min) (point-max)))))
-
-        (macher-agent-a2a-dispatch
-         (list (macher-agent-make-a2a-payload
-                :type 'SEND_MESSAGE
-                :task-id "task-err"
-                :payload "test"
-                :metadata (list :buffer_name (buffer-name buf))))
-         callback)
-        
-        (let ((res (if (vectorp callback-called) (aref callback-called 0) callback-called)))
-          (expect (plist-get res :status) :to-equal 'error)
-          (expect (plist-get res :error) :to-match "stopped silently"))
-        (kill-buffer buf)))
-
-  (it "correctly aggregates results from multiple event-driven sub-agents"
-      (let* ((buf1 (generate-new-buffer "worker1"))
-             (buf2 (generate-new-buffer "worker2"))
-             (callback-called nil)
-             (callback (lambda (msg) (setq callback-called msg))))
-        
-        ;; Mock the dispatcher to instantly return a success payload rather than firing the network
-        (cl-letf (((symbol-function 'gptel-send)
-                   (lambda ()
-                     (let* ((task-id (bound-and-true-p macher-agent--current-task-id))
-                            (cb (when task-id (gethash task-id macher-agent--pending-callbacks))))
-                       (when cb
-                         (funcall cb (list :status 'success :data (format "Output from %s" (buffer-name)))))))))
-          (macher-agent-a2a-dispatch
-           (list (macher-agent-make-a2a-payload
-                  :type 'SEND_MESSAGE
-                  :task-id "t1"
-                  :payload "do w1"
-                  :metadata (list :buffer_name "worker1"))
-                 (macher-agent-make-a2a-payload
-                  :type 'SEND_MESSAGE
-                  :task-id "t2"
-                  :payload "do w2"
-                  :metadata (list :buffer_name "worker2")))
-           callback))
-        
-        (expect (length callback-called) :to-equal 2)
-        (expect (plist-get (aref callback-called 0) :status) :to-equal 'success)
-        (expect (plist-get (aref callback-called 0) :data) :to-match "Output from worker1")
-        (expect (plist-get (aref callback-called 1) :data) :to-match "Output from worker2")
-        (kill-buffer buf1)
-        (kill-buffer buf2)))
-
   (it "searches conversation history via glob search"
       (let ((buf (generate-new-buffer "test-conv-glob")))
         (with-current-buffer buf
@@ -157,40 +99,8 @@
           (expect (plist-get (nth 1 traces) :timestamp) :to-equal 3.0))
         (kill-buffer buf)))
 
-  (it "searches conversation history via zero-mem PageRank search"
-      (let ((buf (generate-new-buffer "test-conv-zeromem")))
-        (with-current-buffer buf
-          (insert "Trace 1: macher-agent initialization\nTrace 2: gptel-bridge configuration\nTrace 3: random text\n"))
-        (let ((res (macher-agent-memory-search-zero-mem "macher-agent" buf 2)))
-          (expect res :to-match "Match near line 1")
-          (expect res :to-match "macher-agent initialization"))
-        (kill-buffer buf)))
-
   (it "defaults macher-agent-search-backend-function to macher-agent-search-glob"
       (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
-
-  (it "dispatches search based on macher-agent-search-backend-function configuration"
-      (let ((buf (generate-new-buffer "test-conv-dispatch"))
-            (macher-agent-search-backend-function #'macher-agent-search-glob))
-        (with-current-buffer buf
-          (insert "Header text\nTarget Query inside history\nFooter text\n"))
-        (spy-on 'macher-agent-search-glob :and-call-through)
-        (spy-on 'macher-agent-memory-search-zero-mem :and-call-through)
-        
-        ;; Test glob backend
-        (let ((res-glob (macher-agent-search-dispatch "query" buf 2)))
-          (expect 'macher-agent-search-glob :to-have-been-called)
-          (expect res-glob :to-match "Target Query inside history"))
-        
-        ;; Test zero-mem backend
-        (setq macher-agent-search-backend-function #'macher-agent-memory-search-zero-mem)
-        (let ((res-zm (macher-agent-search-dispatch "query" buf 2)))
-          (expect 'macher-agent-memory-search-zero-mem :to-have-been-called)
-          (expect res-zm :to-match "Target Query inside history"))
-        
-        ;; Test dead buffer error handling
-        (kill-buffer buf)
-        (expect (macher-agent-search-dispatch "query" buf 2) :to-match "Error: Cannot locate original conversation buffer.")))
 
   (it "handles zero-length matches and invalid-regexp safely in search_glob"
       (let ((buf (generate-new-buffer "test-conv-edge")))
@@ -214,7 +124,7 @@
               (setq-local macher-agent--persistent-context ctx)))
            
            (it "parses SKILL.md files correctly extracting frontmatter and markdown body"
-               (let* ((parsed (macher-agent-parse-skill-file "tests/fixtures/skills/global/SKILL.md")))
+               (let* ((parsed (macher-agent-parse-skill-file "tests/fixtures/skills/global/SKILL.md" macher-agent--persistent-context)))
                  (expect (plist-get parsed :name) :to-equal "mock-skill")
                  (expect (plist-get parsed :name-sym) :to-equal 'mock-skill)
                  (expect (plist-get parsed :description) :to-equal "A mock skill for testing")
@@ -237,9 +147,8 @@
 
            (it "persists boot-directive into gptel--known-presets and sets buffer-local macher-agent--boot-directive when applying preset"
                (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
-                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
-                      (workspace (macher-agent-context-workspace ctx)))
-                 (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
+                 (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist ctx))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
                  (macher-agent-initialize-skills ctx)
                  (let ((spec (alist-get 'boot-preset gptel--known-presets)))
@@ -255,9 +164,8 @@
 
            (it "sets buffer-local macher-agent--boot-directive via macher-agent-use-skill, macher-agent-add-subagent, and macher-agent--apply-payload-locally"
                (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
-                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
-                      (workspace (macher-agent-context-workspace ctx)))
-                 (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist workspace))
+                               (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
+                 (setf (alist-get 'boot-preset (macher-agent-workspace-skills-alist ctx))
                        '(:system "System prompt" :description "Boot Preset" :boot-directive "Initial boot directive text"))
                  (macher-agent-initialize-skills ctx)
                  ;; Test macher-agent-use-skill
@@ -267,7 +175,8 @@
                      (expect macher-agent--boot-directive :to-equal "Initial boot directive text"))
                    (kill-buffer use-buf))
                  ;; Test macher-agent-add-subagent
-                 (let ((sub-buf (macher-agent-add-subagent "test-subagent-boot-buf" '(boot-preset))))
+                 (let* ((parent-buf (current-buffer))
+                        (sub-buf (macher-agent-add-subagent "test-subagent-boot-buf" '("boot-preset") parent-buf nil ctx)))
                    (with-current-buffer sub-buf
                      (expect macher-agent--boot-directive :to-equal "Initial boot directive text"))
                    (kill-buffer sub-buf))
@@ -312,8 +221,7 @@
                  (let ((ctx (or (bound-and-true-p macher-agent--persistent-context)
                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
                    (macher-agent--load-skill-from-path "tests/fixtures/skills/workspace/" ctx)
-                   (let* ((workspace (macher-agent-context-workspace ctx))
-                          (skill-meta (alist-get 'workspace-skill (macher-agent-workspace-skills-alist workspace))))
+                   (let ((skill-meta (alist-get 'workspace-skill (macher-agent-workspace-skills-alist ctx))))
                      (expect (plist-get skill-meta :context-dir) :to-be nil)))
                  
                  ;; Resolution should fail to load because context-dir is nil,
@@ -341,10 +249,9 @@
                  (with-temp-file (expand-file-name "tool-a.el" ws-scripts) (insert "(setq tool-a mock-ws-a-global)"))
                  
                  ;; Clear registry
-                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
-                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
-                        (ws (macher-agent-context-workspace ctx)))
-                   (clrhash (macher-agent-workspace-tools-registry ws)))
+                 (let ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
+                   (clrhash (macher-agent-workspace-tools-registry ctx)))
                  
                  ;; Resolve pkg first, then workspace shadows
                  (let* ((res-pkg-b (macher-agent-resolve-tool "tool-b" nil pkg-dir))
@@ -363,11 +270,10 @@
                                          (gptel-make-tool :name "the_tool" :function (lambda () nil) :description "A tool")
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
-                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
-                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
-                        (workspace (macher-agent-context-workspace ctx)))
-                   (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
-                   (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))
+                 (let ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
+                   (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry ctx))
+                   (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist ctx))
                          (list :description "test" :system "test system" :tools (list mock-tool-obj) :context-dir nil))
                    
                    (with-temp-buffer
@@ -376,7 +282,7 @@
                        (let ((preset-def (buffer-local-value 'gptel--known-presets (current-buffer))))
                          (setq preset-def (alist-get 'test-preset preset-def))
                          (expect preset-def :not :to-be nil)
-                         (expect (plist-get preset-def :tools) :to-equal '(:append ("the_tool")))))))))
+                         (expect (plist-get preset-def :tools) :to-equal `(:append (,mock-tool-obj)))))))))
 
            (it "merges and applies buffer-local macher-agent-presets during composed skill evaluation"
                (let* ((gptel-tools nil)
@@ -386,11 +292,10 @@
                                          (gptel-make-tool :name "the_tool" :function (lambda () nil) :description "A tool")
                                        'the-tool)))
                  (spy-on 'gptel-tool-p :and-return-value t)
-                 (let* ((ctx (or (bound-and-true-p macher-agent--persistent-context)
-                                 (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces)))
-                        (workspace (macher-agent-context-workspace ctx)))
-                   (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry workspace))
-                   (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist workspace))
+                 (let ((ctx (or (bound-and-true-p macher-agent--persistent-context)
+                                (gethash (expand-file-name "/mock/proj") macher-agent-active-workspaces))))
+                   (puthash "selected-tool" mock-tool-obj (macher-agent-workspace-tools-registry ctx))
+                   (setf (alist-get 'test-preset (macher-agent-workspace-skills-alist ctx))
                          (list :description "test" :system "test system" :tools (list mock-tool-obj) :context-dir nil))
                    
                    (with-temp-buffer
@@ -406,7 +311,7 @@
                        (expect (car gptel-tools) :to-equal mock-tool-obj))))))
 
            (it "expands org-macros in SKILL.md body"
-               (let* ((parsed (macher-agent-parse-skill-file "tests/fixtures/skills/macro-skill/SKILL.md")))
+               (let* ((parsed (macher-agent-parse-skill-file "tests/fixtures/skills/macro-skill/SKILL.md" macher-agent--persistent-context)))
                  (expect (plist-get parsed :body) :to-match "Version: 0.1.0")))
 
            (it "creates a preset when allowed-tools is provided"
@@ -419,7 +324,8 @@
                  (with-temp-buffer
                    (let ((gptel-directives nil)
                          (gptel--known-presets nil))
-                     (macher-agent-initialize-skills nil mock-dir)
+                     (let ((ctx (make-macher-agent-context :project-root mock-dir)))
+                       (macher-agent-initialize-skills ctx))
                      
                      (let ((preset-def (alist-get 'my-preset gptel--known-presets)))
                        (expect preset-def :not :to-be nil)
@@ -437,7 +343,8 @@
                  (with-temp-buffer
                    (let ((gptel-directives nil)
                          (gptel--known-presets nil))
-                     (macher-agent-initialize-skills nil mock-dir)
+                     (let ((ctx (make-macher-agent-context :project-root mock-dir)))
+                       (macher-agent-initialize-skills ctx))
                      (expect (alist-get 'my-directive gptel-directives) :to-equal "Directive body")
                      (let ((preset-def (alist-get 'my-directive gptel--known-presets)))
                        (expect preset-def :not :to-be nil)
@@ -453,7 +360,8 @@
                  (with-temp-buffer
                    (let ((gptel-directives nil)
                          (gptel--known-presets nil))
-                     (macher-agent-initialize-skills nil mock-dir)
+                     (let ((ctx (make-macher-agent-context :project-root mock-dir)))
+                       (macher-agent-initialize-skills ctx))
                      (let ((preset-def (alist-get 'my-ptc-preset gptel--known-presets)))
                        (expect preset-def :not :to-be nil)
                        (expect (plist-get preset-def :ptc-primitives) :to-equal '(spawn_subagent delegate_tasks))

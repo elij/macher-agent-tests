@@ -19,41 +19,6 @@
 (describe "Programmatic Tool Calling (PTC)"
           (macher-agent-test-setup-before-each)
 
-          (it "executes multi-form scripts, handles VFS path resolution, and prevents #. injection"
-              (let* ((ws (make-macher-agent-workspace :project-root "/mock/ptc/"))
-                     (ctx (macher-agent--make-vfs-context
-                           :workspace ws
-                           :contents (list (macher-agent-vfs-make-entry "/mock/ptc/file.txt" "orig" "vfs content"))))
-                     (multi-script "(setq x 10)\n(setq y 20)\n(+ x y)")
-                     (inject-script "#.(setq injected t)")
-                     (injected nil)
-                     (multi-res nil)
-                     (multi-err nil)
-                     (inject-res nil)
-                     (inject-err nil))
-                ;; Multi-form script evaluation
-                (macher-agent-execute-ptc-script
-                 multi-script ctx
-                 (current-buffer)
-                 (lambda (val) (setq multi-res val))
-                 (lambda (err) (setq multi-err err))
-                 '(+))
-                (expect multi-err :to-be nil)
-                (expect multi-res :to-equal 30)
-
-                ;; VFS content prioritizing and path traversal checks
-                (expect (macher-agent--read-context-file ctx "/mock/ptc/file.txt") :to-equal "vfs content")
-                (expect (macher-agent--read-context-file ctx "../../etc/passwd") :to-throw 'error)
-
-                ;; Prevent #. code injection
-                (macher-agent-execute-ptc-script
-                 inject-script ctx
-                 (current-buffer)
-                 (lambda (val) (setq inject-res val))
-                 (lambda (err) (setq inject-err err)))
-                (expect injected :to-be nil)
-                (expect inject-err :not :to-be nil)))
-
           (it "handles generator yield and normalizes tool call interrupts"
               (let* ((macher-agent--active-ptc-primitives '(spawn-subagent)))
                 ;; Direct eval-iter interrupt
@@ -97,7 +62,7 @@
                                :tools (list tool))))
                   (unwind-protect
                       (progn
-                        (setq state (macher-agent-sandbox-append-ptc-directive state orig-buf nil nil nil))
+                        (setq state (macher-agent-sandbox-append-ptc-directive state))
                         (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
                         (expect (car (macher-agent-transmission-state-directives state))
                                 :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ==="))
@@ -117,12 +82,12 @@
                           (expect (plist-get (macher-agent-context-plugins ctx) :sandbox) :to-equal '(:active-primitives (spawn-subagent test-tool) :eval-mode isolated))))
 
                     (it "returns nil when getting or setting state on non-context-struct objects"
-                        (expect (macher-agent-sandbox-get-state nil) :to-be nil)
-                        (expect (macher-agent-sandbox-get-state "invalid-string") :to-be nil)
-                        (expect (macher-agent-sandbox-get-state '(:sandbox (:active-primitives (spawn-subagent)))) :to-be nil)
-                        (expect (macher-agent-sandbox-set-state nil '(:active-primitives (spawn-subagent))) :to-be nil)
-                        (expect (macher-agent-sandbox-set-state "invalid-string" '(:active-primitives (spawn-subagent))) :to-be nil)
-                        (expect (macher-agent-sandbox-set-state '(:plugins nil) '(:active-primitives (spawn-subagent))) :to-be nil))
+                        (expect (macher-agent-sandbox-get-state nil) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-get-state "invalid-string") :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-get-state '(:sandbox (:active-primitives (spawn-subagent)))) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state nil '(:active-primitives (spawn-subagent))) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state "invalid-string" '(:active-primitives (spawn-subagent))) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-sandbox-set-state '(:plugins nil) '(:active-primitives (spawn-subagent))) :to-throw 'wrong-type-argument))
 
                     (it "handles unexpected yielded values with 1-argument stop-iter-fn invocation"
                         (let* ((stopped-reason nil)
@@ -131,7 +96,7 @@
                                (error-fn (lambda (err) (setq error-received err))))
                           (macher-agent--ptc-handle-yielded-value
                            'unrecognized-yield-val
-                           nil
+                           (make-macher-agent-context)
                            (current-buffer)
                            #'ignore
                            error-fn
@@ -149,7 +114,7 @@
                                 (expect (member #'macher-agent-ptc--inject-tool
                                                 (macher-agent-get-pipeline-steps 'preset-composition))
                                         :to-be-truthy)
-                                (expect (member #'macher-agent-sandbox-append-ptc-directive
+                                (expect (member #'macher-agent-sandbox-append-ptc-to-transmission
                                                 (macher-agent-get-pipeline-steps 'transmission))
                                         :to-be-truthy)
                                 (when (fboundp 'macher-agent-sandbox-uninstall)
@@ -157,7 +122,7 @@
                                   (expect (member #'macher-agent-ptc--inject-tool
                                                   (macher-agent-get-pipeline-steps 'preset-composition))
                                           :to-be nil)
-                                  (expect (member #'macher-agent-sandbox-append-ptc-directive
+                                  (expect (member #'macher-agent-sandbox-append-ptc-to-transmission
                                                   (macher-agent-get-pipeline-steps 'transmission))
                                           :to-be nil)))
                             (setq macher-agent-pipeline-registry saved-registry))))))

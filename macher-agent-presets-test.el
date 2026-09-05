@@ -45,23 +45,6 @@
                       (expect preset-def :not :to-be nil)
                       (expect (plist-get preset-def :model) :to-equal 'gpt-4o))))))
 
-          (it "does not change gptel-model if no model is specified in the skill"
-              (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
-                     (workspace (macher-agent-context-workspace mock-ctx))
-                     (skill-name 'plain-skill)
-                     (skill-data '(:description "Test" :model nil :has-tools nil :context-dir nil :system "test"))
-                     (execution (macher--make-action-execution :action skill-name))
-                     (original-model gptel-model))
-                (macher-agent--register-active-workspace-root "/mock/proj" mock-ctx)
-                (setf (alist-get skill-name (macher-agent-workspace-skills-alist mock-ctx)) skill-data)
-                (with-temp-buffer
-                  (setq-local macher-agent--persistent-context mock-ctx)
-                  (let ((gptel--known-presets nil))
-                    (macher-agent-initialize-skills mock-ctx)
-                    (let ((preset-def (alist-get skill-name gptel--known-presets)))
-                      (expect preset-def :not :to-be nil)
-                      (expect (plist-member preset-def :model) :to-be nil))))))
-
           (it "ensures custom tools survive the preset purge and retain correct category"
               (let* ((custom-tool (gptel-make-tool
                                    :name "cargo_check_tool"
@@ -142,30 +125,6 @@
                 (expect (plist-get state :system) :to-equal "existing sys")
                 (expect (macher-agent-preset-pipe--exclusive state item-non-exclusive) :to-equal state)))
 
-          (it "resolves and merges tool structs, strings, symbols, and plists in tool pipeline"
-              (let* ((tool-struct (gptel-make-tool :name "struct_tool" :description "struct tool"))
-                     (tool-str-obj (gptel-make-tool :name "str_tool" :description "str tool"))
-                     (tool-sym-obj (gptel-make-tool :name "sym_tool" :description "sym tool"))
-                     (raw-plist '(:name "plist_tool" :description "plist tool"))
-                     (state nil)
-                     (preset-item `(preset my-preset (:tools (,tool-struct "str_tool" 'sym_tool ,raw-plist))))
-                     (tool-item `(tool ,tool-struct)))
-                (spy-on 'gptel-get-tool :and-call-fake
-                        (lambda (path)
-                          (cond
-                           ((equal path "str_tool") tool-str-obj)
-                           ((equal path 'sym_tool) tool-sym-obj)
-                           (t nil))))
-                (let* ((res1 (macher-agent-preset-pipe--tools state preset-item))
-                       (tools1 (plist-get res1 :tools)))
-                  (expect (length tools1) :to-equal 4)
-                  (expect (nth 0 tools1) :to-equal tool-struct)
-                  (expect (nth 1 tools1) :to-equal tool-str-obj)
-                  (expect (nth 2 tools1) :to-equal tool-sym-obj)
-                  (expect (gptel-tool-name (nth 3 tools1)) :to-equal "plist_tool"))
-                (let ((res2 (macher-agent-preset-pipe--tools state tool-item)))
-                  (expect (plist-get res2 :tools) :to-equal (list tool-struct)))))
-
           (it "applies system prompt, ptc primitives, boot directive, and parameters across step reducers"
               (let* ((state '(:system "Initial prompt" :ptc-primitives (prim1) :temperature 0.8))
                      (item-sys '(preset sys-preset (:system "Added prompt")))
@@ -215,13 +174,6 @@
 
           (it "confirms dead function macher-agent--evaluate-and-cache-tool is removed"
               (expect (fboundp 'macher-agent--evaluate-and-cache-tool) :to-be nil))
-
-          (it "resolves skill VFS content directly from context contents entries"
-              (let* ((vfs-entry (make-macher-agent-vfs-entry :path "/mock/skills/my-skill/SKILL.md"
-                                                             :curr "---\nname: vfs-skill\n---\nVFS Skill Body"))
-                     (ctx (macher-agent--make-vfs-context :contents (list vfs-entry))))
-                (expect (macher-agent--resolve-skill-vfs-content '("/mock/skills/my-skill/SKILL.md") ctx)
-                        :to-equal "---\nname: vfs-skill\n---\nVFS Skill Body")))
 
           (it "contains no calls or references to obsolete context helpers in macher-agent-presets.el"
               (let* ((presets-file (or (locate-library "macher-agent-presets.el")

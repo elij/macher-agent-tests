@@ -46,8 +46,7 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer child-buf
                              :tools nil))
-                     (updated-state (macher-agent-parent-memory-pipe--inject-tool
-                                     state child-buf nil nil nil))
+                     (updated-state (macher-agent-parent-memory-pipe--inject-tool state))
                      (tool-names (mapcar #'macher-agent-canonical-tool-name
                                          (macher-agent-transmission-state-tools updated-state))))
                 (expect (member "search_parent_conversation_history" tool-names) :to-be-truthy)))
@@ -64,10 +63,8 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer child-buf
                              :tools nil))
-                     (state1 (macher-agent-parent-memory-pipe--inject-tool
-                              state child-buf nil nil nil))
-                     (state2 (macher-agent-parent-memory-pipe--inject-tool
-                              state1 child-buf nil nil nil))
+                     (state1 (macher-agent-parent-memory-pipe--inject-tool state))
+                     (state2 (macher-agent-parent-memory-pipe--inject-tool state1))
                      (tool-names (mapcar #'macher-agent-canonical-tool-name
                                          (macher-agent-transmission-state-tools state2)))
                      (occurrences (cl-count "search_parent_conversation_history"
@@ -113,8 +110,7 @@
                            :target-buffer child-buf
                            :context ctx
                            :tools nil))
-                   (updated-state (macher-agent-parent-memory-pipe--inject-tool
-                                   state nil nil nil nil))
+                   (updated-state (macher-agent-parent-memory-pipe--inject-tool state))
                    (tool-names (mapcar #'macher-agent-canonical-tool-name
                                        (macher-agent-transmission-state-tools updated-state))))
               (expect (member "search_parent_conversation_history" tool-names) :to-be-truthy))
@@ -129,8 +125,7 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer root-buf
                              :tools nil))
-                     (updated-state (macher-agent-parent-memory-pipe--inject-tool
-                                     state root-buf nil nil nil))
+                     (updated-state (macher-agent-parent-memory-pipe--inject-tool state))
                      (tool-names (mapcar #'macher-agent-canonical-tool-name
                                          (macher-agent-transmission-state-tools updated-state))))
                 (expect (member "search_parent_conversation_history" tool-names) :to-be nil)))
@@ -148,8 +143,7 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer child-buf
                              :tools nil))
-                     (updated-state (macher-agent-parent-memory-pipe--inject-tool
-                                     state child-buf nil nil nil))
+                     (updated-state (macher-agent-parent-memory-pipe--inject-tool state))
                      (tool-names (mapcar #'macher-agent-canonical-tool-name
                                          (macher-agent-transmission-state-tools updated-state))))
                 (expect (member "search_parent_conversation_history" tool-names) :to-be nil)))
@@ -169,8 +163,7 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer child-buf
                              :directives nil))
-                     (updated-state (macher-agent-pipe--inject-parent-context
-                                     state child-buf nil nil nil))
+                     (updated-state (macher-agent-pipe--inject-parent-context state))
                      (dirs (macher-agent-transmission-state-directives updated-state)))
                 (expect (length dirs) :to-be-greater-than 0)
                 (let ((directive-text (string-join dirs "\n\n")))
@@ -194,8 +187,7 @@
                              :target-buffer child-buf
                              :context ctx
                              :directives nil))
-                     (updated-state (macher-agent-pipe--inject-parent-context
-                                     state nil nil nil nil))
+                     (updated-state (macher-agent-pipe--inject-parent-context state))
                      (dirs (macher-agent-transmission-state-directives updated-state)))
                 (expect (length dirs) :to-be-greater-than 0)
                 (let ((directive-text (string-join dirs "\n\n")))
@@ -211,8 +203,7 @@
              (state (make-macher-agent-transmission-state
                      :tools (list tool)
                      :directives nil))
-             (updated-state (macher-agent-parent-memory-pipe--inject-directive
-                             state nil nil nil nil))
+             (updated-state (macher-agent-parent-memory-pipe--inject-directive state))
              (dirs (macher-agent-transmission-state-directives updated-state)))
         (expect (length dirs) :to-equal 1)
         (expect (car dirs) :to-match "search_parent_conversation_history")))
@@ -221,8 +212,7 @@
       (let* ((state (make-macher-agent-transmission-state
                      :tools (list 'other_tool)
                      :directives nil))
-             (updated-state (macher-agent-parent-memory-pipe--inject-directive
-                             state nil nil nil nil))
+             (updated-state (macher-agent-parent-memory-pipe--inject-directive state))
              (dirs (macher-agent-transmission-state-directives updated-state)))
         (expect dirs :to-be nil))))
 
@@ -299,8 +289,7 @@
               (let* ((state (make-macher-agent-transmission-state
                              :target-buffer buf
                              :tools nil))
-                     (updated-state (macher-agent-parent-memory-pipe--inject-tool
-                                     state buf nil nil nil)))
+                     (updated-state (macher-agent-parent-memory-pipe--inject-tool state)))
                 (expect (macher-agent-transmission-state-tools updated-state) :to-be nil)))
           (when (buffer-live-p buf) (kill-buffer buf))
           (when stack-bound
@@ -316,13 +305,13 @@
               (let* ((state-sym (make-macher-agent-transmission-state
                                  :target-buffer buf
                                  :tools (list 'search_conversation_history)))
-                     (res-sym (macher-agent-memory-pipe--inject-tool state-sym buf nil nil nil)))
+                     (res-sym (macher-agent-memory-pipe--inject-tool state-sym)))
                 (expect (length (macher-agent-transmission-state-tools res-sym)) :to-equal 1))
               ;; Test with plist tool already present
               (let* ((state-plist (make-macher-agent-transmission-state
                                    :target-buffer buf
                                    :tools (list '(:name "search_conversation_history"))))
-                     (res-plist (macher-agent-memory-pipe--inject-tool state-plist buf nil nil nil)))
+                     (res-plist (macher-agent-memory-pipe--inject-tool state-plist)))
                 (expect (length (macher-agent-transmission-state-tools res-plist)) :to-equal 1)))
           (when (buffer-live-p buf) (kill-buffer buf)))))))
 

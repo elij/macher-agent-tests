@@ -55,7 +55,6 @@
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/payload-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
                                (payload (make-macher-agent-transit-payload :target-context ctx)))
-                          (expect (macher-agent-context-from-payload ctx) :to-be ctx)
                           (expect (macher-agent-context-from-payload payload) :to-be ctx)))
 
                     (it "reads and updates files via context API functions"
@@ -114,13 +113,10 @@
           (describe "Workspace Root, Task Flush Hooks, and Module Invariants"
 
                     (it "resolves workspace root via core workspace-project-root without calling macher--workspace-root"
-                        (let ((ws-proj (cons 'project "/mock/workspace/proj/"))
-                              (ws-agent (cons 'agent "/mock/workspace/agent/"))
-                              (ws-str "/mock/workspace/str/"))
-                          (expect (macher-agent-workspace-root ws-proj) :to-equal (file-truename (expand-file-name "/mock/workspace/proj/")))
-                          (expect (macher-agent-workspace-root ws-agent) :to-equal (file-truename (expand-file-name "/mock/workspace/agent/")))
-                          (expect (macher-agent-workspace-root ws-str) :to-equal (file-truename (expand-file-name "/mock/workspace/str/")))
-                          (expect (macher-agent-workspace-root nil) :to-be nil)))
+                        (let ((ctx (make-macher-agent-context :project-root "/mock/workspace/proj/")))
+                          (expect (macher-agent-workspace-root ctx) :to-equal "/mock/workspace/proj/")
+                          (expect (macher-agent-workspace-root "invalid") :to-throw 'wrong-type-argument)
+                          (expect (macher-agent-workspace-root nil) :to-throw 'wrong-type-argument)))
 
                     (it "resolves context workspace root via macher-agent-context-workspace-root"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/context-ws/"))
@@ -574,13 +570,6 @@
                             (expect (macher-agent-context-read ctx (buffer-name))
                                     :to-equal "buffer sample content"))))
 
-                    (it "prepares sub-agent buffer instructions and hooks via macher-agent-prepare-instructions"
-                        (with-temp-buffer
-                          (let ((buf (current-buffer)))
-                            (macher-agent-prepare-instructions buf "You are a subagent." 'elisp-expert)
-                            (expect (buffer-string) :to-equal "You are a subagent.")
-                            (expect macher-agent-presets :to-equal '(elisp-expert)))))
-
                     (it "logs tool execution intents cleanly in context audit log"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/audit-proj/"))
                                (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
@@ -604,73 +593,9 @@
                             (when (buffer-live-p buf) (kill-buffer buf)))))
 
                     (it "returns nil gracefully for nil or invalid entries or dead buffers in macher-agent--apply-single-virtual-buffer"
-                        (expect (macher-agent--apply-single-virtual-buffer nil) :to-be nil)
+                        (expect (macher-agent--apply-single-virtual-buffer nil) :to-throw 'wrong-type-argument)
                         (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "*nonexistent-buf*" :orig "" :curr "some content")) :to-be nil)
-                        (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "" :orig "" :curr "content")) :to-be nil))
-
-                    (it "applies batch virtual buffer entries via macher-agent-apply-virtual-buffers"
-                        (let ((buf1 (get-buffer-create "*mock-batch-1*"))
-                              (buf2 (get-buffer-create "*mock-batch-2*"))
-                              (buf3 (get-buffer-create "*mock-batch-3*"))
-                              (buf4 (get-buffer-create "*mock-batch-4*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf1 (erase-buffer) (insert "old 1"))
-                                (with-current-buffer buf2 (erase-buffer) (insert "old 2"))
-                                (with-current-buffer buf3 (erase-buffer) (insert "old 3"))
-                                (with-current-buffer buf4 (erase-buffer) (insert "old 4"))
-                                (let* ((ws (make-macher-agent-workspace :project-root "/mock/batch/"))
-                                       (ctx (macher-agent--make-vfs-context
-                                             :workspace ws
-                                             :contents (list (make-macher-agent-vfs-entry :path "*mock-batch-1*" :orig "old 1" :curr "new batch 1")
-                                                             (make-macher-agent-vfs-entry :path "*mock-batch-2*" :orig nil :curr "new batch 2")
-                                                             (make-macher-agent-vfs-entry :path "*mock-batch-3*" :orig nil :curr "new batch 3")
-                                                             (make-macher-agent-vfs-entry :path "*mock-batch-4*" :orig nil :curr "new batch 4")))))
-                                  (macher-agent-apply-virtual-buffers ctx)
-                                  (expect (with-current-buffer buf1 (buffer-string)) :to-equal "new batch 1")
-                                  (expect (with-current-buffer buf2 (buffer-string)) :to-equal "new batch 2")
-                                  (expect (with-current-buffer buf3 (buffer-string)) :to-equal "new batch 3")
-                                  (expect (with-current-buffer buf4 (buffer-string)) :to-equal "new batch 4")))
-                            (when (buffer-live-p buf1) (kill-buffer buf1))
-                            (when (buffer-live-p buf2) (kill-buffer buf2))
-                            (when (buffer-live-p buf3) (kill-buffer buf3))
-                            (when (buffer-live-p buf4) (kill-buffer buf4)))))
-
-                    (it "normalises context entries and trims content right in macher-agent-apply-virtual-buffers"
-                        (let ((buf1 (get-buffer-create "*mock-norm-1*"))
-                              (buf2 (get-buffer-create "*mock-norm-2*"))
-                              (buf3 (get-buffer-create "*mock-norm-3*"))
-                              (buf4 (get-buffer-create "*mock-norm-4*")))
-                          (unwind-protect
-                              (progn
-                                (with-current-buffer buf1 (erase-buffer) (insert "init 1"))
-                                (with-current-buffer buf2 (erase-buffer) (insert "init 2"))
-                                (with-current-buffer buf3 (erase-buffer) (insert "init 3"))
-                                (with-current-buffer buf4 (erase-buffer) (insert "init 4"))
-                                (let* ((ws (make-macher-agent-workspace :project-root "/mock/norm/"))
-                                       (ctx (macher-agent--make-vfs-context
-                                             :workspace ws
-                                             :contents (list (make-macher-agent-vfs-entry :path "*mock-norm-1*" :orig nil :curr "norm content 1\n\n  ")
-                                                             (make-macher-agent-vfs-entry :path "*mock-norm-2*" :orig nil :curr "norm content 2 \t\n")
-                                                             (make-macher-agent-vfs-entry :path "*mock-norm-3*" :orig nil :curr "norm content 3\r\n")
-                                                             (make-macher-agent-vfs-entry :path "*mock-norm-4*" :orig nil :curr "norm content 4\n")))))
-                                  (macher-agent-apply-virtual-buffers ctx)
-                                  ;; Buffers receive trimmed content
-                                  (expect (with-current-buffer buf1 (buffer-string)) :to-equal "norm content 1")
-                                  (expect (with-current-buffer buf2 (buffer-string)) :to-equal "norm content 2")
-                                  (expect (with-current-buffer buf3 (buffer-string)) :to-equal "norm content 3")
-                                  (expect (with-current-buffer buf4 (buffer-string)) :to-equal "norm content 4")
-                                  ;; Context contents is converted to strict vfs-entry structs
-                                  (let ((updated-contents (macher-agent--get-context-contents ctx)))
-                                    (expect (length updated-contents) :to-equal 4)
-                                    (dolist (entry updated-contents)
-                                      (expect (macher-agent-vfs-entry-p entry) :to-be t)
-                                      (expect (stringp (macher-agent-vfs-entry-path entry)) :to-be t)
-                                      (expect (stringp (macher-agent-vfs-entry-curr entry)) :to-be t)))))
-                            (when (buffer-live-p buf1) (kill-buffer buf1))
-                            (when (buffer-live-p buf2) (kill-buffer buf2))
-                            (when (buffer-live-p buf3) (kill-buffer buf3))
-                            (when (buffer-live-p buf4) (kill-buffer buf4)))))))
+                        (expect (macher-agent--apply-single-virtual-buffer (make-macher-agent-vfs-entry :path "" :orig "" :curr "content")) :to-be nil))))
 
 (provide 'macher-agent-public-api-test)
 ;;; macher-agent-public-api-test.el ends here

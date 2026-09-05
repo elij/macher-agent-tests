@@ -68,15 +68,13 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
      (puthash ws-root ctx macher-agent-active-workspaces)
      (puthash (expand-file-name (macher-agent-root default-directory)) ctx macher-agent-active-workspaces)
      (puthash (file-truename (expand-file-name (macher-agent-root default-directory))) ctx macher-agent-active-workspaces)
-     (macher-agent-initialize-skills
-      ctx (or (bound-and-true-p macher-agent--bundled-skills-dir)
-              (bound-and-true-p macher-agent-bundled-skills-directory)))
+     (macher-agent-initialize-skills ctx)
 
      (let ((gptel-use-curl t)
            (gptel-confirm-tool-calls nil)
            (gptel-backend (gptel-make-openai "Mock" :key "mock-key" :models '(mock-model)))
            (gptel-model 'mock-model)
-           (gptel-tools (hash-table-values (macher-agent-workspace-tools-registry ws))))
+           (gptel-tools (hash-table-values (macher-agent-workspace-tools-registry ctx))))
 
        (cl-letf (((symbol-function 'gptel--get-api-key) 
                   (lambda (&rest _) "mock-key"))

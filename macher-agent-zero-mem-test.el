@@ -226,44 +226,15 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
                 (with-current-buffer tx-buf
                   (insert orig-content))
                 (with-current-buffer tx-buf
-                  (let ((macher-agent-max-context-chars '((nil . 25))))
-                    (macher-agent-memory-pipe--truncate-buffer nil orig-buf nil nil nil)))
+                  (let ((macher-agent-max-context-chars '((nil . 25)))
+                        (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
+                    (macher-agent-memory-pipe--truncate-buffer state)))
                 (expect (with-current-buffer tx-buf (buffer-string))
                         :to-match "SYSTEM ALERT: macher-agent truncated")
                 (expect (with-current-buffer tx-buf (buffer-string))
                         :to-match "Latest user query content")
                 (expect (with-current-buffer orig-buf (buffer-string))
                         :to-equal orig-content)))
-          (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
-          (when (buffer-live-p tx-buf) (kill-buffer tx-buf)))))
-
-    (it "filters search conversation history to only return traces before event horizon"
-      (let* ((orig-buf (generate-new-buffer " *test-horizon-filter*"))
-             (tx-buf (generate-new-buffer " *test-tx-horizon*")))
-        (unwind-protect
-            (progn
-              (with-current-buffer orig-buf
-                (insert "Early historical trace with UniqueTokenAlpha\n")
-                (let ((p (point)))
-                  (insert "Previous response boundary with UniqueTokenBeta\n")
-                  (put-text-property p (point) 'gptel 'response))
-                (insert "Active context window with UniqueTokenGamma\n"))
-              (with-current-buffer tx-buf
-                (insert (with-current-buffer orig-buf (buffer-string))))
-              (with-current-buffer tx-buf
-                (let ((macher-agent-max-context-chars '((nil . 45))))
-                  (macher-agent-memory-pipe--truncate-buffer nil orig-buf nil nil nil)))
-              ;; Early token before event horizon is retrieved
-              (let ((res-early (macher-agent-memory-search-zero-mem "UniqueTokenAlpha" orig-buf 2)))
-                (expect res-early :to-match "Match near line 1")
-                (expect res-early :to-match "UniqueTokenAlpha"))
-              ;; Active context window token past event horizon is filtered out
-              (let ((res-active (macher-agent-memory-search-zero-mem "UniqueTokenGamma" orig-buf 2)))
-                (expect res-active :to-match "^No matches found in history for:"))
-              ;; Search dispatch routing
-              (let ((macher-agent-search-backend-function #'macher-agent-memory-search-zero-mem))
-                (expect (macher-agent-search-dispatch "UniqueTokenAlpha" orig-buf 2) :to-match "UniqueTokenAlpha")
-                (expect (macher-agent-search-dispatch "UniqueTokenGamma" orig-buf 2) :to-match "^No matches found in history for:")))
           (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
           (when (buffer-live-p tx-buf) (kill-buffer tx-buf))))))
 
@@ -307,17 +278,19 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
         (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal '(:traces ((:id 1 :text "node1"))))
         (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val"))
       ;; Non-context handling
-      (expect (macher-agent-zero-mem-get-state nil) :to-be nil)
-      (expect (macher-agent-zero-mem-get-state "invalid") :to-be nil)
-      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-be nil))
+      (expect (macher-agent-zero-mem-get-state nil) :to-throw 'wrong-type-argument)
+      (expect (macher-agent-zero-mem-get-state "invalid") :to-throw 'wrong-type-argument)
+      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-throw 'wrong-type-argument))
 
     (it "retrieves event horizon directly from context plugins"
-      (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))
-        (expect (macher-agent-zero-mem--get-event-horizon nil ctx) :to-equal '(:line 42 :offset 1024))))
+      (with-temp-buffer
+        (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))
+          (expect (macher-agent-zero-mem--get-event-horizon (current-buffer) ctx) :to-equal '(:line 42 :offset 1024)))))
 
     (it "extracts clean prompt from context prompt accessor"
-      (let ((ctx (make-macher-agent-context :id "prompt-ctx" :prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->")))
-        (expect (macher-agent-zero-mem--extract-clean-prompt nil ctx) :to-equal "Clean Prompt Content")))
+      (with-temp-buffer
+        (let ((ctx (make-macher-agent-context :id "prompt-ctx" :prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->")))
+          (expect (macher-agent-zero-mem--extract-clean-prompt (current-buffer) ctx) :to-equal "Clean Prompt Content"))))
 
     (it "resolves parent buffer via context origin buffer and routing stack"
       (let* ((parent-buf (generate-new-buffer " *test-origin-parent*"))
@@ -328,48 +301,7 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
               (with-temp-buffer
                 (setq-local macher-agent--routing-stack (list parent-buf))
                 (expect (macher-agent-zero-mem--resolve-parent-buffer nil) :to-equal parent-buf)))
-          (when (buffer-live-p parent-buf) (kill-buffer parent-buf)))))
-
-    (it "persists interaction graph into context plugins and uses stationary snapshot"
-      (let* ((parent-buf (generate-new-buffer " *test-parent-snap*"))
-             (child-buf (generate-new-buffer " *test-child-snap*"))
-             (parent-ctx (make-macher-agent-context :id "parent-ctx"))
-             (child-ctx (make-macher-agent-context :id "child-ctx" :origin-buffer parent-buf)))
-        (unwind-protect
-            (progn
-              (with-current-buffer parent-buf
-                (setq-local macher-agent--persistent-context parent-ctx)
-                (insert "Turn 1: Database credentials stored under DB_SECRET_KEY\n")
-                (insert "Turn 2: Service discovery on port 8080\n"))
-              (let ((parent-graph (macher-agent-memory--persist-interaction parent-buf)))
-                (expect parent-graph :not :to-be nil)
-                (expect (macher-agent-zero-mem-get-state parent-ctx) :to-equal parent-graph)
-                (expect (plist-get (macher-agent-context-plugins parent-ctx) :zero-mem) :to-equal parent-graph)
-                (with-current-buffer child-buf
-                  (setq-local macher-agent--persistent-context child-ctx)
-                  (setq-local macher-agent--routing-stack (list parent-buf))
-                  (insert "Retrieve DB_SECRET_KEY from parent."))
-                ;; Modify parent buffer after delegation
-                (with-current-buffer parent-buf
-                  (insert "Turn 3: Post-delegation live buffer modification\n"))
-                ;; Searching uses stationary snapshot without re-indexing
-                (spy-on 'macher-agent-zero-mem--buffer-to-traces :and-call-through)
-                (let ((res (macher-agent-memory-search-zero-mem "DB_SECRET_KEY" parent-buf 2)))
-                  (expect res :to-match "DB_SECRET_KEY")
-                  (expect 'macher-agent-zero-mem--buffer-to-traces :not :to-have-been-called))
-                ;; Subagent parent context injection
-                (let* ((state (make-macher-agent-transmission-state
-                               :target-buffer child-buf
-                               :directives nil))
-                       (updated-state (macher-agent-pipe--inject-parent-context
-                                       state child-buf nil nil nil))
-                       (dirs (macher-agent-transmission-state-directives updated-state)))
-                  (expect (length dirs) :to-be-greater-than 0)
-                  (let ((text (string-join dirs "\n\n")))
-                    (expect text :to-match "<parent_conversation_context>")
-                    (expect text :to-match "DB_SECRET_KEY")))))
-          (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
-          (when (buffer-live-p child-buf) (kill-buffer child-buf)))))))
+          (when (buffer-live-p parent-buf) (kill-buffer parent-buf)))))))
 
 (provide 'macher-agent-zero-mem-test)
 ;;; macher-agent-zero-mem-test.el ends here

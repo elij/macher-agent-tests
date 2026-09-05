@@ -170,8 +170,7 @@
             (let* ((state (make-macher-agent-transmission-state
                            :target-buffer child-buf
                            :directives nil))
-                   (updated-state (macher-agent-pipe--inject-parent-context
-                                   state child-buf nil nil nil))
+                   (updated-state (macher-agent-pipe--inject-parent-context state))
                    (dirs (macher-agent-transmission-state-directives updated-state)))
               (expect (length dirs) :to-be-greater-than 0)
               (let ((full-text (string-join dirs "\n\n")))
