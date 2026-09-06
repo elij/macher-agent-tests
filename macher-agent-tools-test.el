@@ -34,6 +34,7 @@
 
 (require 'buttercup)
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent-tools)
 
 (defvar macher-agent-search-backend-function)

@@ -26,6 +26,7 @@
 
 (require 'buttercup)
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent)
 (require 'macher-agent-macher nil t)
 (require 'macher-agent-vfs)
@@ -377,64 +378,64 @@
                          (expect (macher-agent-media-file-p "photo.jpg") :to-be-truthy)
                          (expect (macher-agent-media-file-p "code.el") :to-be nil))))
 
-  (describe "Canonical Context and Direct Plugin Access in Skills Scripts"
-    (it "verifies all skills/scripts and presets files contain no occurrences of obsolete context helpers"
-      (let* ((file-name (or load-file-name buffer-file-name))
-             (test-dir (if file-name (file-name-directory file-name) default-directory))
-             (root-dir (or (locate-dominating-file test-dir "skills") test-dir))
-             (scripts-dir (expand-file-name "skills/scripts" root-dir))
-             (script-files (directory-files scripts-dir t "\\.el$"))
-             (preset-file (expand-file-name "macher-agent-presets.el" root-dir))
-             (all-files (cons preset-file script-files)))
-        (dolist (file all-files)
-          (when (file-exists-p file)
-            (let ((content (with-temp-buffer
-                             (insert-file-contents file)
-                             (buffer-string))))
-              (expect (string-match-p "macher-agent--get-context-data" content) :to-be nil)
-              (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
-              (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil))))))
+ (describe "Canonical Context and Direct Plugin Access in Skills Scripts"
+           (it "verifies all skills/scripts and presets files contain no occurrences of obsolete context helpers"
+               (let* ((file-name (or load-file-name buffer-file-name))
+                      (test-dir (if file-name (file-name-directory file-name) default-directory))
+                      (root-dir (or (locate-dominating-file test-dir "skills") test-dir))
+                      (scripts-dir (expand-file-name "skills/scripts" root-dir))
+                      (script-files (directory-files scripts-dir t "\\.el$"))
+                      (preset-file (expand-file-name "macher-agent-presets.el" root-dir))
+                      (all-files (cons preset-file script-files)))
+                 (dolist (file all-files)
+                   (when (file-exists-p file)
+                     (let ((content (with-temp-buffer
+                                      (insert-file-contents file)
+                                      (buffer-string))))
+                       (expect (string-match-p "macher-agent--get-context-data" content) :to-be nil)
+                       (expect (string-match-p "macher-agent--set-context-data" content) :to-be nil)
+                       (expect (string-match-p "macher-agent--get-context-workspace" content) :to-be nil))))))
 
-    (describe "delegate_tasks_to_subagents strict positional and transit payload"
-      (it "aggregates results strictly from :payload and :error without legacy fallback guessing"
-        (let* ((ctx (macher-agent--make-context))
-               (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
-               (tasks (list (list :buffer_name "worker-ok" :instructions "Task ok")
-                            (list :buffer_name "worker-err" :instructions "Task err")))
-               (callback-called nil))
-          (spy-on 'macher-agent-a2a-dispatch
-                  :and-call-fake (lambda (payloads callback &optional context)
-                                   (funcall callback (vector (list :payload "Result from worker-ok")
-                                                             (list :error "Failed in worker-err")))))
-          (funcall tool-fn tasks ctx (lambda (res) (setq callback-called res)))
-          (expect callback-called :to-match "Result from worker-ok")
-          (expect callback-called :to-match "Failed in worker-err")))
+           (describe "delegate_tasks_to_subagents strict positional and transit payload"
+                     (it "aggregates results strictly from :payload and :error without legacy fallback guessing"
+                         (let* ((ctx (macher-agent--make-context))
+                                (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+                                (tasks (list (list :buffer_name "worker-ok" :instructions "Task ok")
+                                             (list :buffer_name "worker-err" :instructions "Task err")))
+                                (callback-called nil))
+                           (spy-on 'macher-agent-a2a-dispatch
+                                   :and-call-fake (lambda (payloads callback &optional context)
+                                                    (funcall callback (vector (list :payload "Result from worker-ok")
+                                                                              (list :error "Failed in worker-err")))))
+                           (funcall tool-fn tasks ctx (lambda (res) (setq callback-called res)))
+                           (expect callback-called :to-match "Result from worker-ok")
+                           (expect callback-called :to-match "Failed in worker-err")))
 
-      (it "defaults ephemeral to true when omitted from task"
-        (let* ((ctx (macher-agent--make-context))
-               (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
-               (tasks (vector (list :buffer_name "sub-worker-eph"
-                                    :instructions "Run subtask default ephemeral")))
-               (dispatched-payloads nil))
-          (spy-on 'macher-agent-a2a-dispatch
-                  :and-call-fake (lambda (payloads callback &optional context)
-                                   (setq dispatched-payloads payloads)
-                                   (funcall callback (vector (list :payload "Done")))))
-          (funcall tool-fn tasks ctx #'ignore)
-          (expect dispatched-payloads :not :to-be nil)
-          (let ((payload (car dispatched-payloads)))
-            (expect (plist-get (macher-agent-transit-payload-metadata payload) :ephemeral) :to-be t))))
+                     (it "defaults ephemeral to true when omitted from task"
+                         (let* ((ctx (macher-agent--make-context))
+                                (tool-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+                                (tasks (vector (list :buffer_name "sub-worker-eph"
+                                                     :instructions "Run subtask default ephemeral")))
+                                (dispatched-payloads nil))
+                           (spy-on 'macher-agent-a2a-dispatch
+                                   :and-call-fake (lambda (payloads callback &optional context)
+                                                    (setq dispatched-payloads payloads)
+                                                    (funcall callback (vector (list :payload "Done")))))
+                           (funcall tool-fn tasks ctx #'ignore)
+                           (expect dispatched-payloads :not :to-be nil)
+                           (let ((payload (car dispatched-payloads)))
+                             (expect (plist-get (macher-agent-transit-payload-metadata payload) :ephemeral) :to-be t))))
 
-      (it "invokes gptel presentation function with callback and tasks positionally"
-        (let* ((ctx (macher-agent--make-context))
-               (pres-fn (gptel-tool-function macher-agent-delegate-tasks-to-subagents-tool))
-               (tasks (vector (list :buffer_name "pres-worker" :instructions "Presentation task")))
-               (callback-called nil))
-          (spy-on 'macher-agent-a2a-dispatch
-                  :and-call-fake (lambda (payloads callback &optional context)
-                                   (funcall callback (vector (list :payload "Presentation result")))))
-          (funcall pres-fn (lambda (res) (setq callback-called res)) tasks)
-          (expect callback-called :to-match "Presentation result"))))))
+                     (it "invokes gptel presentation function with callback and tasks positionally"
+                         (let* ((ctx (macher-agent--make-context))
+                                (pres-fn (gptel-tool-function macher-agent-delegate-tasks-to-subagents-tool))
+                                (tasks (vector (list :buffer_name "pres-worker" :instructions "Presentation task")))
+                                (callback-called nil))
+                           (spy-on 'macher-agent-a2a-dispatch
+                                   :and-call-fake (lambda (payloads callback &optional context)
+                                                    (funcall callback (vector (list :payload "Presentation result")))))
+                           (funcall pres-fn (lambda (res) (setq callback-called res)) tasks)
+                           (expect callback-called :to-match "Presentation result"))))))
 
 (provide 'macher-agent-skills-test)
 ;;; macher-agent-skills-test.el ends here

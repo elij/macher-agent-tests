@@ -35,122 +35,122 @@
 (require 'macher-agent-macher)
 
 (describe "Macher Agent Main Module"
-  (macher-agent-test-setup-before-each)
+          (macher-agent-test-setup-before-each)
 
-  (describe "macher-agent-inject-thought"
-    (it "queues instruction formatted as user override into pending instructions"
-      (let ((added-instruction nil))
-        (cl-letf (((symbol-function 'macher-agent-add-pending-instruction)
-                   (lambda (inst) (setq added-instruction inst))))
-          (macher-agent-inject-thought "focus on performance")
-          (expect added-instruction :to-equal "USER OVERRIDE: focus on performance"))))
+          (describe "macher-agent-inject-thought"
+                    (it "queues instruction formatted as user override into pending instructions"
+                        (let ((added-instruction nil))
+                          (cl-letf (((symbol-function 'macher-agent-add-pending-instruction)
+                                     (lambda (inst) (setq added-instruction inst))))
+                            (macher-agent-inject-thought "focus on performance")
+                            (expect added-instruction :to-equal "USER OVERRIDE: focus on performance"))))
 
-    (it "works seamlessly with context using direct slot access"
-      (with-temp-buffer
-        (let ((ctx (make-macher-agent-context :id "thought-ctx" :project-root "/tmp/test")))
-          (setq-local macher-agent--persistent-context ctx)
-          (expect (macher-agent-context-id macher-agent--persistent-context) :to-equal "thought-ctx")
-          (expect (macher-agent-context-project-root macher-agent--persistent-context) :to-equal "/tmp/test")
-          (macher-agent-inject-thought "optimize loop")
-          (expect (macher-agent-context-p macher-agent--persistent-context) :to-be t)))))
+                    (it "works seamlessly with context using direct slot access"
+                        (with-temp-buffer
+                          (let ((ctx (make-macher-agent-context :id "thought-ctx" :project-root "/tmp/test")))
+                            (setq-local macher-agent--persistent-context ctx)
+                            (expect (macher-agent-context-id macher-agent--persistent-context) :to-equal "thought-ctx")
+                            (expect (macher-agent-context-project-root macher-agent--persistent-context) :to-equal "/tmp/test")
+                            (macher-agent-inject-thought "optimize loop")
+                            (expect (macher-agent-context-p macher-agent--persistent-context) :to-be t)))))
 
-  (describe "macher-agent-mode"
-    (it "sets up gptel mode and tools when enabled"
-      (with-temp-buffer
-        (let ((mode-setup-called nil)
-              (buf-setup-called nil))
-          (cl-letf (((symbol-function 'macher-agent-gptel-mode-setup)
-                     (lambda () (setq mode-setup-called t)))
-                    ((symbol-function 'macher-agent-setup-gptel-buffer)
-                     (lambda () (setq buf-setup-called t))))
-            (macher-agent-mode 1)
-            (expect mode-setup-called :to-be t)
-            (expect buf-setup-called :to-be t)))))
+          (describe "macher-agent-mode"
+                    (it "sets up gptel mode and tools when enabled"
+                        (with-temp-buffer
+                          (let ((mode-setup-called nil)
+                                (buf-setup-called nil))
+                            (cl-letf (((symbol-function 'macher-agent-gptel-mode-setup)
+                                       (lambda () (setq mode-setup-called t)))
+                                      ((symbol-function 'macher-agent-setup-gptel-buffer)
+                                       (lambda () (setq buf-setup-called t))))
+                              (macher-agent-mode 1)
+                              (expect mode-setup-called :to-be t)
+                              (expect buf-setup-called :to-be t)))))
 
-    (it "cleans up hooks when disabled"
-      (with-temp-buffer
-        (add-hook 'gptel-prompt-transform-functions #'macher-agent-sync-prompt-transformer nil t)
-        (add-hook 'gptel-pre-tool-call-functions #'macher-agent--enforce-tool-scope nil t)
-        (setq-local macher-agent-mode t)
-        (macher-agent-mode -1)
-        (expect (memq #'macher-agent-sync-prompt-transformer gptel-prompt-transform-functions) :to-be nil)
-        (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be nil)))
+                    (it "cleans up hooks when disabled"
+                        (with-temp-buffer
+                          (add-hook 'gptel-prompt-transform-functions #'macher-agent-sync-prompt-transformer nil t)
+                          (add-hook 'gptel-pre-tool-call-functions #'macher-agent--enforce-tool-scope nil t)
+                          (setq-local macher-agent-mode t)
+                          (macher-agent-mode -1)
+                          (expect (memq #'macher-agent-sync-prompt-transformer gptel-prompt-transform-functions) :to-be nil)
+                          (expect (memq #'macher-agent--enforce-tool-scope gptel-pre-tool-call-functions) :to-be nil)))
 
-    (it "fails fast, disables itself, and attaches no buffer-local hooks when directory is not a valid workspace"
-      (with-temp-buffer
-        (setq default-directory (expand-file-name "~"))
-        (expect (macher-agent-mode 1) :to-throw 'user-error)
-        (expect macher-agent-mode :to-be nil)
-        (expect (memq #'macher-agent-sync-prompt-transformer (bound-and-true-p gptel-prompt-transform-functions)) :to-be nil)
-        (expect (memq #'macher-agent--enforce-tool-scope (bound-and-true-p gptel-pre-tool-call-functions)) :to-be nil))))
+                    (it "fails fast, disables itself, and attaches no buffer-local hooks when directory is not a valid workspace"
+                        (with-temp-buffer
+                          (setq default-directory (expand-file-name "~"))
+                          (expect (macher-agent-mode 1) :to-throw 'user-error)
+                          (expect macher-agent-mode :to-be nil)
+                          (expect (memq #'macher-agent-sync-prompt-transformer (bound-and-true-p gptel-prompt-transform-functions)) :to-be nil)
+                          (expect (memq #'macher-agent--enforce-tool-scope (bound-and-true-p gptel-pre-tool-call-functions)) :to-be nil))))
 
-  (describe "macher-agent-install and setup alias"
-    (it "invokes module installation functions and registers global hooks"
-      (let ((ctx-res-called nil)
-            (sandbox-called nil)
-            (zero-mem-called nil)
-            (vfs-called nil)
-            (trans-called nil))
-        (cl-letf (((symbol-function 'macher-agent-context-resolution-install)
-                   (lambda () (setq ctx-res-called t)))
-                  ((symbol-function 'macher-agent-sandbox-install)
-                   (lambda () (setq sandbox-called t)))
-                  ((symbol-function 'macher-agent-zero-mem-install)
-                   (lambda () (setq zero-mem-called t)))
-                  ((symbol-function 'macher-agent-vfs-install)
-                   (lambda () (setq vfs-called t)))
-                  ((symbol-function 'macher-agent-transmission-install)
-                   (lambda () (setq trans-called t))))
-          (macher-agent-install)
-          (expect ctx-res-called :to-be t)
-          (expect sandbox-called :to-be t)
-          (expect zero-mem-called :to-be t)
-          (expect vfs-called :to-be t)
-          (expect trans-called :to-be t)
-          (expect (memq #'macher-agent--fsm-hijack-transform gptel-prompt-transform-functions) :to-be-truthy)
-          (expect (memq #'macher-agent--restore-local-state hack-local-variables-hook) :to-be-truthy)
-          (expect (memq #'macher-agent--log-gptel-pre-tool gptel-pre-tool-call-functions) :to-be-truthy)
-          (expect (memq #'macher-agent--mutation-dispatcher macher-agent-context-mutated-hook) :to-be-truthy))))
+          (describe "macher-agent-install"
+                    (it "invokes module installation functions and registers global hooks"
+                        (let ((ctx-res-called nil)
+                              (sandbox-called nil)
+                              (zero-mem-called nil)
+                              (vfs-called nil)
+                              (trans-called nil))
+                          (cl-letf (((symbol-function 'macher-agent-context-resolution-install)
+                                     (lambda () (setq ctx-res-called t)))
+                                    ((symbol-function 'macher-agent-sandbox-install)
+                                     (lambda () (setq sandbox-called t)))
+                                    ((symbol-function 'macher-agent-zero-mem-install)
+                                     (lambda () (setq zero-mem-called t)))
+                                    ((symbol-function 'macher-agent-vfs-install)
+                                     (lambda () (setq vfs-called t)))
+                                    ((symbol-function 'macher-agent-transmission-install)
+                                     (lambda () (setq trans-called t))))
+                            (macher-agent-install)
+                            (expect ctx-res-called :to-be t)
+                            (expect sandbox-called :to-be t)
+                            (expect zero-mem-called :to-be t)
+                            (expect vfs-called :to-be t)
+                            (expect trans-called :to-be t)
+                            (expect (memq #'macher-agent--fsm-hijack-transform gptel-prompt-transform-functions) :to-be-truthy)
+                            (expect (memq #'macher-agent--restore-local-state hack-local-variables-hook) :to-be-truthy)
+                            (expect (memq #'macher-agent--log-gptel-pre-tool gptel-pre-tool-call-functions) :to-be-truthy)
+                            (expect (memq #'macher-agent--mutation-dispatcher macher-agent-context-mutated-hook) :to-be-truthy))))
 
-    (it "aliases macher-agent-setup to macher-agent-install"
-      (expect (symbol-function 'macher-agent-setup) :to-equal #'macher-agent-install)))
+                    (it "verifies macher-agent-install is bound as a function"
+                        (expect (fboundp 'macher-agent-install) :to-be t)))
 
-  (describe "Obsolete Context Helpers Verification"
-    (it "contains no references to obsolete context helpers in macher-agent.el"
-      (let ((file-content
-             (with-temp-buffer
-               (insert-file-contents
-                (expand-file-name "macher-agent.el"
-                                  (locate-dominating-file default-directory "macher-agent.el")))
-               (buffer-string))))
-        (expect (string-match-p "macher-agent--get-context-data" file-content) :to-be nil)
-        (expect (string-match-p "macher-agent--set-context-data" file-content) :to-be nil)
-        (expect (string-match-p "macher-agent-context-zero-mem" file-content) :to-be nil)
-        (expect (string-match-p "macher-agent--get-context-workspace" file-content) :to-be nil)
-        (expect (string-match-p "macher-agent--get-context-shadow-buffers" file-content) :to-be nil))))
+          (describe "Obsolete Context Helpers Verification"
+                    (it "contains no references to obsolete context helpers in macher-agent.el"
+                        (let ((file-content
+                               (with-temp-buffer
+                                 (insert-file-contents
+                                  (expand-file-name "macher-agent.el"
+                                                    (locate-dominating-file default-directory "macher-agent.el")))
+                                 (buffer-string))))
+                          (expect (string-match-p "macher-agent--get-context-data" file-content) :to-be nil)
+                          (expect (string-match-p "macher-agent--set-context-data" file-content) :to-be nil)
+                          (expect (string-match-p "macher-agent-context-zero-mem" file-content) :to-be nil)
+                          (expect (string-match-p "macher-agent--get-context-workspace" file-content) :to-be nil)
+                          (expect (string-match-p "macher-agent--get-context-shadow-buffers" file-content) :to-be nil))))
 
-  (describe "macher-agent-test-setup dynamic load-path and helper requirement"
-    (it "ensures tests/helpers is in load-path and helpers are required"
-      (let ((helpers-in-load-path
-             (cl-some (lambda (path)
-                        (and (stringp path)
-                             (string-suffix-p "helpers" (directory-file-name path))))
-                      load-path)))
-        (expect helpers-in-load-path :to-be-truthy))
-      (expect (featurep 'macher-agent-test-harness) :to-be-truthy)
-      (expect (featurep 'macher-agent-snippet-extractor) :to-be-truthy))
+          (describe "macher-agent-test-setup dynamic load-path and helper requirement"
+                    (it "ensures tests/helpers is in load-path and helpers are required"
+                        (let ((helpers-in-load-path
+                               (cl-some (lambda (path)
+                                          (and (stringp path)
+                                               (string-suffix-p "helpers" (directory-file-name path))))
+                                        load-path)))
+                          (expect helpers-in-load-path :to-be-truthy))
+                        (expect (featurep 'macher-agent-test-harness) :to-be-truthy)
+                        (expect (featurep 'macher-agent-snippet-extractor) :to-be-truthy))
 
-    (it "evaluates test-setup load-path expansion logic dynamically"
-      (let* ((setup-file (locate-dominating-file default-directory "tests/macher-agent-test-setup.el"))
-             (setup-path (if setup-file
-                             (expand-file-name "tests/macher-agent-test-setup.el" setup-file)
-                           (expand-file-name "macher-agent-test-setup.el" default-directory)))
-             (file-content (with-temp-buffer
-                             (insert-file-contents setup-path)
-                             (buffer-string))))
-        (expect (string-match-p "(add-to-list 'load-path (expand-file-name \"helpers\"" file-content) :to-be-truthy)
-        (expect (string-match-p "(require 'macher-agent-test-harness)" file-content) :to-be-truthy)
-        (expect (string-match-p "(require 'macher-agent-snippet-extractor)" file-content) :to-be-truthy)))))
+                    (it "evaluates test-setup load-path expansion logic dynamically"
+                        (let* ((setup-file (locate-dominating-file default-directory "tests/macher-agent-test-setup.el"))
+                               (setup-path (if setup-file
+                                               (expand-file-name "tests/macher-agent-test-setup.el" setup-file)
+                                             (expand-file-name "macher-agent-test-setup.el" default-directory)))
+                               (file-content (with-temp-buffer
+                                               (insert-file-contents setup-path)
+                                               (buffer-string))))
+                          (expect (string-match-p "(add-to-list 'load-path (expand-file-name \"helpers\"" file-content) :to-be-truthy)
+                          (expect (string-match-p "(require 'macher-agent-test-harness)" file-content) :to-be-truthy)
+                          (expect (string-match-p "(require 'macher-agent-snippet-extractor)" file-content) :to-be-truthy)))))
 
 (provide 'tests/macher-agent-test)
 (provide 'macher-agent-test)

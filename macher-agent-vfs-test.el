@@ -25,6 +25,7 @@
     (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent-vfs)
 (require 'macher-agent-macher)
 
@@ -151,7 +152,15 @@
                           (let ((macher-agent-vfs-flush-hook
                                  (list (lambda (c) (setq hook-called c)))))
                             (macher-agent-vfs-handle-flush ctx)
-                            (expect hook-called :to-be nil)))))
+                            (expect hook-called :to-be nil))))
+
+                    (it "strictly rejects cons cell workspace and non-context arguments"
+                        (expect (macher-agent-vfs-handle-flush '(project . "/mock/flush-test/"))
+                                :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-vfs-handle-flush nil)
+                                :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-vfs-handle-flush "not-a-context")
+                                :to-throw 'wrong-type-argument))))
 
           (describe "macher-agent-vfs-build-patch-from-hook"
                     (it "executes split patch generation using prompt from context"
@@ -437,7 +446,309 @@
                                          'direct-eval)))
                               (expect res :to-equal 'direct-eval)
                               (expect flushed :to-be nil)
-                              (expect restored :to-be nil)))))))
+                              (expect restored :to-be nil))))))
+
+          (describe "VFS Context Synchronization and Baseline Sync"
+                    (describe "Argument ordering in macher-agent--sync-and-check-dirty-entries"
+                              (it "passes root as 2nd argument and tracker as 3rd argument to macher-agent--sync-context-entry"
+                                  (let* ((entry (macher-agent-vfs-make-entry "file.el" "orig" "curr"))
+                                         (contents (list entry))
+                                         (root "/mock/root/")
+                                         (tracker (make-hash-table :test 'equal))
+                                         (captured-args nil))
+                                    (cl-letf (((symbol-function 'macher-agent--sync-context-entry)
+                                               (lambda (e r &optional m)
+                                                 (setq captured-args (list e r m))
+                                                 nil)))
+                                      (macher-agent--sync-and-check-dirty-entries contents root tracker)
+                                      (expect (nth 0 captured-args) :to-be entry)
+                                      (expect (nth 1 captured-args) :to-equal root)
+                                      (expect (nth 2 captured-args) :to-be tracker))))
+
+                              (it "auto-sync-context passes root then tracker to macher-agent--sync-and-check-dirty-entries"
+                                  (let* ((ctx (macher-agent--make-context :project-root "/mock/auto-sync-root/"))
+                                         (captured-args nil))
+                                    (cl-letf (((symbol-function 'macher-agent--sync-and-check-dirty-entries)
+                                               (lambda (c &optional r m)
+                                                 (setq captured-args (list c r m))
+                                                 (cons nil nil)))
+                                              ((symbol-function 'macher-agent--persist-vfs-to-hidden-buffer) #'ignore))
+                                      (macher-agent--auto-sync-context ctx)
+                                      (expect (nth 1 captured-args) :to-equal "/mock/auto-sync-root/")
+                                      (expect (nth 2 captured-args) :to-equal (macher-agent-workspace-mtime-tracker ctx)))))
+
+                              (it "strictly rejects reversed argument ordering in macher-agent--sync-and-check-dirty-entries"
+                                  (let* ((entry (macher-agent-vfs-make-entry "file.el" "orig" "curr"))
+                                         (contents (list entry))
+                                         (root "/mock/root/")
+                                         (tracker (make-hash-table :test 'equal)))
+                                    ;; Call with reversed parameters (tracker as 2nd, root as 3rd) must signal wrong-type-argument
+                                    (expect (macher-agent--sync-and-check-dirty-entries contents tracker root)
+                                            :to-throw 'wrong-type-argument)))
+
+                    (describe "Baseline sync when hunks/changes are applied"
+                              (it "updates baseline orig when hunks are partially applied to live buffer and omits applied hunks from regenerated diffs"
+                                  (let* ((temp-dir (make-temp-file "macher-vfs-hunk-test-" t))
+                                         (file-path (expand-file-name "test-hunk.txt" temp-dir))
+                                         (orig-text "line 1\nline 2\nline 3\n")
+                                         (target-text "line 1\nline 2 MOD\nline 3 MOD\n")
+                                         (partial-text "line 1\nline 2 MOD\nline 3\n"))
+                                    (unwind-protect
+                                        (progn
+                                          ;; Write initial file
+                                          (with-temp-file file-path (insert orig-text))
+                                          (let* ((buf (find-file-noselect file-path))
+                                                 (entry (macher-agent-vfs-make-entry "test-hunk.txt" orig-text target-text))
+                                                 (ctx (macher-agent--make-context
+                                                       :project-root temp-dir
+                                                       :origin-buffer buf
+                                                       :prompt "Apply changes"
+                                                       :plugins (list :vfs (list :contents (list entry))))))
+                                            (unwind-protect
+                                                (progn
+                                                  ;; Partial application: apply hunk 1 to live buffer
+                                                  (with-current-buffer buf
+                                                    (erase-buffer)
+                                                    (insert partial-text))
+                                                  ;; Sync context
+                                                  (macher-agent--auto-sync-context ctx)
+                                                  ;; Baseline orig must now reflect partial-text
+                                                  (expect (macher-agent-vfs-entry-orig entry) :to-equal partial-text)
+                                                  (expect (macher-agent-vfs-entry-curr entry) :to-equal target-text)
+                                                  (expect (macher-agent-vfs-entry-modified-p entry) :to-be t)
+                                                  ;; Generate patch and verify already-applied hunk 1 is NOT present
+                                                  (let ((patch-buf (macher-agent-macher-build-patch ctx "test patch")))
+                                                    (unwind-protect
+                                                        (with-current-buffer patch-buf
+                                                          (let ((diff-content (buffer-string)))
+                                                            ;; Unapplied hunk 2 is in the diff
+                                                            (expect (string-match-p "\\+line 3 MOD" diff-content) :to-be-truthy)
+                                                            ;; Already-applied hunk 1 is NOT regenerated in diff
+                                                            (expect (string-match-p "\\+line 2 MOD" diff-content) :to-be nil)))
+                                                      (when (buffer-live-p patch-buf) (kill-buffer patch-buf))))
+
+                                                  ;; Full application: apply hunk 2 to live buffer
+                                                  (with-current-buffer buf
+                                                    (erase-buffer)
+                                                    (insert target-text))
+                                                  ;; Sync context again
+                                                  (macher-agent--auto-sync-context ctx)
+                                                  ;; Baseline orig advances to target-text
+                                                  (expect (macher-agent-vfs-entry-orig entry) :to-equal target-text)
+                                                  ;; Entry is no longer modified/dirty
+                                                  (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil)
+                                                  (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)
+                                                  ;; Flush hook is suppressed when all changes are applied
+                                                  (let ((flush-called nil))
+                                                    (let ((macher-agent-vfs-flush-hook (list (lambda (_) (setq flush-called t)))))
+                                                      (macher-agent-vfs-handle-flush ctx)
+                                                      (expect flush-called :to-be nil))))
+                                              (when (buffer-live-p buf)
+                                                (with-current-buffer buf (set-buffer-modified-p nil))
+                                                (kill-buffer buf)))))
+                                      (delete-directory temp-dir t))))
+
+                              (it "updates baseline orig when changes are applied directly to disk"
+                                  (let* ((temp-dir (make-temp-file "macher-vfs-disk-test-" t))
+                                         (file-path (expand-file-name "test-disk.txt" temp-dir))
+                                         (orig-text "alpha\nbeta\ngamma\n")
+                                         (target-text "alpha\nBETA\ngamma\n"))
+                                    (unwind-protect
+                                        (progn
+                                          (with-temp-file file-path (insert orig-text))
+                                          (let* ((entry (macher-agent-vfs-make-entry "test-disk.txt" orig-text target-text))
+                                                 (ctx (macher-agent--make-context
+                                                       :project-root temp-dir
+                                                       :plugins (list :vfs (list :contents (list entry))))))
+                                            ;; Apply changes directly to disk
+                                            (with-temp-file file-path (insert target-text))
+                                            ;; Sync
+                                            (macher-agent--auto-sync-context ctx)
+                                            ;; Baseline orig must be updated to target-text
+                                            (expect (macher-agent-vfs-entry-orig entry) :to-equal target-text)
+                                            (expect (macher-agent-vfs-entry-curr entry) :to-equal target-text)
+                                            (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil)
+                                            (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)))
+                                      (delete-directory temp-dir t)))))
+
+                    (describe "Fail-fast sync on out-of-band modifications"
+                              (it "recognizes out-of-band disk modification, synchronizes orig, invalidates pending edits, and warns"
+                                  (let* ((temp-dir (make-temp-file "macher-vfs-oob-test-" t))
+                                         (file-path (expand-file-name "oob.txt" temp-dir))
+                                         (orig-text "base content\n")
+                                         (staged-text "base content\nstaged changes\n")
+                                         (external-text "external out-of-band edit\n"))
+                                    (unwind-protect
+                                        (progn
+                                          (with-temp-file file-path (insert orig-text))
+                                          (let* ((entry (macher-agent-vfs-make-entry "oob.txt" orig-text staged-text))
+                                                 (ctx (macher-agent--make-context
+                                                       :project-root temp-dir
+                                                       :plugins (list :vfs (list :contents (list entry)))))
+                                                 (tracker (macher-agent-workspace-mtime-tracker ctx)))
+                                            ;; Initialize mtime tracking
+                                            (macher-agent--sync-context-entry entry temp-dir tracker)
+                                            ;; Simulate out-of-band external write to disk
+                                            (sleep-for 0.05)
+                                            (with-temp-file file-path (insert external-text))
+                                            ;; Spy on warning
+                                            (spy-on 'display-warning)
+                                            ;; Sync
+                                            (let ((res (macher-agent--sync-context-entry entry temp-dir tracker)))
+                                              (expect res :to-be t)
+                                              ;; orig synchronized to external content
+                                              (expect (macher-agent-vfs-entry-orig entry) :to-equal external-text)
+                                              ;; curr invalidated to external content
+                                              (expect (macher-agent-vfs-entry-curr entry) :to-equal external-text)
+                                              ;; entry is clean against the new disk baseline
+                                              (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil)
+                                              ;; Warning was emitted
+                                              (expect 'display-warning :to-have-been-called-with
+                                                      'macher-agent
+                                                      "Your previous edits to oob.txt were discarded due to external file modifications.  Please re-read and re-apply"
+                                                      :warning))))
+                                      (delete-directory temp-dir t))))
+
+                              (it "synchronizes clean entry with out-of-band disk changes without warning"
+                                  (let* ((temp-dir (make-temp-file "macher-vfs-oob-clean-" t))
+                                         (file-path (expand-file-name "clean.txt" temp-dir))
+                                         (orig-text "clean content\n")
+                                         (external-text "clean modified externally\n"))
+                                    (unwind-protect
+                                        (progn
+                                          (with-temp-file file-path (insert orig-text))
+                                          (let* ((entry (macher-agent-vfs-make-entry "clean.txt" orig-text orig-text))
+                                                 (ctx (macher-agent--make-context
+                                                       :project-root temp-dir
+                                                       :plugins (list :vfs (list :contents (list entry)))))
+                                                 (tracker (macher-agent-workspace-mtime-tracker ctx)))
+                                            ;; Initialize tracker
+                                            (macher-agent--sync-context-entry entry temp-dir tracker)
+                                            (sleep-for 0.05)
+                                            (with-temp-file file-path (insert external-text))
+                                            (spy-on 'display-warning)
+                                            (let ((res (macher-agent--sync-context-entry entry temp-dir tracker)))
+                                              (expect res :to-be t)
+                                              (expect (macher-agent-vfs-entry-orig entry) :to-equal external-text)
+                                              (expect (macher-agent-vfs-entry-curr entry) :to-equal external-text)
+                                              (expect 'display-warning :not :to-have-been-called))))
+                                      (delete-directory temp-dir t))))))
+
+          (describe "Design by Contract (DbC) Strict Type and Arity Enforcement"
+                    (describe "macher-agent-vfs--merge-payload"
+                              (it "enforces strict single arity signature of exactly one argument"
+                                  (expect (func-arity #'macher-agent-vfs--merge-payload) :to-equal '(1 . 1)))
+
+                              (it "strictly rejects legacy cons cell workspace and non-context payloads"
+                                  (expect (macher-agent-vfs--merge-payload '(project . "/mock/merge/"))
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent-vfs--merge-payload (list :target-context '(project . "/mock/merge/")))
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent-vfs--merge-payload nil)
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent-vfs--merge-payload 42)
+                                          :to-throw 'wrong-type-argument))
+
+                              (it "merges valid transit payload into target context"
+                                  (let* ((ctx (macher-agent--make-context
+                                               :project-root "/mock/merge-dbc/"
+                                               :plugins (list :vfs (list :contents (list (macher-agent-vfs-make-entry "/mock/merge-dbc/f.el" "old" "old"))))))
+                                         (payload (make-macher-agent-transit-payload
+                                                   :type 'ARTIFACT_UPDATE
+                                                   :target-context ctx
+                                                   :payload (list :diff (list (make-macher-agent-vfs-entry :path "/mock/merge-dbc/f.el" :orig "old" :curr "new"))))))
+                                    (macher-agent-vfs--merge-payload payload)
+                                    (expect (macher-agent--read-context-file ctx "/mock/merge-dbc/f.el") :to-equal "new"))))
+
+                    (describe "macher-agent-vfs-write"
+                              (it "strictly rejects non-string file-path such as hash table passed in old argument ordering"
+                                  (let ((ht (make-hash-table :test 'equal)))
+                                    (expect (macher-agent-vfs-write ht ht "/path.el" "content")
+                                            :to-throw 'wrong-type-argument)))
+
+                              (it "strictly requires string content and hash-table tracker"
+                                  (let ((ht (make-hash-table :test 'equal)))
+                                    (expect (macher-agent-vfs-write "/path.el" 123 ht)
+                                            :to-throw 'wrong-type-argument)
+                                    (expect (macher-agent-vfs-write "/path.el" "content" "not-a-hash-table")
+                                            :to-throw 'wrong-type-argument)))
+
+                              (it "writes content and updates tracker and vfs buffers with strictly ordered arguments"
+                                  (let* ((mtime-ht (make-hash-table :test 'equal))
+                                         (vfs-ht (make-hash-table :test 'equal))
+                                         (file-path "/mock/proj/test.el")
+                                         (res (macher-agent-vfs-write file-path "New content" mtime-ht vfs-ht)))
+                                    (expect res :to-equal "New content")
+                                    (expect (gethash file-path vfs-ht) :to-equal "New content")))
+
+                              (it "asserts that a VFS write warns if the underlying file has drifted"
+                                  (let* ((ctx (make-macher-agent-context :project-root "/mock/proj/"))
+                                         (file-path "/mock/proj/test.el")
+                                         (original-mtime '(25000 12345))
+                                         (drifted-mtime '(25000 99999)))
+                                    (unwind-protect
+                                        (progn
+                                          (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
+                                          (puthash file-path original-mtime (macher-agent-workspace-mtime-tracker ctx))
+
+                                          (spy-on 'file-attributes :and-call-fake
+                                                  (lambda (&rest args)
+                                                    (let ((file (car args)))
+                                                      (if (string= file file-path)
+                                                          (list t 1 1 1 drifted-mtime drifted-mtime drifted-mtime 100 "mode" t 1 1)
+                                                        nil))))
+
+                                          (spy-on 'display-warning)
+
+                                          (macher-agent-vfs-write file-path
+                                                                  "New content"
+                                                                  (macher-agent-workspace-mtime-tracker ctx)
+                                                                  (macher-agent-workspace-vfs-buffers ctx))
+
+                                          (expect 'display-warning :to-have-been-called-with
+                                                  'macher-agent
+                                                  "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply"
+                                                  :warning))
+                                      (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
+
+                    (describe "macher-agent--read-string"
+                              (it "strictly rejects string offset passed from old parameter order"
+                                  (expect (macher-agent--read-string "line 1\nline 2" 1 2)
+                                          :to-throw 'wrong-type-argument))
+
+                              (it "strictly requires integer offset and limit and reads correctly"
+                                  (expect (macher-agent--read-string 1 2 "a\nb\nc") :to-equal "a\nb")
+                                  (expect (macher-agent--read-string nil 2 "a\nb")
+                                          :to-throw 'wrong-type-argument)))
+
+                    (describe "macher-agent--edit-string-fast"
+                              (it "strictly enforces positional arguments and rejects non-strings"
+                                  (expect (macher-agent--edit-string-fast 123 "new" "content")
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent--edit-string-fast "old" 456 "content")
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent--edit-string-fast "old" "new" nil)
+                                          :to-throw 'wrong-type-argument))
+
+                              (it "replaces string correctly using strict positional arguments"
+                                  (expect (macher-agent--edit-string-fast "hello" "world" "hello there")
+                                          :to-equal "world there")))
+
+                    (describe "macher-agent--write-or-delete-vfs-entry"
+                              (it "strictly rejects non-string target-path or content"
+                                  (expect (macher-agent--write-or-delete-vfs-entry "content" nil)
+                                          :to-throw 'wrong-type-argument)
+                                  (expect (macher-agent--write-or-delete-vfs-entry nil "/tmp/foo")
+                                          :to-throw 'wrong-type-argument)))
+
+                    (describe "macher-agent--sync-context-entry"
+                              (it "strictly rejects invalid entry and non-string root"
+                                  (let ((ht (make-hash-table :test 'equal)))
+                                    (expect (macher-agent--sync-context-entry "not-an-entry" "/tmp/")
+                                            :to-throw 'wrong-type-argument)
+                                    (let ((entry (macher-agent-vfs-make-entry "file.el" "a" "b")))
+                                      (expect (macher-agent--sync-context-entry entry ht "/tmp/")
+                                              :to-throw 'wrong-type-argument)))))))
 
 (provide 'macher-agent-vfs-test)
 ;;; macher-agent-vfs-test.el ends here

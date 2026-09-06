@@ -18,6 +18,7 @@
 (require 'json)
 (require 'cl-lib)
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent)
 (require 'macher-agent-test-harness)
 

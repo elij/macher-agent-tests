@@ -25,6 +25,7 @@
 (require 'cl-lib)
 (require 'buttercup)
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent)
 (require 'macher-agent-zero-mem)
 
@@ -120,188 +121,188 @@ ITERATIONS defaults to 15.  Return a hash table mapping nodes to PageRank scores
 ;;;; 2. Consolidated Test Suites
 
 (describe "Macher Agent Zero-Mem Test Suite"
-  (before-each
-    (setq macher-agent-search-backend-function #'macher-agent-search-glob))
-  (after-each
-    (when (fboundp 'macher-agent-zero-mem-uninstall)
-      (macher-agent-zero-mem-uninstall))
-    (setq macher-agent-search-backend-function #'macher-agent-search-glob))
-  (after-all
-    (when (fboundp 'macher-agent-zero-mem-uninstall)
-      (macher-agent-zero-mem-uninstall))
-    (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+          (before-each
+           (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+          (after-each
+           (when (fboundp 'macher-agent-zero-mem-uninstall)
+             (macher-agent-zero-mem-uninstall))
+           (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+          (after-all
+           (when (fboundp 'macher-agent-zero-mem-uninstall)
+             (macher-agent-zero-mem-uninstall))
+           (setq macher-agent-search-backend-function #'macher-agent-search-glob))
 
-  (describe "1. Graph Diffusion and PageRank Retrieval"
-    (it "builds bipartite entity-document graphs from raw traces"
-      (let* ((traces (macher-agent-zero-mem-test-make-synthetic-traces 15))
-             (graph (macher-agent-zero-mem-build-graph traces)))
-        (expect (length traces) :to-equal 15)
-        (expect (hash-table-p (macher-agent-zero-mem-graph-traces graph)) :to-equal t)
-        (expect (hash-table-p (macher-agent-zero-mem-graph-entity-index graph)) :to-equal t)
-        (expect (hash-table-p (macher-agent-zero-mem-graph-adj-list graph)) :to-equal t)
-        (expect (hash-table-count (macher-agent-zero-mem-graph-traces graph)) :to-equal 15)
-        (expect (> (hash-table-count (macher-agent-zero-mem-graph-entity-index graph)) 0) :to-be t)))
+          (describe "1. Graph Diffusion and PageRank Retrieval"
+                    (it "builds bipartite entity-document graphs from raw traces"
+                        (let* ((traces (macher-agent-zero-mem-test-make-synthetic-traces 15))
+                               (graph (macher-agent-zero-mem-build-graph traces)))
+                          (expect (length traces) :to-equal 15)
+                          (expect (hash-table-p (macher-agent-zero-mem-graph-traces graph)) :to-equal t)
+                          (expect (hash-table-p (macher-agent-zero-mem-graph-entity-index graph)) :to-equal t)
+                          (expect (hash-table-p (macher-agent-zero-mem-graph-adj-list graph)) :to-equal t)
+                          (expect (hash-table-count (macher-agent-zero-mem-graph-traces graph)) :to-equal 15)
+                          (expect (> (hash-table-count (macher-agent-zero-mem-graph-entity-index graph)) 0) :to-be t)))
 
-    (it "preserves ranking order between float and fixed-point PageRank algorithms"
-      (let* ((graph (macher-agent-zero-mem-test-make-synthetic-graph 25))
-             (query "Zero-Mem PageRank")
-             (float-res (macher-agent-zero-mem-pagerank-float query graph 15))
-             (fixed-res (macher-agent-zero-mem-pagerank-fixed-point query graph 15))
-             (float-scores nil)
-             (fixed-scores nil))
-        (maphash (lambda (k v) (push (cons k v) float-scores)) float-res)
-        (maphash (lambda (k v) (push (cons k v) fixed-scores)) fixed-res)
-        (setq float-scores (sort float-scores (lambda (a b) (> (cdr a) (cdr b)))))
-        (setq fixed-scores (sort fixed-scores (lambda (a b) (> (cdr a) (cdr b)))))
-        (expect (car (nth 0 float-scores)) :to-equal (car (nth 0 fixed-scores)))
-        (expect (car (nth 1 float-scores)) :to-equal (car (nth 1 fixed-scores)))
-        (expect (car (nth 2 float-scores)) :to-equal (car (nth 2 fixed-scores)))))
+                    (it "preserves ranking order between float and fixed-point PageRank algorithms"
+                        (let* ((graph (macher-agent-zero-mem-test-make-synthetic-graph 25))
+                               (query "Zero-Mem PageRank")
+                               (float-res (macher-agent-zero-mem-pagerank-float query graph 15))
+                               (fixed-res (macher-agent-zero-mem-pagerank-fixed-point query graph 15))
+                               (float-scores nil)
+                               (fixed-scores nil))
+                          (maphash (lambda (k v) (push (cons k v) float-scores)) float-res)
+                          (maphash (lambda (k v) (push (cons k v) fixed-scores)) fixed-res)
+                          (setq float-scores (sort float-scores (lambda (a b) (> (cdr a) (cdr b)))))
+                          (setq fixed-scores (sort fixed-scores (lambda (a b) (> (cdr a) (cdr b)))))
+                          (expect (car (nth 0 float-scores)) :to-equal (car (nth 0 fixed-scores)))
+                          (expect (car (nth 1 float-scores)) :to-equal (car (nth 1 fixed-scores)))
+                          (expect (car (nth 2 float-scores)) :to-equal (car (nth 2 fixed-scores)))))
 
-    (it "retrieves top-k ranked traces with default and custom arguments"
-      (let* ((graph (macher-agent-zero-mem-test-make-synthetic-graph 20))
-             (query "PageRank EmacsLisp")
-             (results-default (macher-agent-zero-mem-retrieve query graph))
-             (results-k3 (macher-agent-zero-mem-retrieve query graph :top-k 3))
-             (results-float (macher-agent-zero-mem-test-retrieve-float query graph :top-k 5 :iterations 10))
-             (results-fp (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 10)))
-        (expect (length results-default) :to-equal 5)
-        (expect (length results-k3) :to-equal 3)
-        (expect (length results-float) :to-equal 5)
-        (expect (length results-fp) :to-equal 5)))
+                    (it "retrieves top-k ranked traces with default and custom arguments"
+                        (let* ((graph (macher-agent-zero-mem-test-make-synthetic-graph 20))
+                               (query "PageRank EmacsLisp")
+                               (results-default (macher-agent-zero-mem-retrieve query graph))
+                               (results-k3 (macher-agent-zero-mem-retrieve query graph :top-k 3))
+                               (results-float (macher-agent-zero-mem-test-retrieve-float query graph :top-k 5 :iterations 10))
+                               (results-fp (macher-agent-zero-mem-retrieve query graph :top-k 5 :iterations 10)))
+                          (expect (length results-default) :to-equal 5)
+                          (expect (length results-k3) :to-equal 3)
+                          (expect (length results-float) :to-equal 5)
+                          (expect (length results-fp) :to-equal 5)))
 
-    (it "bridges semantic entity gaps through bipartite graph traversal"
-      (let* ((traces (list
-                      '(:text "System alert: The Hyperion bridge module handles Websocket protocol." :timestamp 1.0)
-                      '(:text "User: We observe Latency spikes during Websocket data transfer." :timestamp 2.0)
-                      '(:text "Agent: Unrelated background maintenance." :timestamp 3.0)))
-             (graph (macher-agent-zero-mem-build-graph traces))
-             (results (macher-agent-zero-mem-retrieve "Hyperion Latency" graph :top-k 2)))
-        (expect (length results) :to-equal 2)
-        (let ((texts (mapcar #'macher-agent-zero-mem-trace-text results)))
-          (expect (cl-some (lambda (txt) (string-match-p "Hyperion bridge" txt)) texts) :to-be-truthy)
-          (expect (cl-some (lambda (txt) (string-match-p "Latency spikes" txt)) texts) :to-be-truthy)))))
+                    (it "bridges semantic entity gaps through bipartite graph traversal"
+                        (let* ((traces (list
+                                        '(:text "System alert: The Hyperion bridge module handles Websocket protocol." :timestamp 1.0)
+                                        '(:text "User: We observe Latency spikes during Websocket data transfer." :timestamp 2.0)
+                                        '(:text "Agent: Unrelated background maintenance." :timestamp 3.0)))
+                               (graph (macher-agent-zero-mem-build-graph traces))
+                               (results (macher-agent-zero-mem-retrieve "Hyperion Latency" graph :top-k 2)))
+                          (expect (length results) :to-equal 2)
+                          (let ((texts (mapcar #'macher-agent-zero-mem-trace-text results)))
+                            (expect (cl-some (lambda (txt) (string-match-p "Hyperion bridge" txt)) texts) :to-be-truthy)
+                            (expect (cl-some (lambda (txt) (string-match-p "Latency spikes" txt)) texts) :to-be-truthy)))))
 
-  (describe "2. Turn Demarcation, Wire Pruning, and Event Horizon Filtering"
-    (it "demarcates prompt and response turns with line and offset metadata"
-      (let ((buf (generate-new-buffer " *test-turn-demarcate*")))
-        (unwind-protect
-            (progn
-              (with-current-buffer buf
-                (insert "User turn 1 line\n")
-                (let ((p (point)))
-                  (insert "Assistant response line\n")
-                  (put-text-property p (point) 'gptel 'response))
-                (insert "User turn 2 line\n"))
-              (let ((traces (macher-agent-zero-mem--buffer-to-traces buf)))
-                (expect (length traces) :to-equal 3)
-                (let ((t1 (nth 0 traces))
-                      (t2 (nth 1 traces))
-                      (t3 (nth 2 traces)))
-                  (expect (plist-get (plist-get t1 :metadata) :type) :to-equal :prompt)
-                  (expect (plist-get (plist-get t2 :metadata) :type) :to-equal :response)
-                  (expect (plist-get (plist-get t3 :metadata) :type) :to-equal :prompt)
-                  (expect (plist-get (plist-get t1 :metadata) :turn) :to-equal 1)
-                  (expect (plist-get (plist-get t2 :metadata) :turn) :to-equal 2)
-                  (expect (plist-get (plist-get t3 :metadata) :turn) :to-equal 3)
-                  (expect (plist-get (plist-get t1 :metadata) :line) :to-equal 1)
-                  (expect (plist-get (plist-get t2 :metadata) :line) :to-equal 2)
-                  (expect (plist-get (plist-get t3 :metadata) :line) :to-equal 3))))
-          (when (buffer-live-p buf) (kill-buffer buf)))))
+          (describe "2. Turn Demarcation, Wire Pruning, and Event Horizon Filtering"
+                    (it "demarcates prompt and response turns with line and offset metadata"
+                        (let ((buf (generate-new-buffer " *test-turn-demarcate*")))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer buf
+                                  (insert "User turn 1 line\n")
+                                  (let ((p (point)))
+                                    (insert "Assistant response line\n")
+                                    (put-text-property p (point) 'gptel 'response))
+                                  (insert "User turn 2 line\n"))
+                                (let ((traces (macher-agent-zero-mem--buffer-to-traces buf)))
+                                  (expect (length traces) :to-equal 3)
+                                  (let ((t1 (nth 0 traces))
+                                        (t2 (nth 1 traces))
+                                        (t3 (nth 2 traces)))
+                                    (expect (plist-get (plist-get t1 :metadata) :type) :to-equal :prompt)
+                                    (expect (plist-get (plist-get t2 :metadata) :type) :to-equal :response)
+                                    (expect (plist-get (plist-get t3 :metadata) :type) :to-equal :prompt)
+                                    (expect (plist-get (plist-get t1 :metadata) :turn) :to-equal 1)
+                                    (expect (plist-get (plist-get t2 :metadata) :turn) :to-equal 2)
+                                    (expect (plist-get (plist-get t3 :metadata) :turn) :to-equal 3)
+                                    (expect (plist-get (plist-get t1 :metadata) :line) :to-equal 1)
+                                    (expect (plist-get (plist-get t2 :metadata) :line) :to-equal 2)
+                                    (expect (plist-get (plist-get t3 :metadata) :line) :to-equal 3))))
+                            (when (buffer-live-p buf) (kill-buffer buf)))))
 
-    (it "prunes transmission wire buffer non-destructively without modifying orig-buf"
-      (let* ((orig-buf (generate-new-buffer " *test-live-orig-buf*"))
-             (tx-buf (generate-new-buffer " *test-ephemeral-tx-buf*"))
-             (initial-text "---\nkey: val\n---\nPrompt 1\n")
-             (resp-text "Response from model 1\n")
-             (query-text "Latest user query content\n"))
-        (unwind-protect
-            (progn
-              (with-current-buffer orig-buf
-                (insert initial-text)
-                (let ((start (point)))
-                  (insert resp-text)
-                  (put-text-property start (point) 'gptel 'response))
-                (insert query-text))
-              (let ((orig-content (with-current-buffer orig-buf (buffer-string))))
-                (with-current-buffer tx-buf
-                  (insert orig-content))
-                (with-current-buffer tx-buf
-                  (let ((macher-agent-max-context-chars '((nil . 25)))
-                        (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
-                    (macher-agent-memory-pipe--truncate-buffer state)))
-                (expect (with-current-buffer tx-buf (buffer-string))
-                        :to-match "SYSTEM ALERT: macher-agent truncated")
-                (expect (with-current-buffer tx-buf (buffer-string))
-                        :to-match "Latest user query content")
-                (expect (with-current-buffer orig-buf (buffer-string))
-                        :to-equal orig-content)))
-          (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
-          (when (buffer-live-p tx-buf) (kill-buffer tx-buf))))))
+                    (it "prunes transmission wire buffer non-destructively without modifying orig-buf"
+                        (let* ((orig-buf (generate-new-buffer " *test-live-orig-buf*"))
+                               (tx-buf (generate-new-buffer " *test-ephemeral-tx-buf*"))
+                               (initial-text "---\nkey: val\n---\nPrompt 1\n")
+                               (resp-text "Response from model 1\n")
+                               (query-text "Latest user query content\n"))
+                          (unwind-protect
+                              (progn
+                                (with-current-buffer orig-buf
+                                  (insert initial-text)
+                                  (let ((start (point)))
+                                    (insert resp-text)
+                                    (put-text-property start (point) 'gptel 'response))
+                                  (insert query-text))
+                                (let ((orig-content (with-current-buffer orig-buf (buffer-string))))
+                                  (with-current-buffer tx-buf
+                                    (insert orig-content))
+                                  (with-current-buffer tx-buf
+                                    (let ((macher-agent-max-context-chars '((nil . 25)))
+                                          (state (make-macher-agent-transmission-state :target-buffer orig-buf)))
+                                      (macher-agent-memory-pipe--truncate-buffer state)))
+                                  (expect (with-current-buffer tx-buf (buffer-string))
+                                          :to-match "SYSTEM ALERT: macher-agent truncated")
+                                  (expect (with-current-buffer tx-buf (buffer-string))
+                                          :to-match "Latest user query content")
+                                  (expect (with-current-buffer orig-buf (buffer-string))
+                                          :to-equal orig-content)))
+                            (when (buffer-live-p orig-buf) (kill-buffer orig-buf))
+                            (when (buffer-live-p tx-buf) (kill-buffer tx-buf))))))
 
-  (describe "3. Autonomous Plugin Lifecycle and Context State Isolation"
-    (it "installs and uninstalls pipeline steps dynamically"
-      (let ((saved-registry (copy-hash-table macher-agent-pipeline-registry)))
-        (unwind-protect
-            (progn
-              (clrhash macher-agent-pipeline-registry)
-              (macher-agent-zero-mem-install)
-              (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
-                (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
-                (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be-truthy)
-                (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
-                (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be-truthy)
-                (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be-truthy)
-                (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy)
-                (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be-truthy))
-              (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
-              (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
-              (macher-agent-zero-mem-uninstall)
-              (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
-                (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
-                (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be nil)
-                (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
-                (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be nil)
-                (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be nil)
-                (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil)
-                (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be nil))
-              (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
-              (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
-          (setq macher-agent-pipeline-registry saved-registry))))
+          (describe "3. Autonomous Plugin Lifecycle and Context State Isolation"
+                    (it "installs and uninstalls pipeline steps dynamically"
+                        (let ((saved-registry (copy-hash-table macher-agent-pipeline-registry)))
+                          (unwind-protect
+                              (progn
+                                (clrhash macher-agent-pipeline-registry)
+                                (macher-agent-zero-mem-install)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be-truthy)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be-truthy))
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-memory-search-zero-mem)
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be-truthy)
+                                (macher-agent-zero-mem-uninstall)
+                                (let ((steps (macher-agent-get-pipeline-steps 'transmission)))
+                                  (expect (member #'macher-agent-memory-pipe--inject-tool steps) :to-be nil)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-tool steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--truncate-buffer steps) :to-be nil)
+                                  (expect (member #'macher-agent-pipe--inject-zero-mem steps) :to-be nil)
+                                  (expect (member #'macher-agent-pipe--inject-parent-context steps) :to-be nil)
+                                  (expect (member #'macher-agent-memory-pipe--inject-directive steps) :to-be nil)
+                                  (expect (member #'macher-agent-parent-memory-pipe--inject-directive steps) :to-be nil))
+                                (expect (member #'macher-agent-memory--persist-interaction macher-agent-task-flush-hook) :to-be nil)
+                                (expect (default-value 'macher-agent-search-backend-function) :to-equal #'macher-agent-search-glob))
+                            (setq macher-agent-pipeline-registry saved-registry))))
 
-    (it "manages zero-mem state strictly inside context plugins plist"
-      (expect (fboundp 'macher-agent-context-zero-mem) :to-be nil)
-      (expect (fboundp 'macher-agent--buffer-to-traces) :to-be nil)
-      (let ((ctx (make-macher-agent-context :id "test-ctx" :plugins '(:existing-key "val"))))
-        (expect (macher-agent-zero-mem-get-state ctx) :to-be nil)
-        (macher-agent-zero-mem-set-state ctx '(:traces ((:id 1 :text "node1"))))
-        (expect (macher-agent-zero-mem-get-state ctx) :to-equal '(:traces ((:id 1 :text "node1"))))
-        (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal '(:traces ((:id 1 :text "node1"))))
-        (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val"))
-      ;; Non-context handling
-      (expect (macher-agent-zero-mem-get-state nil) :to-throw 'wrong-type-argument)
-      (expect (macher-agent-zero-mem-get-state "invalid") :to-throw 'wrong-type-argument)
-      (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-throw 'wrong-type-argument))
+                    (it "manages zero-mem state strictly inside context plugins plist"
+                        (expect (fboundp 'macher-agent-context-zero-mem) :to-be nil)
+                        (expect (fboundp 'macher-agent--buffer-to-traces) :to-be nil)
+                        (let ((ctx (make-macher-agent-context :id "test-ctx" :plugins '(:existing-key "val"))))
+                          (expect (macher-agent-zero-mem-get-state ctx) :to-be nil)
+                          (macher-agent-zero-mem-set-state ctx '(:traces ((:id 1 :text "node1"))))
+                          (expect (macher-agent-zero-mem-get-state ctx) :to-equal '(:traces ((:id 1 :text "node1"))))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :zero-mem) :to-equal '(:traces ((:id 1 :text "node1"))))
+                          (expect (plist-get (macher-agent-context-plugins ctx) :existing-key) :to-equal "val"))
+                        ;; Non-context handling
+                        (expect (macher-agent-zero-mem-get-state nil) :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-zero-mem-get-state "invalid") :to-throw 'wrong-type-argument)
+                        (expect (macher-agent-zero-mem-get-state '((:zero-mem . "legacy"))) :to-throw 'wrong-type-argument))
 
-    (it "retrieves event horizon directly from context plugins"
-      (with-temp-buffer
-        (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))
-          (expect (macher-agent-zero-mem--get-event-horizon (current-buffer) ctx) :to-equal '(:line 42 :offset 1024)))))
+                    (it "retrieves event horizon directly from context plugins"
+                        (with-temp-buffer
+                          (let ((ctx (make-macher-agent-context :id "eh-ctx" :plugins '(:event-horizon (:line 42 :offset 1024)))))
+                            (expect (macher-agent-zero-mem--get-event-horizon (current-buffer) ctx) :to-equal '(:line 42 :offset 1024)))))
 
-    (it "extracts clean prompt from context prompt accessor"
-      (with-temp-buffer
-        (let ((ctx (make-macher-agent-context :id "prompt-ctx" :prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->")))
-          (expect (macher-agent-zero-mem--extract-clean-prompt (current-buffer) ctx) :to-equal "Clean Prompt Content"))))
+                    (it "extracts clean prompt from context prompt accessor"
+                        (with-temp-buffer
+                          (let ((ctx (make-macher-agent-context :id "prompt-ctx" :prompt "### Clean Prompt Content\n<!-- Local Variables:\nmode: text\n-->")))
+                            (expect (macher-agent-zero-mem--extract-clean-prompt (current-buffer) ctx) :to-equal "Clean Prompt Content"))))
 
-    (it "resolves parent buffer via context origin buffer and routing stack"
-      (let* ((parent-buf (generate-new-buffer " *test-origin-parent*"))
-             (ctx-origin (make-macher-agent-context :id "orig-ctx" :origin-buffer parent-buf)))
-        (unwind-protect
-            (progn
-              (expect (macher-agent-zero-mem--resolve-parent-buffer ctx-origin) :to-equal parent-buf)
-              (with-temp-buffer
-                (setq-local macher-agent--routing-stack (list parent-buf))
-                (expect (macher-agent-zero-mem--resolve-parent-buffer nil) :to-equal parent-buf)))
-          (when (buffer-live-p parent-buf) (kill-buffer parent-buf)))))))
+                    (it "resolves parent buffer via context origin buffer and routing stack"
+                        (let* ((parent-buf (generate-new-buffer " *test-origin-parent*"))
+                               (ctx-origin (make-macher-agent-context :id "orig-ctx" :origin-buffer parent-buf)))
+                          (unwind-protect
+                              (progn
+                                (expect (macher-agent-zero-mem--resolve-parent-buffer ctx-origin) :to-equal parent-buf)
+                                (with-temp-buffer
+                                  (setq-local macher-agent--routing-stack (list parent-buf))
+                                  (expect (macher-agent-zero-mem--resolve-parent-buffer nil) :to-equal parent-buf)))
+                            (when (buffer-live-p parent-buf) (kill-buffer parent-buf)))))))
 
 (provide 'macher-agent-zero-mem-test)
 ;;; macher-agent-zero-mem-test.el ends here

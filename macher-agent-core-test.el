@@ -36,6 +36,7 @@
 (require 'buttercup)
 (require 'cl-lib)
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 (require 'macher-agent)
 (require 'macher-agent-macher nil t)
 (require 'macher-agent-vfs)
@@ -68,10 +69,10 @@
 
                       (spy-on 'display-warning)
 
-                      (macher-agent-vfs-write (macher-agent-workspace-vfs-buffers ctx)
+                      (macher-agent-vfs-write file-path
+                                              "New content"
                                               (macher-agent-workspace-mtime-tracker ctx)
-                                              file-path
-                                              "New content")
+                                              (macher-agent-workspace-vfs-buffers ctx))
 
                       (expect 'display-warning :to-have-been-called-with
                               'macher-agent
@@ -244,6 +245,7 @@
               (expect (get 'macher-agent--current-task-id 'permanent-local) :to-be t)
               (expect (get 'macher-agent--ready-to-reap 'permanent-local) :to-be t)
               (expect (get 'macher-agent-presets 'permanent-local) :to-be t)
+              (expect (get 'macher-agent--cached-presets 'permanent-local) :to-be t)
               (expect (get 'macher-agent--active-ptc-primitives 'permanent-local) :to-be t)
               (expect (get 'macher-agent--suppress-patch 'permanent-local) :to-be t)
               (expect (get 'macher-agent--boot-directive 'permanent-local) :to-be t)

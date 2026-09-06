@@ -15,6 +15,7 @@
   (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
 
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 
 (describe "Programmatic Tool Calling (PTC)"
           (macher-agent-test-setup-before-each)
@@ -62,7 +63,7 @@
                                :tools (list tool))))
                   (unwind-protect
                       (progn
-                        (setq state (macher-agent-sandbox-append-ptc-directive state))
+                        (setq state (macher-agent-sandbox-append-ptc-to-transmission state))
                         (expect (length (macher-agent-transmission-state-directives state)) :to-equal 1)
                         (expect (car (macher-agent-transmission-state-directives state))
                                 :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ==="))

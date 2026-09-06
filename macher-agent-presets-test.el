@@ -25,6 +25,7 @@
     (add-to-list 'load-path (file-name-as-directory (expand-file-name "helpers" test-dir)))))
 
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 
 (describe "Preset and Payload Composition"
           (macher-agent-test-setup-before-each)

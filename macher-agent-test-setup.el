@@ -65,6 +65,7 @@
 (require 'macher-agent-zero-mem)
 (require 'macher-agent-orchestration)
 (require 'macher-agent-api)
+(require 'macher-agent-macher nil t)
 (require 'macher-agent)
 (require 'macher-agent-test-harness)
 (require 'macher-agent-snippet-extractor)
@@ -78,6 +79,11 @@
       (defalias 'make-gptel-fsm #'gptel-make-fsm)
     (defun make-gptel-fsm (&rest args)
       (if (plist-member args :info) args (list :info args)))))
+
+(unless (fboundp 'make-macher-agent-context)
+  (defalias 'make-macher-agent-context #'macher-agent--make-context))
+(unless (fboundp 'copy-macher-agent-context)
+  (defalias 'copy-macher-agent-context #'macher-agent--copy-context))
 
 (when (fboundp 'macher-agent-install)
   (macher-agent-install))

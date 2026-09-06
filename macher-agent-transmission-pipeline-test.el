@@ -12,6 +12,7 @@
   (add-to-list 'load-path (expand-file-name "helpers" test-dir)))
 
 (require 'macher-agent-test-setup)
+(require 'macher-agent-core)
 
 (describe "Transmission Pipeline and Formatting"
           (macher-agent-test-setup-before-each)
@@ -72,7 +73,7 @@
                           (with-current-buffer orig-buf
                             (macher-agent-add-pending-instruction "Thought 1"))
                           (setq state (macher-agent-pipe--drain-thought-queue state))
-                          (setq state (macher-agent-sandbox-append-ptc-directive state))
+                          (setq state (macher-agent-sandbox-append-ptc-to-transmission state))
                           (setq state (macher-agent-pipe--compile-directives state))
                           (let ((compiled (macher-agent-transmission-state-compiled-prompt state)))
                             (expect compiled :to-match "Base System Prompt")

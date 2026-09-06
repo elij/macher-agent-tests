@@ -41,6 +41,11 @@
     (defun make-gptel-fsm (&rest args)
       (if (plist-member args :info) args (list :info args)))))
 
+(unless (fboundp 'make-macher-agent-context)
+  (defalias 'make-macher-agent-context #'macher-agent--make-context))
+(unless (fboundp 'copy-macher-agent-context)
+  (defalias 'copy-macher-agent-context #'macher-agent--copy-context))
+
 (defmacro with-macher-agent-mock-fsm (ctx &rest body)
   "Execute BODY synchronously while pretending an FSM is active with CTX."
   (declare (indent 1))
