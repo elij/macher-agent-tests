@@ -166,12 +166,12 @@
                                (executed-err nil)
                                (passed-prims nil))
                           (cl-letf (((symbol-function 'macher-agent-execute-ptc-script)
-                                     (lambda (script-str ctx root-buf success-cb error-cb extra-prims)
+                                     (lambda (script-str ctx root-buf on-success on-error extra-prims)
                                        (expect (stringp script-str) :to-be t)
                                        (expect (macher-agent-context-p ctx) :to-be t)
                                        (expect (buffer-live-p root-buf) :to-be t)
                                        (setq passed-prims (buffer-local-value 'macher-agent--active-ptc-primitives root-buf))
-                                       (funcall success-cb 42))))
+                                       (funcall on-success 42))))
                             (macher-agent-execute-detached-ptc
                                 (:buffer-name "*test-detached-ptc*"
                                               :reap t
