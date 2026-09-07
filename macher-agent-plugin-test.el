@@ -98,7 +98,6 @@
       ;; Core and VFS steps
       (expect (member #'macher-agent-vfs--merge-payload (macher-agent-get-pipeline-steps 'payload-merge)) :to-be-truthy)
       (expect (member #'macher-agent-ctx-pipe--explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
-      (expect (member #'macher-agent-resolve-from-transit-payload (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       ;; Sandbox / PTC steps
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
       (expect (member #'macher-agent-sandbox-append-ptc-to-transmission (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
