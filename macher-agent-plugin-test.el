@@ -69,7 +69,7 @@
     (it "extracts parent-buffer from plist shared state in macher-agent-a2a-pipe--acquire-target"
       (let* ((mock-dir (make-temp-file "macher-a2a-acquire-target-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (parent-ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
+             (parent-ctx (make-macher-agent-context :project-root mock-dir :plugins (list :workspace workspace)))
              (parent-buf (generate-new-buffer "test-a2a-parent-buf"))
              (child-buf (generate-new-buffer "test-a2a-child-buf")))
         (unwind-protect
@@ -209,7 +209,7 @@
     (it "resolves context comprehensively across transit keys, wrapper states, and buffers"
       (let* ((mock-dir (make-temp-file "macher-transit-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil)))
+             (ctx (make-macher-agent-context :project-root mock-dir :plugins (list :workspace workspace))))
         (unwind-protect
             (dolist (key '(:target-context :parent-context :child-context))
               (let* ((payload (cond
@@ -227,7 +227,7 @@
     (it "executes within Virtual File System awareness scope using macher-agent-with-vfs-scope"
       (let* ((mock-dir (make-temp-file "macher-vfs-scope-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
+             (ctx (make-macher-agent-context :project-root mock-dir :plugins (list :workspace workspace)))
              (executed-dir nil)
              (executed-ctx nil)
              (eval-count 0)
@@ -266,9 +266,11 @@
     (it "chains multiple reducer steps sequentially and merges child diffs during payload-merge in bind closure"
       (let* ((mock-dir (make-temp-file "macher-chain-merge-test" t))
              (workspace (make-macher-agent-workspace :project-root mock-dir))
-             (parent-ctx (macher-agent--make-vfs-context :workspace workspace :contents nil))
-             (child-ctx (macher-agent--make-vfs-context :workspace workspace
-                                                        :contents (list (macher-agent-vfs-make-entry "merged-file.el" "initial" "initial"))))
+             (parent-ctx (make-macher-agent-context :project-root mock-dir :plugins (list :workspace workspace)))
+             (child-ctx (make-macher-agent-context
+                         :project-root mock-dir
+                         :plugins (list :workspace workspace
+                                        :vfs (list :contents (list (macher-agent-vfs-make-entry "merged-file.el" "initial" "initial"))))))
              (parent-buf (generate-new-buffer "test-chain-parent"))
              (child-buf (generate-new-buffer "test-chain-child"))
              (results-tbl (make-hash-table :test 'equal))

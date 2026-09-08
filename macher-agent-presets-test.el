@@ -31,7 +31,8 @@
           (macher-agent-test-setup-before-each)
 
           (it "applies the correct model from the skill metadata to gptel-model"
-              (let* ((mock-ctx (macher-agent--make-vfs-context :workspace (make-macher-agent-workspace :project-root "/mock/proj") :contents nil))
+              (let* ((mock-ws (make-macher-agent-workspace :project-root "/mock/proj"))
+                     (mock-ctx (make-macher-agent-context :project-root "/mock/proj" :plugins (list :workspace mock-ws)))
                      (workspace (macher-agent-context-workspace mock-ctx))
                      (skill-name 'rust-skill)
                      (skill-data '(:description "Test" :model gpt-4o :has-tools nil :context-dir nil :system "test"))
@@ -189,7 +190,7 @@
 
           (it "resolves workspace via specialised accessor macher-agent-context-workspace in mutation and resolution"
               (let* ((mock-ws (make-macher-agent-workspace :project-root "/mock/ws-root/"))
-                     (mock-ctx (macher-agent--make-vfs-context :workspace mock-ws :contents nil)))
+                     (mock-ctx (make-macher-agent-context :project-root "/mock/ws-root/" :plugins (list :workspace mock-ws))))
                 (expect (macher-agent-context-workspace mock-ctx) :to-equal mock-ws))))
 
 (provide 'macher-agent-presets-test)

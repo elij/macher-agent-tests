@@ -84,7 +84,7 @@
           (it "triggers flush hook on completion when FSM transitions to DONE"
               (let* ((buf (generate-new-buffer "*test-trigger-flush-hook*"))
                      (ws (make-macher-agent-workspace :project-root "/mock/proj"))
-                     (mock-ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                     (mock-ctx (make-macher-agent-context :project-root "/mock/proj" :plugins (list :workspace ws)))
                      (fsm (gptel-make-fsm :info (list :buffer buf :macher-agent-context mock-ctx)
                                           :state 'DONE))
                      (flush-called nil)

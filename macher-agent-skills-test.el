@@ -120,7 +120,7 @@
  (describe "Agent Skills (macher-agent-skills.el)"
            (before-each
             (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj"))
-                   (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                   (ctx (make-macher-agent-context :project-root "/mock/proj" :plugins (list :workspace ws))))
               (puthash (expand-file-name "/mock/proj") ctx macher-agent-active-workspaces)
               (setq-local macher-agent--persistent-context ctx)))
            

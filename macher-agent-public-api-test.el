@@ -40,7 +40,7 @@
 
                     (it "extracts persistent context from live buffer objects and buffer names via macher-agent-context-from-buffer"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/buf-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/buf-proj/" :plugins (list :workspace ws)))
                                (buf (generate-new-buffer "*mock-ctx-buf*")))
                           (unwind-protect
                               (progn
@@ -53,13 +53,13 @@
 
                     (it "extracts context directly or from transit payload via macher-agent-context-from-payload"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/payload-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/payload-proj/" :plugins (list :workspace ws)))
                                (payload (make-macher-agent-transit-payload :target-context ctx)))
                           (expect (macher-agent-context-from-payload payload) :to-be ctx)))
 
                     (it "reads and updates files via context API functions"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/api-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/api-proj/" :plugins (list :workspace ws)))
                                (file "src/main.el"))
                           (macher-agent-context-update ctx file "(message \"hello\")")
                           (expect (macher-agent--read-context-file ctx file) :to-equal "(message \"hello\")")
@@ -70,7 +70,10 @@
 
                     (it "executes within strict VFS boundary and triggers flush and restore"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content"))))
+                               (ctx (make-macher-agent-context
+                                     :project-root "/mock/vfs-proj/"
+                                     :plugins (list :workspace ws
+                                                    :vfs (list :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content"))))))
                                (flushed nil)
                                (restored nil)
                                (executed nil))
@@ -86,7 +89,7 @@
 
                     (it "guarantees restore execution even when body signals an error"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/vfs-proj/" :plugins (list :workspace ws)))
                                (restored nil))
                           (cl-letf (((symbol-function 'macher-agent-vfs-restore)
                                      (lambda (c) (setq restored c))))
@@ -120,12 +123,12 @@
 
                     (it "resolves context workspace root via macher-agent-context-workspace-root"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/context-ws/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                               (ctx (make-macher-agent-context :project-root "/mock/context-ws/" :plugins (list :workspace ws))))
                           (expect (macher-agent-context-workspace-root ctx) :to-equal (file-truename (expand-file-name "/mock/context-ws/")))))
 
                     (it "triggers task flush hook in force-review with explicit context"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/force-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/force-proj/" :plugins (list :workspace ws)))
                                (flushed-ctx nil))
                           (spy-on 'macher-agent-run-task-flush-hook :and-call-fake (lambda (c) (setq flushed-ctx c)))
                           (macher-agent-force-review ctx)
@@ -134,7 +137,7 @@
 
                     (it "triggers task flush hook in force-review resolving active context"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/force-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/force-proj/" :plugins (list :workspace ws)))
                                (flushed-ctx nil))
                           (setq-local macher-agent--persistent-context ctx)
                           (spy-on 'macher-agent-run-task-flush-hook :and-call-fake (lambda (c) (setq flushed-ctx c)))
@@ -562,7 +565,7 @@
 
                     (it "adds buffer contents to scope in context via macher-agent-scope-add-file"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                               (ctx (make-macher-agent-context :project-root "/mock/proj/" :plugins (list :workspace ws))))
                           (with-temp-buffer
                             (rename-buffer "*mock-scope-buf*" t)
                             (insert "buffer sample content")
@@ -572,7 +575,7 @@
 
                     (it "logs tool execution intents cleanly in context audit log"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/audit-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                               (ctx (make-macher-agent-context :project-root "/mock/audit-proj/" :plugins (list :workspace ws))))
                           (macher-agent-log-tool-intent ctx "gptel-tool" "read_file" '(:path "foo.el"))
                           (let ((log (plist-get (macher-agent-context-plugins ctx) :audit-log)))
                             (expect (length log) :to-equal 1)

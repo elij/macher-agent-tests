@@ -47,6 +47,9 @@
       (expect (fboundp 'macher-agent-context-lookup) :to-be t)
       (expect (fboundp 'macher-agent-trigger-patch) :to-be t)
       (expect (fboundp 'macher-agent-apply-patch) :to-be t)
+      (expect (fboundp 'macher-agent-workspace-p) :to-be nil)
+      (expect (fboundp 'macher-agent--unwrap-workspace) :to-be nil)
+      (expect (fboundp 'macher-agent--make-vfs-context) :to-be nil)
       (expect (fboundp 'macher-agent-macher-register-workspace-type) :to-be nil)
       (expect (fboundp 'macher-agent-macher-build-patch-from-vfs) :to-be nil)
       (expect (fboundp 'macher-agent--create-and-tag-vfs-context) :to-be nil)
@@ -159,7 +162,7 @@
         (expect (macher-agent-macher-workspace-name ctx) :to-equal "workspace"))))
 
   (describe "macher-agent-macher-safe-workspace-hash and macher-agent-macher-workspace-hash"
-    (it "computes deterministic hash for macher-agent-context"
+    (it "computes deterministic 16-character hash for macher-agent-context"
       (let* ((ctx (make-macher-agent-context :project-root "/path/to/my/project"))
              (hash1 (macher-agent-macher-safe-workspace-hash ctx))
              (hash2 (macher-agent-macher-safe-workspace-hash ctx)))
@@ -170,19 +173,6 @@
     (it "signals wrong-type-argument when passed non-context"
       (let ((ws (cons 'project "/path/to/my/project")))
         (expect (macher-agent-macher-safe-workspace-hash ws) :to-throw 'wrong-type-argument)))
-
-    (it "respects optional length argument in macher-agent-macher-safe-workspace-hash"
-      (let* ((ctx (make-macher-agent-context :project-root "/path/to/my/project"))
-             (full-hash (macher-agent-macher-safe-workspace-hash ctx))
-             (hash-4 (macher-agent-macher-safe-workspace-hash ctx 4))
-             (hash-8 (macher-agent-macher-safe-workspace-hash ctx 8))
-             (hash-32 (macher-agent-macher-safe-workspace-hash ctx 32)))
-        (expect (length hash-4) :to-equal 4)
-        (expect hash-4 :to-equal (substring full-hash 0 4))
-        (expect (length hash-8) :to-equal 8)
-        (expect hash-8 :to-equal (substring full-hash 0 8))
-        (expect (length hash-32) :to-equal 32)
-        (expect (substring hash-32 0 16) :to-equal full-hash)))
 
     (it "computes workspace hash with default length 16 and custom length for workspace cons"
       (let* ((ws (cons 'project "/path/to/my/project"))
@@ -218,7 +208,7 @@
           (expect (plist-get (cdr entry) :get-name) :to-equal 'macher-agent--get-name)
           (expect (plist-get (cdr entry) :get-files) :to-equal 'my-custom-files-fn)))))
 
-  (describe "Workspace tagging, unwrapping, and accessors with macher-agent-context"
+  (describe "Workspace tagging and accessors with macher-agent-context"
     (it "retrieves tagged workspace structure from macher-agent-context"
       (let* ((proj-root "/tmp/test-proj-dir")
              (ws-cons (cons 'project (expand-file-name proj-root)))
@@ -226,11 +216,6 @@
                                              :plugins (list :workspace ws-cons))))
         (expect (macher-agent-context-workspace ctx)
                 :to-equal ws-cons)))
-
-    (it "unwraps macher-agent-context cleanly via macher-agent--unwrap-workspace"
-      (let* ((proj-root "/tmp/test-proj-dir")
-             (ctx (make-macher-agent-context :project-root proj-root)))
-        (expect (macher-agent--unwrap-workspace ctx) :to-equal proj-root)))
 
     (it "generates display name cleanly via macher-agent--get-name for macher-agent-context"
       (let ((ctx (make-macher-agent-context :project-root "/tmp/my-project"))

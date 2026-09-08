@@ -142,7 +142,7 @@
   (describe "7. Context Clearing and FSM Resolution"
     (it "clears persistent context and resets to physical baseline"
       (let* ((ws (make-macher-agent-workspace :project-root "/tmp/clean-test"))
-             (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+             (ctx (make-macher-agent-context :project-root "/tmp/clean-test" :plugins (list :workspace ws))))
         (setf (macher-agent-context-id ctx) "ctx-to-clear")
         (with-temp-buffer
           (setq-local macher-agent--persistent-context ctx)

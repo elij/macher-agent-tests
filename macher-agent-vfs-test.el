@@ -203,16 +203,26 @@
                     (it "uses macher-agent-macher-workspace-name and macher-agent-macher-safe-workspace-hash"
                         (let* ((ctx (macher-agent--make-context :project-root "/mock/test-bridge/"))
                                (ws-name (macher-agent-macher-workspace-name ctx))
-                               (hash (macher-agent-macher-safe-workspace-hash ctx 4))
+                               (hash (macher-agent-macher-safe-workspace-hash ctx))
                                (name (macher-agent--expressive-patch-buffer-name ctx "physical" "agent-buf")))
                           (expect name :to-equal (format "*macher-physical-patch:project@%s<%s>[agent-buf]*" ws-name hash))))
 
                     (it "handles fallback when buffer is not supplied"
                         (let* ((ctx (macher-agent--make-context :project-root "/mock/test-bridge/"))
                                (ws-name (macher-agent-macher-workspace-name ctx))
-                               (hash (macher-agent-macher-safe-workspace-hash ctx 4))
+                               (hash (macher-agent-macher-safe-workspace-hash ctx))
                                (name (macher-agent--expressive-patch-buffer-name ctx "physical" nil)))
                           (expect name :to-equal (format "*macher-physical-patch:project@%s<%s>*" ws-name hash)))))
+
+          (describe "macher-agent--gather-vfs-entries"
+                    (it "gathers entries directly from context or supplied files list"
+                        (let* ((entry (macher-agent-vfs-make-entry "/mock/proj/a.el" "1" "2"))
+                               (ctx (macher-agent--make-context
+                                     :project-root "/mock/proj/"
+                                     :plugins (list :vfs (list :contents (list entry))))))
+                          (expect (macher-agent--gather-vfs-entries ctx) :to-equal (list entry))
+                          (let ((custom (list (macher-agent-vfs-make-entry "/mock/proj/b.el" "3" "4"))))
+                            (expect (macher-agent--gather-vfs-entries ctx custom) :to-equal custom)))))
 
           (describe "macher-agent--build-and-rename-patch"
                     (it "delegates patch building directly to macher-agent-macher-build-patch"

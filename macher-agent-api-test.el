@@ -97,7 +97,7 @@
 
                     (it "reads and updates context file contents via context API"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/api-test-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/api-test-proj/" :plugins (list :workspace ws)))
                                (test-file "lib/module.el"))
                           (macher-agent-context-update ctx test-file "(defun test-api () t)")
                           (expect (macher-agent-context-read ctx test-file) :to-equal "(defun test-api () t)")
@@ -106,7 +106,7 @@
 
                     (it "adds buffer contents to context scope via macher-agent-scope-add-file"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/scope-proj/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/scope-proj/" :plugins (list :workspace ws)))
                                (buf (generate-new-buffer "*scope-test-buf*")))
                           (unwind-protect
                               (progn
@@ -119,7 +119,7 @@
 
                     (it "adds buffer to scope interactively via macher-agent-add-buffer-to-scope"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/interactive-scope/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil))
+                               (ctx (make-macher-agent-context :project-root "/mock/interactive-scope/" :plugins (list :workspace ws)))
                                (buf (generate-new-buffer "*interactive-scope-buf*")))
                           (unwind-protect
                               (progn
@@ -138,7 +138,7 @@
 
                     (it "resolves context workspace root via macher-agent-context-workspace-root"
                         (let* ((ws (make-macher-agent-workspace :project-root "/mock/ctx-ws/"))
-                               (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+                               (ctx (make-macher-agent-context :project-root "/mock/ctx-ws/" :plugins (list :workspace ws))))
                           (expect (macher-agent-context-workspace-root ctx)
                                   :to-equal (file-truename (expand-file-name "/mock/ctx-ws/")))))
 

@@ -65,7 +65,7 @@ CALL-COUNTER is a symbol bound in the calling environment that increments on dis
   `(let* ((queues (copy-tree ,routing-alist))
           (ws-root (file-name-as-directory (file-truename default-directory)))
           (ws (make-macher-agent-workspace :project-root ws-root))
-          (ctx (macher-agent--make-vfs-context :workspace ws :contents nil)))
+          (ctx (make-macher-agent-context :project-root ws-root :plugins (list :workspace ws))))
 
      (setq-local macher-agent--persistent-context ctx)
      (puthash (expand-file-name default-directory) ctx macher-agent-active-workspaces)
