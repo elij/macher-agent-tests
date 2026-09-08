@@ -21,19 +21,24 @@
           (macher-agent-test-setup-before-each)
 
           (it "handles generator yield and normalizes tool call interrupts"
-              (let* ((macher-agent--active-ptc-primitives '(spawn-subagent)))
-                ;; Direct eval-iter interrupt
+              (let* ((macher-agent--active-ptc-primitives '(spawn-subagent))
+                     (macher-agent-sandbox--globals (make-hash-table :test 'eq))
+                     (macher-agent-sandbox--primitives (make-hash-table :test 'eq))
+                     (macher-agent-sandbox--functions (make-hash-table :test 'eq)))
+                
+                (macher-agent-sandbox--init)
+
                 (let* ((iter (macher-agent-sandbox--eval-iter '(spawn-subagent "test" nil) nil))
                        (yield-val (iter-next iter)))
                   (expect (macher-agent-tool-call-p yield-val) :to-be t)
                   (expect (macher-agent-tool-call-name yield-val) :to-equal 'spawn-subagent))
-                ;; Indirect funcall / apply invocation
+
                 (let* ((iter (macher-agent-sandbox--funcall-iter 'spawn-subagent '("agent-alpha")))
                        (yield (iter-next iter)))
                   (expect (macher-agent-tool-call-p yield) :to-be t)
                   (expect (macher-agent-tool-call-name yield) :to-equal 'spawn-subagent)
                   (expect (macher-agent-tool-call-args yield) :to-equal '("agent-alpha")))
-                ;; Alist arguments converted to plist
+
                 (let* ((iter1 (macher-agent-sandbox--funcall-iter 'spawn-subagent '((path . "/tmp") (name . "test"))))
                        (yield1 (iter-next iter1))
                        (iter2 (macher-agent-sandbox--funcall-iter 'spawn-subagent '(((path . "/tmp") (name . "test")))))
