@@ -428,6 +428,7 @@
 
                      (it "invokes gptel presentation function with callback and tasks positionally"
                          (let* ((ctx (macher-agent--make-context))
+                                (macher-agent--persistent-context ctx)
                                 (pres-fn (gptel-tool-function macher-agent-delegate-tasks-to-subagents-tool))
                                 (tasks (vector (list :buffer_name "pres-worker" :instructions "Presentation task")))
                                 (callback-called nil))
