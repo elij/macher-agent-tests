@@ -501,15 +501,13 @@
                      (hook-fn (lambda (&rest _) (setq flush-called t))))
                 (unwind-protect
                     (with-current-buffer target-buf
-                      (setq-local macher-agent--persistent-context mock-ctx)
-                      (setq-local macher-agent--pending-instructions-queue '("pending-1"))
-                      (add-hook 'macher-agent-task-flush-hook hook-fn)
-                      (macher-agent-gptel--trigger-flush fsm)
-                      (expect flush-called :to-be t)
-                      (expect macher-agent--pending-instructions-queue :to-be nil))
-                  (remove-hook 'macher-agent-task-flush-hook hook-fn)
-                  (when (buffer-live-p target-buf)
-                    (kill-buffer target-buf))))))
+                      (setq-local macher-agent--persistent-context mock-ctx))
+                  (add-hook 'macher-agent-task-flush-hook hook-fn)
+                  (macher-agent-gptel--trigger-flush fsm)
+                  (expect flush-called :to-be t))
+                (remove-hook 'macher-agent-task-flush-hook hook-fn)
+                (when (buffer-live-p target-buf)
+                  (kill-buffer target-buf)))))
 
 (describe "11. Centralised Universal Constants, Global State, and Utility Functions"
           (it "verifies global state and registries are initialised in core"

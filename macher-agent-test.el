@@ -37,23 +37,6 @@
 (describe "Macher Agent Main Module"
           (macher-agent-test-setup-before-each)
 
-          (describe "macher-agent-inject-thought"
-                    (it "queues instruction formatted as user override into pending instructions"
-                        (let ((added-instruction nil))
-                          (cl-letf (((symbol-function 'macher-agent-add-pending-instruction)
-                                     (lambda (inst) (setq added-instruction inst))))
-                            (macher-agent-inject-thought "focus on performance")
-                            (expect added-instruction :to-equal "USER OVERRIDE: focus on performance"))))
-
-                    (it "works seamlessly with context using direct slot access"
-                        (with-temp-buffer
-                          (let ((ctx (make-macher-agent-context :id "thought-ctx" :project-root "/tmp/test")))
-                            (setq-local macher-agent--persistent-context ctx)
-                            (expect (macher-agent-context-id macher-agent--persistent-context) :to-equal "thought-ctx")
-                            (expect (macher-agent-context-project-root macher-agent--persistent-context) :to-equal "/tmp/test")
-                            (macher-agent-inject-thought "optimize loop")
-                            (expect (macher-agent-context-p macher-agent--persistent-context) :to-be t)))))
-
           (describe "macher-agent-mode"
                     (it "sets up gptel mode and tools when enabled"
                         (with-temp-buffer

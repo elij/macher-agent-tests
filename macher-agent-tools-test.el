@@ -68,8 +68,8 @@
                            :args '((:name "prefix" :type "string")
                                    (:name "content" :type "string"))
                            :function (macher-agent-with-presentation-context (prefix content)
-                                       (let* ((native-fn (get 'mock-tools-sync-tool 'ptc-function)))
-                                         (funcall native-fn prefix content context)))))
+                                                                             (let* ((native-fn (get 'mock-tools-sync-tool 'ptc-function)))
+                                                                               (funcall native-fn prefix content context)))))
 
                         (put 'mock-tools-sync-tool 'ptc-function
                              (lambda (prefix content _context)
@@ -93,9 +93,9 @@
                            :args '((:name "input" :type "string"))
                            :async t
                            :function (macher-agent-with-presentation-context (input)
-                                       (let* ((native-fn (get 'mock-tools-async-tool 'ptc-function)))
-                                         (funcall native-fn input context
-                                                  (lambda (res) (funcall callback res)))))))
+                                                                             (let* ((native-fn (get 'mock-tools-async-tool 'ptc-function)))
+                                                                               (funcall native-fn input context
+                                                                                        (lambda (res) (funcall callback res)))))))
 
                         (put 'mock-tools-async-tool 'ptc-function
                              (lambda (input _context on-success)
@@ -116,10 +116,10 @@
                            :category "test-tools"
                            :args '((:name "val" :type "string"))
                            :function (macher-agent-with-presentation-context (val)
-                                       (let* ((native-fn (get 'mock-tools-formatter-tool 'ptc-function))
-                                              (raw-res (funcall native-fn val context))
-                                              (formatted (format "%s (input was %s)" raw-res val)))
-                                         (upcase formatted)))))
+                                                                             (let* ((native-fn (get 'mock-tools-formatter-tool 'ptc-function))
+                                                                                    (raw-res (funcall native-fn val context))
+                                                                                    (formatted (format "%s (input was %s)" raw-res val)))
+                                                                               (upcase formatted)))))
 
                         (put 'mock-tools-formatter-tool 'ptc-function
                              (lambda (val _context)
@@ -181,18 +181,7 @@
           ;; --------------------------------------------------------------------------
           ;; 4. Instruction Queue and Memory Search Utilities
           ;; --------------------------------------------------------------------------
-          (describe "4. Instruction Queue and Memory Search Utilities"
-                    (it "pushes override directives buffer-locally to pending instructions queue"
-                        (with-temp-buffer
-                          (setq-local macher-agent--pending-instructions-queue nil)
-                          (macher-agent-add-pending-instruction "Refactor module X")
-                          (macher-agent-add-pending-instruction "Ensure all tests pass")
-                          (expect (length macher-agent--pending-instructions-queue) :to-equal 2)
-                          (expect (car macher-agent--pending-instructions-queue)
-                                  :to-equal "USER OVERRIDE DIRECTIVE:\nRefactor module X")
-                          (expect (cadr macher-agent--pending-instructions-queue)
-                                  :to-equal "USER OVERRIDE DIRECTIVE:\nEnsure all tests pass")))
-
+          (describe "4. Memory Search Utilities"
                     (it "searches conversation history buffers accurately with line contexts"
                         (let ((buf (generate-new-buffer "*mock-search-history*")))
                           (unwind-protect
@@ -296,7 +285,7 @@
                              :category "test-tools"
                              :args '((:name "input" :type "string"))
                              :function (macher-agent-with-presentation-context (input)
-                                         (funcall (get 'mock-delegated-tool 'ptc-function) input context))))
+                                                                               (funcall (get 'mock-delegated-tool 'ptc-function) input context))))
                           (put 'mock-delegated-tool 'ptc-function
                                (lambda (input context)
                                  (setq received-ctx context)
@@ -320,7 +309,7 @@
                              :category "test-tools"
                              :args '((:name "param" :type "string"))
                              :function (macher-agent-with-presentation-context (param)
-                                         (funcall (get 'mock-fsm-context-tool 'ptc-function) param context))))
+                                                                               (funcall (get 'mock-fsm-context-tool 'ptc-function) param context))))
                           (put 'mock-fsm-context-tool 'ptc-function
                                (lambda (param context)
                                  (setq received-ctx context)
@@ -350,7 +339,7 @@
                                    :category "test-tools"
                                    :args '((:name "action" :type "string"))
                                    :function (macher-agent-with-presentation-context (action)
-                                               (funcall (get 'mock-origin-tool 'ptc-function) action context))))
+                                                                                     (funcall (get 'mock-origin-tool 'ptc-function) action context))))
                                 (put 'mock-origin-tool 'ptc-function
                                      (lambda (action context)
                                        (setq received-ctx context)
@@ -383,7 +372,7 @@
                                    :category "test-tools"
                                    :args '((:name "item" :type "string"))
                                    :function (macher-agent-with-presentation-context (item)
-                                               (funcall (get 'mock-buffer-fallback-tool 'ptc-function) item context))))
+                                                                                     (funcall (get 'mock-buffer-fallback-tool 'ptc-function) item context))))
                                 (put 'mock-buffer-fallback-tool 'ptc-function
                                      (lambda (item context)
                                        (setq received-ctx context)

@@ -61,7 +61,7 @@
                           (kill-buffer init-buf)
                           (kill-buffer subseq-buf)))
 
-                    (it "drains thought queue, appends PTC directives, and compiles system prompt"
+                    (it "appends PTC directives, and compiles system prompt"
                         (let* ((orig-buf (generate-new-buffer "test-thought-ptc-buf"))
                                (state (make-macher-agent-transmission-state
                                        :base-prompt "Base System Prompt"
@@ -70,14 +70,10 @@
                                        :tools (list (gptel-make-tool :name "spawn-subagent"
                                                                      :description "Spawn subagent"
                                                                      :args '((:name "path" :type "string")))))))
-                          (with-current-buffer orig-buf
-                            (macher-agent-add-pending-instruction "Thought 1"))
-                          (setq state (macher-agent-pipe--drain-thought-queue state))
                           (setq state (macher-agent-sandbox-append-ptc-to-transmission state))
                           (setq state (macher-agent-pipe--compile-directives state))
                           (let ((compiled (macher-agent-transmission-state-compiled-prompt state)))
                             (expect compiled :to-match "Base System Prompt")
-                            (expect compiled :to-match "USER OVERRIDE DIRECTIVE:\nThought 1")
                             (expect compiled :to-match "=== PROGRAMMATIC TOOL CALLING (PTC) ==="))
                           (kill-buffer orig-buf))))
 
@@ -92,11 +88,9 @@
                 (unwind-protect
                     (with-current-buffer buf
                       (setq-local macher-agent--persistent-context mock-ctx)
-                      (setq-local macher-agent--pending-instructions-queue '("queue-item"))
                       (add-hook 'macher-agent-task-flush-hook hook-fn)
                       (macher-agent-gptel--trigger-flush fsm)
-                      (expect flush-called :to-be t)
-                      (expect macher-agent--pending-instructions-queue :to-be nil))
+                      (expect flush-called :to-be t))
                   (remove-hook 'macher-agent-task-flush-hook hook-fn)
                   (when (buffer-live-p buf)
                     (kill-buffer buf))))))
