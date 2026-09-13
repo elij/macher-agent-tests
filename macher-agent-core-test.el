@@ -215,6 +215,7 @@
 
 (describe "7. Agent Orchestration and Sub-agent Delegation"
           (it "dispatches point-to-point A2A payloads and invokes completion callback"
+              (setq-local macher-agent--persistent-context (make-macher-agent-context :id "test-orchestrator"))
               (let* ((callback-result nil)
                      (sub-buf (get-buffer-create "sub-agent-buf"))
                      (payloads (list (macher-agent-make-a2a-payload

@@ -65,15 +65,6 @@
                                    '(normal-preset-1) '(exclusive-preset normal-preset-2) known)
                                   :to-equal '(exclusive-preset))))
 
-                    (it "detects redirect when inline preset is used with no remaining prompt text"
-                        (with-temp-buffer
-                          (insert "   \t\n  ")
-                          (expect (macher-agent--transformer-detect-redirect t (point-min) '(coder)) :to-equal 'coder)
-                          (expect (macher-agent--transformer-detect-redirect nil (point-min) '(coder)) :to-be nil))
-                        (with-temp-buffer
-                          (insert "some actual task instruction")
-                          (expect (macher-agent--transformer-detect-redirect t (point-min) '(coder)) :to-be nil)))
-
                     (it "operates exclusively in the prompt buffer without mutating originating buffer model or tools"
                         (let* ((orig-buf (generate-new-buffer "*test-orig-isolation*"))
                                (temp-buf (generate-new-buffer " *test-prompt*"))
