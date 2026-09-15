@@ -55,7 +55,7 @@
 
           (it "injects is-command flag when registered from commands directory"
               (let* ((ctx (make-macher-agent-context :id "cmd-test-ctx" :project-root "/tmp/mock-proj"))
-                     (parsed (list :name "commit" :name-sym 'commit :body "Commit message: $1"))
+                     (parsed (list :name "commit" :name-sym 'commit :system "Commit message: $1"))
                      (cmd-path "/tmp/mock-proj/commands/commit.md"))
                 (macher-agent--register-parsed-skill parsed cmd-path ctx)
                 (if-let* ((skills (macher-agent-context-skills ctx))
@@ -67,7 +67,7 @@
 
           (it "does not inject is-command flag for standard skills"
               (let* ((ctx (make-macher-agent-context :id "skill-test-ctx" :project-root "/tmp/mock-proj"))
-                     (parsed (list :name "coder" :name-sym 'coder :body "Coder system persona"))
+                     (parsed (list :name "coder" :name-sym 'coder :system "Coder system persona"))
                      (skill-path "/tmp/mock-proj/skills/coder/SKILL.md"))
                 (macher-agent--register-parsed-skill parsed skill-path ctx)
                 (if-let* ((skills (macher-agent-context-skills ctx))
@@ -87,8 +87,7 @@
                        (ctx (make-macher-agent-context :id "pipe-ctx"
                                                        :project-root "/tmp/mock-proj"
                                                        :prompt "@commit \"feat: initial release\""))
-                       (cmd-preset (list :name "commit"
-                                         :body "Git commit changes with message: $1"
+                       (cmd-preset (list :system "Git commit changes with message: $1"
                                          :is-command t)))
                   (setq-local macher-agent--persistent-context ctx)
                   (setq-local gptel-system-prompt "You are a helpful programming assistant.")
@@ -107,7 +106,6 @@
                                                        :project-root "/tmp/mock-proj"
                                                        :prompt "@review"))
                        (skill-preset (list :name "review"
-                                           :body "Review the pull request carefully."
                                            :system "Review the pull request carefully.")))
                   (setq-local macher-agent--persistent-context ctx)
                   (setq-local gptel-system-prompt nil)
