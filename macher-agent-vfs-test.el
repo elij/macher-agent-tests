@@ -758,7 +758,40 @@
                                             :to-throw 'wrong-type-argument)
                                     (let ((entry (macher-agent-vfs-make-entry "file.el" "a" "b")))
                                       (expect (macher-agent--sync-context-entry entry ht "/tmp/")
-                                              :to-throw 'wrong-type-argument)))))))
+                                              :to-throw 'wrong-type-argument)))))
+
+                    (describe "macher-agent--update-context-file deletions"
+                              (it "accepts nil content when removing files and removes tracker entries"
+                                  (let* ((ctx (make-macher-agent-context :project-root "/mock/proj/"))
+                                         (vfs-ht (macher-agent-workspace-vfs-buffers ctx))
+                                         (mtime-ht (macher-agent-workspace-mtime-tracker ctx))
+                                         (entry (make-macher-agent-vfs-entry
+                                                 :path "foo.el" :orig "content" :curr "content")))
+                                    (macher-agent--set-context-contents ctx (list entry))
+                                    (puthash "foo.el" "content" vfs-ht)
+                                    (puthash "foo.el" '(25000 1000) mtime-ht)
+                                    (macher-agent--update-context-file ctx "foo.el" nil)
+                                    (let* ((contents (macher-agent--get-context-contents ctx))
+                                           (updated-entry (car contents)))
+                                      (expect (macher-agent-vfs-entry-curr updated-entry) :to-be nil)
+                                      (expect (gethash "foo.el" vfs-ht) :to-be nil)
+                                      (expect (gethash "foo.el" mtime-ht) :to-be nil))))
+
+                              (it "merges deleted files from child to parent context cleanly"
+                                  (let* ((parent-ctx (make-macher-agent-context :project-root "/mock/proj/"))
+                                         (child-ctx (make-macher-agent-context :project-root "/mock/proj/"))
+                                         (p-entry (make-macher-agent-vfs-entry
+                                                   :path "bar.el" :orig "orig" :curr "orig"))
+                                         (c-entry (make-macher-agent-vfs-entry
+                                                   :path "bar.el" :orig "orig" :curr nil)))
+                                    (macher-agent--set-context-contents parent-ctx (list p-entry))
+                                    (macher-agent--set-context-contents child-ctx (list c-entry))
+                                    (expect (macher-agent--merge-contexts parent-ctx child-ctx)
+                                            :not :to-throw)
+                                    (let* ((contents (macher-agent--get-context-contents parent-ctx))
+                                           (merged-entry (car contents)))
+                                      (expect (macher-agent-vfs-entry-curr merged-entry) :to-be nil)
+                                      (expect (macher-agent--get-context-dirty-p parent-ctx) :to-be t)))))))
 
 (provide 'macher-agent-vfs-test)
 ;;; macher-agent-vfs-test.el ends here
