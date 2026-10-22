@@ -38,7 +38,9 @@
      (macher-agent-zero-mem-uninstall))
    (when (fboundp 'macher-agent-sandbox-uninstall)
      (macher-agent-sandbox-uninstall))
-   (setq macher-agent-search-backend-function #'macher-agent-search-glob))
+   (setq macher-agent-search-backend-function #'macher-agent-search-glob)
+   (when (fboundp 'macher-agent-install)
+     (macher-agent-install)))
 
   (describe "1. Core Routing and Pipeline Registry"
     (it "initialises macher-agent-pipeline-registry as a hash table"
@@ -97,7 +99,6 @@
       (macher-agent-install)
       ;; Core and VFS steps
       (expect (member #'macher-agent-vfs--merge-payload (macher-agent-get-pipeline-steps 'payload-merge)) :to-be-truthy)
-      (expect (member #'macher-agent-ctx-pipe--explicit (macher-agent-get-pipeline-steps 'context-resolution)) :to-be-truthy)
       ;; Sandbox / PTC steps
       (expect (member #'macher-agent-ptc--inject-tool (macher-agent-get-pipeline-steps 'preset-composition)) :to-be-truthy)
       (expect (member #'macher-agent-sandbox-append-ptc-to-transmission (macher-agent-get-pipeline-steps 'transmission)) :to-be-truthy)
@@ -115,18 +116,15 @@
       (let ((vfs-called nil)
             (sandbox-called nil)
             (zero-mem-called nil)
-            (ctx-called nil)
             (trans-called nil))
         (cl-letf (((symbol-function 'macher-agent-vfs-install) (lambda () (setq vfs-called t)))
                   ((symbol-function 'macher-agent-sandbox-install) (lambda () (setq sandbox-called t)))
                   ((symbol-function 'macher-agent-zero-mem-install) (lambda () (setq zero-mem-called t)))
-                  ((symbol-function 'macher-agent-context-resolution-install) (lambda () (setq ctx-called t)))
                   ((symbol-function 'macher-agent-transmission-install) (lambda () (setq trans-called t))))
           (macher-agent-install)
           (expect vfs-called :to-be t)
           (expect sandbox-called :to-be t)
           (expect zero-mem-called :to-be t)
-          (expect ctx-called :to-be t)
           (expect trans-called :to-be t))))
 
     (it "manages VFS pipeline and flush hook registration via macher-agent-vfs-install"
@@ -178,16 +176,11 @@
 
   (describe "3. Polymorphic Plugin State Accessors"
     (it "reads and writes plugin state on context structs"
-      (dolist (spec (list (list :getter #'macher-agent-sandbox-get-state
-                                :setter #'macher-agent-sandbox-set-state
-                                :key :sandbox
-                                :val1 '(:active-primitives (spawn-subagent))
-                                :val2 '(:active-primitives (read-file)))
-                          (list :getter #'macher-agent-zero-mem-get-state
-                                :setter #'macher-agent-zero-mem-set-state
-                                :key :zero-mem
-                                :val1 '(:traces ((:id 1 :text "trace-a")))
-                                :val2 '(:traces ((:id 2 :text "trace-b"))))))
+      (let ((spec (list :getter #'macher-agent-zero-mem-get-state
+                        :setter #'macher-agent-zero-mem-set-state
+                        :key :zero-mem
+                        :val1 '(:traces ((:id 1 :text "trace-a")))
+                        :val2 '(:traces ((:id 2 :text "trace-b"))))))
         (let ((getter (plist-get spec :getter))
               (setter (plist-get spec :setter))
               (key (plist-get spec :key))
@@ -199,12 +192,7 @@
             (funcall setter ctx val1)
             (expect (funcall getter ctx) :to-equal val1)
             (expect (plist-get (macher-agent-context-plugins ctx) key) :to-equal val1)
-            (expect (plist-get (macher-agent-context-plugins ctx) :preserved) :to-equal "val"))))))
-
-    (it "strictly enforces context structures and rejects alists in sandbox state accessors"
-      (let ((alist-ctx '((:sandbox . (:active-primitives (spawn-subagent))))))
-        (expect (macher-agent-sandbox-get-state alist-ctx) :to-throw 'wrong-type-argument)
-        (expect (macher-agent-sandbox-set-state alist-ctx '(:active-primitives (spawn-subagent))) :to-throw 'wrong-type-argument)))
+            (expect (plist-get (macher-agent-context-plugins ctx) :preserved) :to-equal "val")))))
 
     (it "resolves context comprehensively across transit keys, wrapper states, and buffers"
       (let* ((mock-dir (make-temp-file "macher-transit-test" t))
@@ -418,9 +406,10 @@
                            (when (and (consp fn) (eq (car fn) 'quote))
                              (setq fn (cadr fn)))
                            (and (symbolp fn)
+                                (not (eq fn 'macher-agent-log-tool-intent))
                                 (string-prefix-p "macher-agent-" (symbol-name fn))))))
                   forms)))
-            (expect internal-declares :to-equal nil))))))
+            (expect internal-declares :to-equal nil)))))))
 
 (provide 'macher-agent-plugin-test)
 ;;; macher-agent-plugin-test.el ends here

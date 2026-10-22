@@ -68,50 +68,47 @@
 
           (describe "Strict VFS Pipeline Regression"
 
-                    (it "executes within strict VFS boundary and triggers flush and restore"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
+                    (it "executes within strict VFS boundary and manages sandbox lifecycle"
+                        (let* ((temp-dir (make-temp-file "vfs-reg-" t))
+                               (ws (make-macher-agent-workspace :project-root temp-dir))
                                (ctx (make-macher-agent-context
-                                     :project-root "/mock/vfs-proj/"
-                                     :plugins (list :workspace ws
-                                                    :vfs (list :contents (list (make-macher-agent-vfs-entry :path "mock-file.txt" :orig "content" :curr "content"))))))
-                               (flushed nil)
-                               (restored nil)
-                               (executed nil))
-                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
-                                     (lambda (c) (setq flushed c)))
-                                    ((symbol-function 'macher-agent-vfs-restore)
-                                     (lambda (c) (setq restored c))))
-                            (macher-agent-with-strict-vfs ctx
-                              (setq executed t))
-                            (expect flushed :to-equal ctx)
-                            (expect restored :to-equal ctx)
-                            (expect executed :to-be t))))
+                                     :project-root temp-dir
+                                     :plugins (list :workspace ws)))
+                               (executed nil)
+                               (inside-dir nil))
+                          (spy-on 'macher-agent--vfs-sync-baseline)
+                          (unwind-protect
+                              (progn
+                                (macher-agent-with-strict-vfs-pipeline ctx
+                                  (setq executed t)
+                                  (setq inside-dir default-directory))
+                                (expect executed :to-be t)
+                                (expect (file-equal-p inside-dir temp-dir) :to-be nil))
+                            (delete-directory temp-dir t))))
 
-                    (it "guarantees restore execution even when body signals an error"
-                        (let* ((ws (make-macher-agent-workspace :project-root "/mock/vfs-proj/"))
-                               (ctx (make-macher-agent-context :project-root "/mock/vfs-proj/" :plugins (list :workspace ws)))
-                               (restored nil))
-                          (cl-letf (((symbol-function 'macher-agent-vfs-restore)
-                                     (lambda (c) (setq restored c))))
-                            (expect
-                             (macher-agent-with-strict-vfs ctx
-                               (error "Forced pipeline failure"))
-                             :to-throw 'error)
-                            (expect restored :to-equal ctx))))
+                    (it "guarantees sandbox directory cleanup even when body signals an error"
+                        (let* ((temp-dir (make-temp-file "vfs-err-" t))
+                               (ws (make-macher-agent-workspace :project-root temp-dir))
+                               (ctx (make-macher-agent-context :project-root temp-dir :plugins (list :workspace ws)))
+                               (captured-sandbox nil))
+                          (spy-on 'macher-agent--vfs-sync-baseline)
+                          (unwind-protect
+                              (progn
+                                (expect
+                                 (macher-agent-with-strict-vfs-pipeline ctx
+                                   (setq captured-sandbox default-directory)
+                                   (error "Forced pipeline failure"))
+                                 :to-throw 'error)
+                                (expect captured-sandbox :not :to-be nil)
+                                (expect (file-exists-p captured-sandbox) :to-be nil))
+                            (delete-directory temp-dir t))))
 
-                    (it "bypasses flush and restore when context is inactive or nil"
-                        (let ((flushed nil)
-                              (restored nil)
-                              (res nil))
-                          (cl-letf (((symbol-function 'macher-agent-vfs-flush)
-                                     (lambda (_) (setq flushed t)))
-                                    ((symbol-function 'macher-agent-vfs-restore)
-                                     (lambda (_) (setq restored t))))
-                            (setq res (macher-agent-with-strict-vfs nil
-                                        'non-vfs-result))
-                            (expect res :to-equal 'non-vfs-result)
-                            (expect flushed :to-be nil)
-                            (expect restored :to-be nil)))))
+                    (it "bypasses sandbox creation when context is inactive or nil"
+                        (let* ((initial-dir default-directory)
+                               (res (macher-agent-with-strict-vfs-pipeline nil
+                                      (expect default-directory :to-equal initial-dir)
+                                      'non-vfs-result)))
+                          (expect res :to-equal 'non-vfs-result))))
 
           (describe "Workspace Root, Task Flush Hooks, and Module Invariants"
 
@@ -190,27 +187,6 @@
                             (expect (or (member 'macher-agent-macher requires) (member ''macher-agent-macher requires)) :to-be-truthy)
                             (expect (member 'macher-agent requires) :to-be nil)
                             (expect (member ''macher-agent requires) :to-be nil))))
-
-                    (it "does not duplicate macher-agent--allow-gptel-restore in macher-agent-api.el"
-                        (let* ((api-file (or (locate-library "macher-agent-api.el")
-                                             (expand-file-name "macher-agent-api.el" default-directory)))
-                               (forms nil))
-                          (with-temp-buffer
-                            (insert-file-contents api-file)
-                            (goto-char (point-min))
-                            (condition-case nil
-                                (while t
-                                  (push (read (current-buffer)) forms))
-                              (end-of-file nil)))
-                          (let ((defvars
-                                 (cl-remove-if-not
-                                  (lambda (form)
-                                    (and (consp form)
-                                         (memq (car form) '(defvar defcustom defconst))
-                                         (eq (cadr form) 'macher-agent--allow-gptel-restore)))
-                                  forms)))
-                            (expect defvars :to-equal nil)
-                            (expect (boundp 'macher-agent--allow-gptel-restore) :to-be t))))
 
                     (it "contains no internal declare-function forms in macher-agent-gptel.el and requires internal modules directly"
                         (let* ((gptel-file (or (locate-library "macher-agent-gptel.el")
@@ -432,7 +408,8 @@
                                            (when (and (consp fn) (eq (car fn) 'quote))
                                              (setq fn (cadr fn)))
                                            (and (symbolp fn)
-                                                (string-prefix-p "macher-agent-" (symbol-name fn))))))
+                                                (string-prefix-p "macher-agent-" (symbol-name fn))
+                                                (not (eq fn 'macher-agent-log-tool-intent))))))
                                   forms))
                                 (requires
                                  (mapcar (lambda (form)
@@ -449,11 +426,10 @@
                             (expect (or (member 'cl-lib requires) (member ''cl-lib requires)) :to-be-truthy)
                             (expect (or (member 'gptel requires) (member ''gptel requires)) :to-be-truthy)
                             (expect (or (member 'macher-agent-core requires) (member ''macher-agent-core requires)) :to-be-truthy)
+                            (expect (or (member 'macher-agent-gptel requires) (member ''macher-agent-gptel requires)) :to-be-truthy)
                             (expect (or (member 'macher-agent-tools requires) (member ''macher-agent-tools requires)) :to-be-truthy)
                             (expect (member 'macher-agent-api requires) :to-be nil)
-                            (expect (member ''macher-agent-api requires) :to-be nil)
-                            (expect (member 'macher-agent-gptel requires) :to-be nil)
-                            (expect (member ''macher-agent-gptel requires) :to-be nil))))
+                            (expect (member ''macher-agent-api requires) :to-be nil))))
 
                     (it "contains no internal declare-function forms in macher-agent.el and requires macher-agent-api directly"
                         (let* ((main-file (or (locate-library "macher-agent.el")

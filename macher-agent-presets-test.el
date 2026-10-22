@@ -109,37 +109,31 @@
                       :to-equal '(macher-agent-preset-pipe--exclusive
                                   macher-agent-preset-pipe--system
                                   macher-agent-preset-pipe--tools
-                                  macher-agent-preset-pipe--ptc
                                   macher-agent-preset-pipe--boot
                                   macher-agent-preset-pipe--parameters)))
 
           (it "handles exclusive override non-destructively in macher-agent-preset-pipe--exclusive"
-              (let* ((state (list :system "existing sys" :tools '(tool1) :ptc-primitives '(p1) :boot-directive "boot" :model 'gpt-4o))
+              (let* ((state (list :system "existing sys" :tools '(tool1) :boot-directive "boot" :model 'gpt-4o))
                      (item-exclusive '(preset my-preset (:exclusive t)))
                      (item-non-exclusive '(preset my-preset (:exclusive nil)))
                      (res (macher-agent-preset-pipe--exclusive state item-exclusive)))
                 (expect res :not :to-be state)
                 (expect (plist-get res :system) :to-be nil)
                 (expect (plist-get res :tools) :to-be nil)
-                (expect (plist-get res :ptc-primitives) :to-be nil)
                 (expect (plist-get res :boot-directive) :to-be nil)
                 (expect (plist-get res :model) :to-equal 'gpt-4o)
                 (expect (plist-get state :system) :to-equal "existing sys")
                 (expect (macher-agent-preset-pipe--exclusive state item-non-exclusive) :to-equal state)))
 
-          (it "applies system prompt, ptc primitives, boot directive, and parameters across step reducers"
-              (let* ((state '(:system "Initial prompt" :ptc-primitives (prim1) :temperature 0.8))
+          (it "applies system prompt, boot directive, and parameters across step reducers"
+              (let* ((state '(:system "Initial prompt" :temperature 0.8))
                      (item-sys '(preset sys-preset (:system "Added prompt")))
-                     (item-ptc '(preset ptc-preset (:ptc-primitives (prim1 prim2))))
                      (item-boot '(preset boot-preset (:boot-directive "Run boot instructions.")))
                      (item-param '(preset param-preset (:model claude-3-5-sonnet :temperature 0.2 :max-tokens 4000))))
                 ;; System prompt reducer
                 (let ((res-sys (macher-agent-preset-pipe--system state item-sys)))
                   (expect (plist-get res-sys :system) :to-match "Initial prompt")
                   (expect (plist-get res-sys :system) :to-match "Added prompt"))
-                ;; PTC reducer
-                (let ((res-ptc (macher-agent-preset-pipe--ptc state item-ptc)))
-                  (expect (plist-get res-ptc :ptc-primitives) :to-equal '(prim1 prim2)))
                 ;; Boot directive reducer
                 (let ((res-boot (macher-agent-preset-pipe--boot nil item-boot)))
                   (expect (plist-get res-boot :boot-directive) :to-equal "Run boot instructions."))
@@ -161,6 +155,7 @@
                   (expect (length flattened-cycle) :to-equal 2))))
 
           (it "composes payload by pre-flattening and reducing over step functions"
+              (macher-agent-sandbox-install)
               (let* ((tool1 (if (fboundp 'gptel-make-tool) (gptel-make-tool :name "tool1" :description "t1") "tool1"))
                      (tool2 (if (fboundp 'gptel-make-tool) (gptel-make-tool :name "tool2" :description "t2") "tool2"))
                      (base-state `(:system "Base"

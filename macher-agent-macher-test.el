@@ -40,10 +40,8 @@
       (expect (fboundp 'macher-agent-macher-build-patch) :to-be t)
       (expect (fboundp 'macher-agent-macher-patch-buffer) :to-be t)
       (expect (fboundp 'macher-agent-macher-workspace-name) :to-be t)
-      (expect (fboundp 'macher-agent-macher-workspace-hash) :to-be t)
       (expect (fboundp 'macher-agent-macher-safe-workspace-hash) :to-be t)
       (expect (fboundp 'macher-agent-macher-install) :to-be t)
-      (expect (fboundp 'macher-agent-context-resolution-install) :to-be t)
       (expect (fboundp 'macher-agent-context-lookup) :to-be t)
       (expect (fboundp 'macher-agent-trigger-patch) :to-be t)
       (expect (fboundp 'macher-agent-apply-patch) :to-be t)
@@ -161,7 +159,7 @@
       (let ((ctx (make-macher-agent-context)))
         (expect (macher-agent-macher-workspace-name ctx) :to-equal "workspace"))))
 
-  (describe "macher-agent-macher-safe-workspace-hash and macher-agent-macher-workspace-hash"
+  (describe "macher-agent-macher-safe-workspace-hash"
     (it "computes deterministic 16-character hash for macher-agent-context"
       (let* ((ctx (make-macher-agent-context :project-root "/path/to/my/project"))
              (hash1 (macher-agent-macher-safe-workspace-hash ctx))
@@ -172,18 +170,7 @@
 
     (it "signals wrong-type-argument when passed non-context"
       (let ((ws (cons 'project "/path/to/my/project")))
-        (expect (macher-agent-macher-safe-workspace-hash ws) :to-throw 'wrong-type-argument)))
-
-    (it "computes workspace hash with default length 16 and custom length for workspace cons"
-      (let* ((ws (cons 'project "/path/to/my/project"))
-             (hash-default (macher-agent-macher-workspace-hash ws))
-             (hash-4 (macher-agent-macher-workspace-hash ws 4))
-             (hash-8 (macher-agent-macher-workspace-hash ws 8))
-             (hash-large (macher-agent-macher-workspace-hash ws 100)))
-        (expect (length hash-default) :to-equal 16)
-        (expect (length hash-4) :to-equal 4)
-        (expect (length hash-8) :to-equal 8)
-        (expect (<= (length hash-large) 32) :to-be-truthy))))
+        (expect (macher-agent-macher-safe-workspace-hash ws) :to-throw 'wrong-type-argument))))
 
   (describe "macher-agent-macher-install"
     (it "configures upstream types alist and workspace functions without overriding macher--workspace-hash"
@@ -250,36 +237,6 @@
               (expect (macher-agent-context-lookup ctx) :to-throw 'wrong-type-argument))
           (remhash (expand-file-name "/mock/lookup/project") macher-agent-active-workspaces)
           (when (buffer-live-p buf)
-            (kill-buffer buf)))))
-
-    (it "installs clean context-resolution pipeline steps and excludes obsolete steps"
-      (clrhash macher-agent-pipeline-registry)
-      (macher-agent-context-resolution-install)
-      (let ((steps (macher-agent-get-pipeline-steps 'context-resolution)))
-        (expect (member #'macher-agent-ctx-pipe--explicit steps) :to-be-truthy)
-        (expect (member #'macher-agent-ctx-pipe--buffer steps) :to-be-truthy)
-        (expect (member 'macher-agent-resolve-from-transit-payload steps) :to-be nil)
-        (expect (member 'macher-agent-ctx-pipe--fsm steps) :to-be nil)
-        (expect (member 'macher-agent-ctx-pipe--fsm-fallback steps) :to-be nil)
-        (expect (member #'macher-agent-ctx-pipe--lazy-init steps) :to-be-truthy)))
-
-    (it "resolves context in pipeline step macher-agent-ctx-pipe--explicit"
-      (let* ((ctx (make-macher-agent-context :project-root "/mock/pipeline-proj"))
-             (state (list :input ctx :resolved nil))
-             (updated (macher-agent-ctx-pipe--explicit state)))
-        (expect (plist-get updated :resolved) :to-be ctx)))
-
-    (it "resolves context in pipeline step macher-agent-ctx-pipe--buffer"
-      (let* ((ctx (make-macher-agent-context :project-root "/mock/buf-proj"))
-             (buf (generate-new-buffer "test-pipe-buf")))
-        (unwind-protect
-            (progn
-              (with-current-buffer buf
-                (setq-local macher-agent--persistent-context ctx))
-              (let* ((state (list :input buf :resolved nil))
-                     (updated (macher-agent-ctx-pipe--buffer state)))
-                (expect (plist-get updated :resolved) :to-be ctx)))
-          (when (buffer-live-p buf)
             (kill-buffer buf))))))
 
   (describe "Context mutation, data/prompt setters, and cloning with macher-agent-context"
@@ -311,14 +268,11 @@
                     (plist-get (macher-agent-context-plugins orig) :vfs-buffers))
                 :to-be nil)))
 
-    (it "manages vfs-buffers and mtime-tracker hash-tables on macher-agent-context"
+    (it "manages vfs-buffers hash-tables on macher-agent-context"
       (let ((ctx (make-macher-agent-context :project-root "/tmp/test")))
-        (let ((vfs-ht (macher-agent-workspace-vfs-buffers ctx))
-              (mtime-ht (macher-agent-workspace-mtime-tracker ctx)))
+        (let ((vfs-ht (macher-agent-workspace-vfs-buffers ctx)))
           (expect (hash-table-p vfs-ht) :to-be t)
-          (expect (hash-table-p mtime-ht) :to-be t)
-          (expect (macher-agent-workspace-vfs-buffers ctx) :to-equal vfs-ht)
-          (expect (macher-agent-workspace-mtime-tracker ctx) :to-equal mtime-ht))))
+          (expect (macher-agent-workspace-vfs-buffers ctx) :to-equal vfs-ht))))
 
     (it "manages workspace active subagents and skills on macher-agent-context"
       (let ((ctx (make-macher-agent-context :project-root "/tmp/test")))

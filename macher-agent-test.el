@@ -69,14 +69,11 @@
 
           (describe "macher-agent-install"
                     (it "invokes module installation functions and registers global hooks"
-                        (let ((ctx-res-called nil)
-                              (sandbox-called nil)
+                        (let ((sandbox-called nil)
                               (zero-mem-called nil)
                               (vfs-called nil)
                               (trans-called nil))
-                          (cl-letf (((symbol-function 'macher-agent-context-resolution-install)
-                                     (lambda () (setq ctx-res-called t)))
-                                    ((symbol-function 'macher-agent-sandbox-install)
+                          (cl-letf (((symbol-function 'macher-agent-sandbox-install)
                                      (lambda () (setq sandbox-called t)))
                                     ((symbol-function 'macher-agent-zero-mem-install)
                                      (lambda () (setq zero-mem-called t)))
@@ -85,7 +82,6 @@
                                     ((symbol-function 'macher-agent-transmission-install)
                                      (lambda () (setq trans-called t))))
                             (macher-agent-install)
-                            (expect ctx-res-called :to-be t)
                             (expect sandbox-called :to-be t)
                             (expect zero-mem-called :to-be t)
                             (expect vfs-called :to-be t)

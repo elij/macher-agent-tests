@@ -1,5 +1,11 @@
 ;;; macher-agent-api-test.el --- Tests for macher-agent-api -*- lexical-binding: t; -*-
 
+;; Commentary:
+;; Unit tests for macher-agent-api covering audit logging, pure context API
+;; functions, detached PTC execution, and architectural decoupling invariants.
+;; Deprecated strict VFS pipeline regression tests and obsolete restore checks
+;; have been pruned in alignment with the decoupled plugin architecture.
+
 (let* ((file (or load-file-name buffer-file-name))
        (test-dir (cond
                   (file (file-name-directory (expand-file-name file)))

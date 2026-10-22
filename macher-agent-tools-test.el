@@ -194,23 +194,23 @@
                                   (insert "Line 5: end of segment\n"))
 
                                 ;; Successful match with context
-                                (let ((res (macher-agent-search-glob "ALPHA" buf 1)))
+                                (let ((res (macher-agent-search-glob buf "ALPHA" 1)))
                                   (expect res :to-match "--- Match near line 3 ---")
                                   (expect res :to-match "target pattern ALPHA found here"))
 
                                 ;; No match found
-                                (let ((res (macher-agent-search-glob "NONEXISTENT_KEYWORD" buf 1)))
+                                (let ((res (macher-agent-search-glob buf "NONEXISTENT_KEYWORD" 1)))
                                   (expect res :to-equal "No matches found in history for: NONEXISTENT_KEYWORD"))
 
                                 ;; Invalid regex
-                                (let ((res (macher-agent-search-glob "[unclosed-bracket" buf 1)))
+                                (let ((res (macher-agent-search-glob buf "[unclosed-bracket" 1)))
                                   (expect res :to-match "Error: Invalid regular expression:")))
                             (kill-buffer buf))))
 
                     (it "handles dead buffers gracefully during history search"
                         (let ((dead-buf (generate-new-buffer "*mock-dead-buf*")))
                           (kill-buffer dead-buf)
-                          (expect (macher-agent-search-glob "query" dead-buf)
+                          (expect (macher-agent-search-glob dead-buf "query")
                                   :to-equal "Error: Cannot locate original conversation buffer.")))
 
                     (it "dispatches conversation search via macher-agent-search-dispatch"

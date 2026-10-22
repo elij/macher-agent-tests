@@ -112,4 +112,7 @@
                   (setq-local gptel--known-presets (list (cons 'review skill-preset)))
                   (let ((state (macher-agent--compile-transmission-payload buf nil '(review) skill-preset ctx)))
                     (expect (macher-agent-transmission-state-compiled-prompt state)
-                            :to-equal "### Skill: review\nReview the pull request carefully.\n"))))))
+                            :to-equal "Review the pull request carefully."))))))
+
+(provide 'macher-agent-commands-test)
+;;; macher-agent-commands-test.el ends here

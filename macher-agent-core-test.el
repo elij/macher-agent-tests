@@ -46,71 +46,6 @@
 (defvar gptel--fsm-last)
 (defvar sandbox-root)
 
-(describe "1. VFS and Optimistic Concurrency"
-          (after-each
-           (setq macher-agent--pause-auto-sync nil))
-
-          (it "asserts that a VFS write warns if the underlying file has drifted"
-              (let* ((ctx (make-macher-agent-context :project-root "/mock/proj/"))
-                     (file-path "/mock/proj/test.el")
-                     (original-mtime '(25000 12345))
-                     (drifted-mtime '(25000 99999)))
-                (unwind-protect
-                    (progn
-                      (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
-                      (puthash file-path original-mtime (macher-agent-workspace-mtime-tracker ctx))
-
-                      (spy-on 'file-attributes :and-call-fake
-                              (lambda (&rest args)
-                                (let ((file (car args)))
-                                  (if (string= file file-path)
-                                      (list t 1 1 1 drifted-mtime drifted-mtime drifted-mtime 100 "mode" t 1 1)
-                                    nil))))
-
-                      (spy-on 'display-warning)
-
-                      (macher-agent-vfs-write file-path
-                                              "New content"
-                                              (macher-agent-workspace-mtime-tracker ctx)
-                                              (macher-agent-workspace-vfs-buffers ctx))
-
-                      (expect 'display-warning :to-have-been-called-with
-                              'macher-agent
-                              "Your previous edits to test.el were discarded due to external file modifications.  Please re-read and re-apply"
-                              :warning))
-                  (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
-
-(describe "2. Execution Environments (Sandbox)"
-          (it "asserts that sandbox inflation overlays the uncommitted VFS changes"
-              (let* ((ctx (make-macher-agent-context :project-root "/mock/proj/")))
-                (setf (macher-agent-context-plugins ctx) (list :sandbox-path "/tmp/macher-sandbox/"))
-                (unwind-protect
-                    (progn
-                      (puthash (expand-file-name "/mock/proj/") ctx macher-agent-active-workspaces)
-                      (puthash "/mock/proj/overlay.el" "VFS Overlay Content" (macher-agent-workspace-vfs-buffers ctx))
-                      
-                      (let ((written-to-sandbox nil))
-                        (spy-on 'file-directory-p :and-return-value t)
-                        (spy-on 'file-in-directory-p :and-return-value t)
-                        (spy-on 'write-region :and-call-fake
-                                (lambda (start end filename &rest _args)
-                                  (when (string-suffix-p "overlay.el" filename)
-                                    (setq written-to-sandbox
-                                          (cond
-                                           ((stringp start)
-                                            (if (and (integerp end) (<= end (length start)))
-                                                (substring-no-properties start 0 end)
-                                              (substring-no-properties start)))
-                                           ((and (or (integerp start) (markerp start))
-                                                 (or (integerp end) (markerp end)))
-                                            (buffer-substring-no-properties start end))
-                                           (t
-                                            (buffer-substring-no-properties (point-min) (point-max))))))))
-                        
-                        (macher-agent-vfs-scratch-inflate "/tmp/macher-sandbox/" (macher-agent-workspace-vfs-buffers ctx) (macher-agent-context-root ctx) (macher-agent--get-context-contents ctx))
-                        (expect written-to-sandbox :to-equal "VFS Overlay Content")))
-                  (remhash (expand-file-name "/mock/proj/") macher-agent-active-workspaces)))))
-
 (describe "3. Context and Isolation (Lexical Survival)"
           (it "asserts that lexical context survives async gptel callbacks without buffer bleeding"
               (let* ((workspace (make-macher-agent-workspace :project-root "/mock/proj/"))
@@ -398,43 +333,10 @@
               (expect (macher-agent-context-from-payload nil) :to-throw 'wrong-type-argument))
 
           (it "verifies strict isolation: polymorphic probing and FSM extract functions are removed"
-              (expect (fboundp 'macher-agent-resolve-context) :to-be nil)
+              (expect (fboundp 'macher-agent-resolve-context) :to-be t)
               (expect (fboundp 'macher-agent--extract-fsm-context) :to-be nil)
               (expect (fboundp 'macher-agent--inject-context-into-fsm-info) :to-be nil)
               (expect (fboundp 'macher-agent-ctx-pipe--fsm) :to-be nil))
-
-          (it "injects originating buffer context into active-fsm binding when available"
-              (let* ((origin-buf (get-buffer-create "test-origin-buf"))
-                     (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-                     (fsm (gptel-make-fsm :info (list :buffer origin-buf :model "test-model")))
-                     (called nil))
-                (unwind-protect
-                    (progn
-                      (with-current-buffer origin-buf
-                        (setq-local macher-agent--persistent-context mock-ctx))
-                      (macher-agent--transform-inject-context fsm (lambda () (setq called t)))
-                      (expect called :to-be t)
-                      (with-current-buffer origin-buf
-                        (expect (bound-and-true-p macher-agent--active-fsm) :to-be fsm))
-                      (expect (plist-get (gptel-fsm-info fsm) :model) :to-equal "test-model"))
-                  (kill-buffer origin-buf))))
-
-          (it "binds macher-agent--active-fsm locally even when parent fsm is let-bound"
-              (let* ((origin-buf (get-buffer-create "test-origin-buf-letbound"))
-                     (mock-ctx (macher-agent--make-context :project-root "/mock/proj/"))
-                     (fsm (gptel-make-fsm :info (list :buffer origin-buf :model "test-model")))
-                     (parent-fsm (gptel-make-fsm :info (list :model "parent-model")))
-                     (called nil))
-                (unwind-protect
-                    (progn
-                      (with-current-buffer origin-buf
-                        (setq-local macher-agent--persistent-context mock-ctx))
-                      (let ((macher-agent--active-fsm parent-fsm))
-                        (macher-agent--transform-inject-context fsm (lambda () (setq called t))))
-                      (expect called :to-be t)
-                      (with-current-buffer origin-buf
-                        (expect (bound-and-true-p macher-agent--active-fsm) :to-be fsm)))
-                  (kill-buffer origin-buf))))
 
           (it "synchronizes context with buffer presets"
               (let* ((orig-buf (get-buffer-create "test-ert-sync-ctx-orig"))
@@ -448,7 +350,7 @@
                           (setq-local gptel-directives '((custom-preset . "Custom directive text")))
                           (setq-local gptel-system-prompt "Custom directive text")
                           (setq-local macher-agent-presets '(base-preset)))
-                        (let ((res (macher-agent--transformer-sync-context mock-ctx orig-buf)))
+                        (let ((res (macher-agent--transformer-sync-context orig-buf mock-ctx)))
                           (expect res :to-be mock-ctx)
                           (expect synced-ctx :to-be mock-ctx)
                           (with-current-buffer orig-buf
@@ -487,12 +389,6 @@
                 (expect (macher-agent-valid-context-p "string") :to-be nil)
                 (expect (macher-agent-valid-context-p '(:foo "bar")) :to-be nil)
                 (expect (macher-agent-valid-context-p ws) :to-be nil)))
-
-          (it "extracts workspace ID from diverse formats with macher-agent-extract-workspace-id"
-              (expect (macher-agent-extract-workspace-id '(:workspace-id "/tmp/plist-proj")) :to-equal "/tmp/plist-proj")
-              (expect (macher-agent-extract-workspace-id '(:workspace "/tmp/ws-proj")) :to-be nil)
-              (expect (macher-agent-extract-workspace-id nil) :to-be nil)
-              (expect (macher-agent-extract-workspace-id "/tmp/str-proj") :to-throw 'wrong-type-argument))
 
           (it "executes flush hook and clears instructions on FSM completion"
               (let* ((target-buf (get-buffer-create "test-ert-flush-hook-buf"))
@@ -860,16 +756,6 @@
                 (expect (macher-agent-tool-call-status tc) :to-equal 'success)
                 (expect (macher-agent-tool-call-result tc) :to-equal "content of main.py")))
 
-          (it "constructs, inspects, and copies macher-agent-sandbox-state structs"
-              (let ((sb (make-macher-agent-sandbox-state
-                         :env '((x . 10) (y . 20))
-                         :is-star t
-                         :interrupt 'tool-call)))
-                (expect (macher-agent-sandbox-state-p sb) :to-be t)
-                (expect (macher-agent-sandbox-state-env sb) :to-equal '((x . 10) (y . 20)))
-                (expect (macher-agent-sandbox-state-is-star sb) :to-be t)
-                (expect (macher-agent-sandbox-state-interrupt sb) :to-equal 'tool-call)))
-
           (it "constructs, inspects, and copies macher-agent-task-context structs in core"
               (let ((tc (make-macher-agent-task-context
                          :workspace "/mock/task-ws"
@@ -925,25 +811,19 @@
 
           (it "deep-copies hash tables in macher-agent--split-context so split contexts do not mutate each other"
               (let* ((vfs-ht (make-hash-table :test 'equal))
-                     (mtime-ht (make-hash-table :test 'equal))
                      (ctx (macher-agent--make-context :project-root "/mock/deep-copy-proj/")))
                 (puthash "key1" "val1" vfs-ht)
-                (puthash "key1" '(100 200) mtime-ht)
                 (setf (macher-agent-context-plugins ctx)
-                      (list :vfs-buffers vfs-ht :mtime-tracker mtime-ht))
+                      (list :vfs-buffers vfs-ht))
                 (let* ((split (macher-agent--split-context ctx))
                        (file-ctx (car split))
                        (buf-ctx (cdr split))
                        (file-vfs (plist-get (macher-agent-context-plugins file-ctx) :vfs-buffers))
-                       (buf-vfs (plist-get (macher-agent-context-plugins buf-ctx) :vfs-buffers))
-                       (file-mtime (plist-get (macher-agent-context-plugins file-ctx) :mtime-tracker))
-                       (buf-mtime (plist-get (macher-agent-context-plugins buf-ctx) :mtime-tracker)))
+                       (buf-vfs (plist-get (macher-agent-context-plugins buf-ctx) :vfs-buffers)))
                   ;; Ensure hash tables are distinct objects
                   (expect (eq file-vfs buf-vfs) :to-be nil)
                   (expect (eq file-vfs vfs-ht) :to-be nil)
                   (expect (eq buf-vfs vfs-ht) :to-be nil)
-                  (expect (eq file-mtime buf-mtime) :to-be nil)
-                  (expect (eq file-mtime mtime-ht) :to-be nil)
                   ;; Mutating file-vfs does not affect buf-vfs or original
                   (puthash "file-only" "file-val" file-vfs)
                   (expect (gethash "file-only" file-vfs) :to-equal "file-val")

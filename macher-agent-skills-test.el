@@ -81,10 +81,10 @@
       (let ((buf (generate-new-buffer "test-conv-glob")))
         (with-current-buffer buf
           (insert "Line 1: system start\nLine 2: important keyword found\nLine 3: system end\n"))
-        (let ((res (macher-agent-search-glob "keyword" buf 1)))
+        (let ((res (macher-agent-search-glob buf "keyword" 1)))
           (expect res :to-match "Match near line 2")
           (expect res :to-match "important keyword found"))
-        (let ((res-none (macher-agent-search-glob "nonexistent" buf 1)))
+        (let ((res-none (macher-agent-search-glob buf "nonexistent" 1)))
           (expect res-none :to-match "No matches found in history for: nonexistent"))
         (kill-buffer buf)))
 
@@ -108,10 +108,10 @@
         (with-current-buffer buf
           (insert "Line 1\nLine 2\n"))
         ;; Test zero-length match (e.g., "^" or ".*") does not infinite loop
-        (let ((res (macher-agent-search-glob "^" buf 1)))
+        (let ((res (macher-agent-search-glob buf "^" 1)))
           (expect res :to-match "Match near line 1"))
         ;; Test invalid regexp handling
-        (let ((res-err (macher-agent-search-glob "[unclosed" buf 1)))
+        (let ((res-err (macher-agent-search-glob buf "[unclosed" 1)))
           (expect res-err :to-match "Error: Invalid regular expression"))
         (kill-buffer buf)))
 
@@ -356,6 +356,8 @@
             (delete-directory mock-dir t)))))
 
     (it "stores ptc-primitives in gptel--known-presets and composes them into payload"
+      (when (fboundp 'macher-agent-sandbox-install)
+        (macher-agent-sandbox-install))
       (let* ((mock-dir (make-temp-file "macher-test-skills-ptc" t))
              (skill-dir (expand-file-name "test-skill" mock-dir)))
         (make-directory skill-dir t)

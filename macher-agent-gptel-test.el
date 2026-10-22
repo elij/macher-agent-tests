@@ -119,7 +119,7 @@
                               (expect (macher-agent-transmission-state-compiled-prompt state) :to-match "CRITICAL DIRECTIVE: You MUST use the `submit_task_result' tool")
                               (expect (macher-agent-transmission-state-compiled-prompt state) :to-match "INITIAL BOOT DIRECTIVE"))))))
 
-          (describe "5. Tool Scope Enforcement and Pre-Tool Logging"
+          (describe "5. Tool Scope Enforcement"
                     (it "blocks execution of unauthorized tools in active FSM scope"
                         (let* ((allowed-tool (gptel-make-tool :name "allowed_tool" :description "allowed" :function #'ignore))
                                (fsm (gptel-make-fsm :info (list :tools (list allowed-tool)))))

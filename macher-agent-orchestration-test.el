@@ -393,16 +393,6 @@
                             (when (buffer-live-p parent-buf) (kill-buffer parent-buf))
                             (when (and child-buf (buffer-live-p child-buf)) (kill-buffer child-buf)))))
 
-                    (it "normalizes overloaded argument permutations in subagent pipeline"
-                        (let* ((ctx (macher-agent--make-context :project-root "/mock/norm/"))
-                               (parent-buf (get-buffer-create "*orch-norm-parent*")))
-                          (unwind-protect
-                              (let* ((state1 (list :name "*s1*" :presets "/custom/dir/" :parent-buffer parent-buf :context ctx))
-                                     (norm1 (macher-agent-subagent-pipe--normalize-args state1)))
-                                (expect (plist-get norm1 :dir) :to-equal "/custom/dir/")
-                                (expect (plist-get norm1 :context) :to-be ctx))
-                            (kill-buffer parent-buf))))
-
                     (it "initializes buffer-local flags and context via macher-agent--init-subagent-state"
                         (let* ((buf (get-buffer-create "*orch-init-state*"))
                                (ctx (macher-agent--make-context :id "test-init-ctx" :project-root "/mock/init/"))

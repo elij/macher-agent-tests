@@ -47,15 +47,19 @@
 
  (describe "macher-agent--log-gptel-pre-tool"
            (it "logs standard gptel tool calls into active context audit log"
-               (let ((ctx (macher-agent--make-context)))
-                 (setq-local macher-agent--persistent-context ctx)
-                 (macher-agent--log-gptel-pre-tool 'test-gptel-tool nil :param "val")
-                 (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
-                        (entry (car log)))
-                   (expect (length log) :to-equal 1)
-                   (expect (cdr (assoc 'type entry)) :to-equal "gptel-tool")
-                   (expect (cdr (assoc 'target entry)) :to-equal "test-gptel-tool")
-                   (expect (cdr (assoc 'args entry)) :to-equal '(:param "val"))))))
+               (with-temp-buffer
+                 (let* ((ctx (macher-agent--make-context))
+                        (fsm (gptel-make-fsm :info (list :macher-agent-context ctx :buffer (current-buffer))))
+                        (macher-agent--active-fsm fsm)
+                        (gptel--fsm fsm))
+                   (setq-local macher-agent--persistent-context ctx)
+                   (macher-agent--log-gptel-pre-tool 'test-gptel-tool fsm :param "val")
+                   (let* ((log (plist-get (macher-agent-context-plugins ctx) :audit-log))
+                          (entry (car log)))
+                     (expect (length log) :to-equal 1)
+                     (expect (cdr (assoc 'type entry)) :to-equal "gptel-tool")
+                     (expect (cdr (assoc 'target entry)) :to-equal "test-gptel-tool")
+                     (expect (cdr (assoc 'args entry)) :to-equal '(:param "val")))))))
 
  (describe "macher-agent-sandbox-run"
            (it "logs PTC tool yields into active context audit log"
