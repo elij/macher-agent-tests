@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Specification 7: Peer-to-peer messaging and wakeup synchronisation
-;; P2P-01, P2P-02, P2P-03, P2P-04
+;; P2P-01, P2P-02, P2P-03, P2P-04, P2P-05
 
 ;;; Code:
 
@@ -171,7 +171,38 @@
             (setq resolved-val (funcall send-fn (buffer-name rec-buf) "Non-blocking dispatch"))
             (expect resolved-val :to-match "SYSTEM: Message successfully dispatched"))
         (when (buffer-live-p rec-buf) (kill-buffer rec-buf))
-        (when (buffer-live-p sender-buf) (kill-buffer sender-buf))))))
+        (when (buffer-live-p sender-buf) (kill-buffer sender-buf)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; P2P-05
+  ;; --------------------------------------------------------------------------
+  (it "P2P-05: syncs sender baseline VFS state to receiver context on peer-to-peer dispatch"
+    (macher-agent-test-with-git-workspace (root orch-ctx orch-buf)
+      (let* ((rec-buf (macher-agent-add-subagent "*p2p-05-receiver*" nil orch-buf nil orch-ctx))
+             (sender-buf (macher-agent-add-subagent "*p2p-05-sender*" nil orch-buf nil orch-ctx))
+             (sender-ctx (with-current-buffer sender-buf macher-agent--persistent-context))
+             (rec-ctx (with-current-buffer rec-buf macher-agent--persistent-context))
+             (send-fn (get 'macher-agent-send-message-tool 'ptc-function)))
+        (unwind-protect
+            (progn
+              ;; Create a file entry in sender VFS
+              (macher-agent--update-context-file sender-ctx "shared.txt" "Shared baseline content")
+              ;; Send message from sender to receiver
+              (with-current-buffer sender-buf
+                (funcall send-fn (buffer-name rec-buf) "Check shared file" sender-ctx))
+              ;; Receiver context now has shared.txt with :pending-patch nil
+              (let* ((rec-contents (macher-agent--get-context-contents rec-ctx))
+                     (entry (or (cl-find "shared.txt" rec-contents
+                                         :key #'macher-agent-vfs-entry-path :test #'equal)
+                                (cl-find (expand-file-name "shared.txt" root) rec-contents
+                                         :key #'macher-agent-vfs-entry-path :test #'equal)
+                                (cl-find (expand-file-name "shared.txt" root) rec-contents
+                                         :key #'macher-agent-vfs-entry-path :test #'file-equal-p))))
+                (expect entry :not :to-be nil)
+                (expect (macher-agent-vfs-entry-curr entry) :to-equal "Shared baseline content")
+                (expect (macher-agent-vfs-entry-pending-patch entry) :to-be nil)))
+          (when (buffer-live-p rec-buf) (kill-buffer rec-buf))
+          (when (buffer-live-p sender-buf) (kill-buffer sender-buf)))))))
 
 (provide 'test-p2p)
 ;;; test-p2p.el ends here

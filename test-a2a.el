@@ -2,12 +2,13 @@
 
 ;;; Commentary:
 ;; Specification 6: Agent-to-agent (A2A) orchestration, focus semantics, and reaping
-;; A2A-01, A2A-02, A2A-03, A2A-04, A2A-05, A2A-06, A2A-07, A2A-08, A2A-09
+;; A2A-01, A2A-02, A2A-03, A2A-04, A2A-05, A2A-06, A2A-07, A2A-08, A2A-09, A2A-10, A2A-11, A2A-12
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'buttercup)
+(add-to-list 'load-path (file-name-directory (or load-file-name buffer-file-name)))
 (require 'macher-agent-test-helpers)
 
 (describe "6. Agent-to-agent (A2A) orchestration, focus semantics, and reaping"
@@ -287,7 +288,94 @@
             (expect (buffer-live-p pers-buf) :to-be nil)
             (expect (assoc "*a2a-09-pers*" macher-agent-active-subagents) :to-be nil)
             (expect (gethash parent-name macher-agent--a2a-ownership) :to-equal nil))
-        (when (buffer-live-p pers-buf) (kill-buffer pers-buf))))))
+        (when (buffer-live-p pers-buf) (kill-buffer pers-buf)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-10
+  ;; --------------------------------------------------------------------------
+  (it "A2A-10: rejects sub-agent task batch containing duplicate target buffer names"
+    (let* ((payload-1 (make-macher-agent-transit-payload
+                       :transit-type :task-delegation
+                       :type 'TASK_DELEGATION
+                       :task-id "task-dup-1"
+                       :metadata (list :buffer_name "*a2a-worker-dup*")))
+           (payload-2 (make-macher-agent-transit-payload
+                       :transit-type :task-delegation
+                       :type 'TASK_DELEGATION
+                       :task-id "task-dup-2"
+                       :metadata (list :buffer_name "*a2a-worker-dup*")))
+           (batch (vector payload-1 payload-2))
+           (dispatch-result nil))
+      (macher-agent-a2a-dispatch
+       batch
+       (lambda (res)
+         (setq dispatch-result res)))
+      (expect dispatch-result :to-match "ERROR: Duplicate target buffer in sub-agent batch.")))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-11
+  ;; --------------------------------------------------------------------------
+  (it "A2A-11: rejects delegation to target sub-agent buffer already running a task"
+    (let* ((busy-buf (get-buffer-create "*a2a-busy-worker*"))
+           (task-id "task-busy-01")
+           (ctx (macher-agent--make-context :id "busy-ctx"))
+           (session (macher-agent-context-session ctx)))
+      (unwind-protect
+          (progn
+            (setf (macher-agent-session-state session) :running)
+            (with-current-buffer busy-buf
+              (setq-local macher-agent--persistent-context ctx))
+            (let* ((msg (make-macher-agent-transit-payload
+                         :transit-type :task-delegation
+                         :type 'TASK_DELEGATION
+                         :task-id task-id
+                         :metadata (list :buffer_name (buffer-name busy-buf))))
+                   (state (list :a2a-msg msg
+                                :shared-state (list :parent-buffer (current-buffer))))
+                   (res (macher-agent-a2a-pipe--validate-routing state))
+                   (err-payload (plist-get res :error-payload)))
+              (expect err-payload :not :to-be nil)
+              (expect (plist-get err-payload :status) :to-equal 'error)
+              (expect (plist-get err-payload :error) :to-match "already busy running a task")))
+        (when (buffer-live-p busy-buf) (kill-buffer busy-buf)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-12
+  ;; --------------------------------------------------------------------------
+  (it "A2A-12: unwinds all routing stack frames when sub-agent halts prematurely"
+    (let* ((task-id-1 "nested-task-parent")
+           (task-id-2 "nested-task-child")
+           (subagent-buf (get-buffer-create "*a2a-nested-subagent*"))
+           (errors-received nil))
+      (unwind-protect
+          (progn
+            ;; Register callbacks for both nested callers
+            (puthash task-id-1
+                     (lambda (res) (push (cons task-id-1 res) errors-received))
+                     macher-agent--pending-callbacks)
+            (puthash task-id-2
+                     (lambda (res) (push (cons task-id-2 res) errors-received))
+                     macher-agent--pending-callbacks)
+            (with-current-buffer subagent-buf
+              ;; Push two routing frames
+              (macher-agent--push-routing task-id-1 "*parent-caller-1*" t)
+              (macher-agent--push-routing task-id-2 "*parent-caller-2*" t)
+              (setq-local macher-agent-task-finished nil)
+              (setq-local macher-agent--is-ephemeral nil)
+              ;; Trigger premature halt reaper
+              (macher-agent-post-response-reaper (point-min) (point-max)))
+
+            ;; Both callbacks were invoked and routing stack is completely empty
+            (expect (length errors-received) :to-equal 2)
+            (expect (with-current-buffer subagent-buf macher-agent--routing-stack) :to-equal nil)
+            (expect (with-current-buffer subagent-buf macher-agent--current-task-id) :to-equal nil)
+            (let ((err1 (cdr (assoc task-id-1 errors-received)))
+                  (err2 (cdr (assoc task-id-2 errors-received))))
+              (expect (plist-get err1 :status) :to-equal 'error)
+              (expect (plist-get err2 :status) :to-equal 'error)
+              (expect (plist-get err1 :error) :to-match "Sub-agent halted before submitting task result")
+              (expect (plist-get err2 :error) :to-match "Sub-agent halted before submitting task result")))
+        (when (buffer-live-p subagent-buf) (kill-buffer subagent-buf))))))
 
 (provide 'test-a2a)
 ;;; test-a2a.el ends here

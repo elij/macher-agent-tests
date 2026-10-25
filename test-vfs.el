@@ -302,7 +302,133 @@
               ;; Output buffer *macher-patch-out* is cleaned up on success
               (expect (get-buffer "*macher-patch-out*") :to-be nil))
           (when (buffer-live-p patch-buf)
-            (kill-buffer patch-buf)))))))
+            (kill-buffer patch-buf))))))
+
+  ;; --------------------------------------------------------------------------
+  ;; VFS-10
+  ;; --------------------------------------------------------------------------
+  (it "VFS-10: prevents sibling baseline entries from clobbering concurrent worker edits"
+    (macher-agent-test-with-git-workspace (root parent-ctx parent-buf '(("shared.txt" . "disk-base\n")))
+      ;; Stage shared.txt in parent context
+      (macher-agent--update-context-file parent-ctx "shared.txt" "base\n")
+      ;; Child 1 and Child 2 cloned from parent context
+      (let* ((child1-ctx (macher-agent--clone-context parent-ctx))
+             (child2-ctx (macher-agent--clone-context parent-ctx)))
+        ;; Initially both child entries are baseline (pending-patch is nil)
+        (let ((c1-entry (cl-find (expand-file-name "shared.txt" root)
+                                 (macher-agent--get-context-contents child1-ctx)
+                                 :key #'macher-agent-vfs-entry-path :test #'file-equal-p))
+              (c2-entry (cl-find (expand-file-name "shared.txt" root)
+                                 (macher-agent--get-context-contents child2-ctx)
+                                 :key #'macher-agent-vfs-entry-path :test #'file-equal-p)))
+          (expect (macher-agent-vfs-entry-pending-patch c1-entry) :to-be nil)
+          (expect (macher-agent-vfs-entry-pending-patch c2-entry) :to-be nil))
+
+        ;; Child 1 modifies shared.txt (pending-patch becomes t)
+        (macher-agent--update-context-file child1-ctx "shared.txt" "worker1-content\n")
+
+        ;; Child 2 modifies a different file (other.txt), leaving shared.txt untouched
+        (macher-agent--update-context-file child2-ctx "other.txt" "worker2-content\n")
+
+        ;; 1. Merge Child 1 into parent
+        (macher-agent--merge-contexts parent-ctx child1-ctx)
+        (expect (macher-agent--read-context-file parent-ctx "shared.txt")
+                :to-equal "worker1-content\n")
+
+        ;; 2. Merge Child 2 into parent: Child 2's untouched shared.txt baseline MUST NOT
+        ;; overwrite Child 1's "worker1-content", while other.txt is cleanly merged.
+        (macher-agent--merge-contexts parent-ctx child2-ctx)
+        (expect (macher-agent--read-context-file parent-ctx "shared.txt")
+                :to-equal "worker1-content\n")
+        (expect (macher-agent--read-context-file parent-ctx "other.txt")
+                :to-equal "worker2-content\n"))))
+
+  ;; --------------------------------------------------------------------------
+  ;; VFS-11
+  ;; --------------------------------------------------------------------------
+  (it "VFS-11: ignores zero-diff updates, suppresses redundant hooks, and restores dirty state on revert"
+    (macher-agent-test-with-git-workspace (root ctx owner-buf '(("sample.txt" . "original content\n")))
+      (let ((hook-calls 0))
+        (add-hook 'macher-agent-context-mutated-hook
+                  (lambda (&rest _) (setq hook-calls (1+ hook-calls))))
+        (unwind-protect
+            (progn
+              ;; 1. Writing identical content to untracked clean file is zero-diff no-op
+              (macher-agent--update-context-file ctx "sample.txt" "original content\n")
+              (expect hook-calls :to-equal 0)
+              (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)
+
+              ;; 2. Mutating content fires hook and marks dirty
+              (macher-agent--update-context-file ctx "sample.txt" "modified content\n")
+              (expect hook-calls :to-equal 1)
+              (expect (macher-agent--get-context-dirty-p ctx) :to-be t)
+
+              ;; 3. Writing the same mutated content again is zero-diff: hook not fired
+              (macher-agent--update-context-file ctx "sample.txt" "modified content\n")
+              (expect hook-calls :to-equal 1)
+
+              ;; 4. Reverting back to original content removes zero-diff entry and clears dirty flag
+              (macher-agent--update-context-file ctx "sample.txt" "original content\n")
+              (expect hook-calls :to-equal 2)
+              (expect (macher-agent--get-context-dirty-p ctx) :to-be nil)
+              (expect (macher-agent--read-context-file ctx "sample.txt")
+                      :to-equal "original content\n"))
+          (setq macher-agent-context-mutated-hook nil)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; VFS-12
+  ;; --------------------------------------------------------------------------
+  (it "VFS-12: releases actor locks and transfers to queued waiters via macher-agent-vfs-release-actor-locks"
+    (let ((f1 "src/f1.rs")
+          (f2 "src/f2.rs")
+          (f3 "src/f3.rs")
+          (t2-called nil)
+          (t4-called nil))
+      (unwind-protect
+          (progn
+            ;; Actor 1 holds locks on f1 and f2
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-1" :resource_path f1 :callback #'ignore))
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-1" :resource_path f2 :callback #'ignore))
+
+            ;; Actor 2 and Actor 3 wait for f1
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-2" :resource_path f1
+                   :callback (lambda (_m) (setq t2-called t))))
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-3" :resource_path f1 :callback #'ignore))
+
+            ;; Actor 4 waits for f2
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-4" :resource_path f2
+                   :callback (lambda (_m) (setq t4-called t))))
+
+            ;; Actor 5 holds f3, Actor 1 is queued on f3
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-5" :resource_path f3 :callback #'ignore))
+            (macher-agent--vfs-a2a-callback
+             (list :type 'ACQUIRE_LOCK :task-id "actor-1" :resource_path f3 :callback #'ignore))
+
+            ;; Release locks for actor-1
+            (macher-agent-vfs-release-actor-locks '("actor-1"))
+
+            ;; f1 transferred to actor-2
+            (expect t2-called :to-be t)
+            (expect (car (gethash f1 macher-agent--vfs-lock-table)) :to-equal "actor-2")
+            ;; actor-3 still in queue for f1
+            (expect (length (gethash f1 macher-agent--vfs-lock-queues)) :to-equal 1)
+
+            ;; f2 transferred to actor-4
+            (expect t4-called :to-be t)
+            (expect (car (gethash f2 macher-agent--vfs-lock-table)) :to-equal "actor-4")
+
+            ;; actor-1 removed from f3 waiting queue; actor-5 still holds f3
+            (expect (car (gethash f3 macher-agent--vfs-lock-table)) :to-equal "actor-5")
+            (expect (gethash f3 macher-agent--vfs-lock-queues) :to-be nil))
+
+        ;; Cleanup
+        (macher-agent-vfs-release-actor-locks '("actor-2" "actor-3" "actor-4" "actor-5"))))))
 
 (provide 'test-vfs)
 ;;; test-vfs.el ends here

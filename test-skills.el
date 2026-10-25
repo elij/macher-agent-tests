@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Specification 5: Skill, preset, and command composition
-;; SKL-01, SKL-02, SKL-03, SKL-04, SKL-05, SKL-06, SKL-07
+;; SKL-01, SKL-02, SKL-03, SKL-04, SKL-05, SKL-06, SKL-07, SKL-08, SKL-09, SKL-10
 
 ;;; Code:
 
@@ -237,7 +237,66 @@
                (updated (macher-agent-memory-pipe--inject-tool state))
                (tool-names (mapcar #'macher-agent-canonical-tool-name
                                    (macher-agent-transmission-state-tools updated))))
-          (expect (member "search_conversation_history" tool-names) :to-be-truthy))))))
+          (expect (member "search_conversation_history" tool-names) :to-be-truthy)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-08
+  ;; --------------------------------------------------------------------------
+  (it "SKL-08: exclusive skill with :parents retains its parent's system prompt/tools while wiping prior presets"
+    (let* ((tool-prior (gptel-make-tool :name "tool_prior" :description "Prior"))
+           (tool-parent (gptel-make-tool :name "tool_parent" :description "Parent"))
+           (tool-child (gptel-make-tool :name "tool_child" :description "Child"))
+           (base-state (list :system "Prior base prompt\n"
+                             :tools (list tool-prior)
+                             :known-presets
+                             `((prior-skill . (:system "Prior skill instructions"
+                                               :tools (,tool-prior)))
+                               (parent-skill . (:system "Parent skill instructions"
+                                                :tools (,tool-parent)))
+                               (exclusive-child . (:system "Child exclusive persona"
+                                                   :exclusive t
+                                                   :parents (parent-skill)
+                                                   :tools (,tool-child))))))
+           (composed (macher-agent-compose-payload base-state '(prior-skill exclusive-child))))
+      ;; Prior skill wiped
+      (let ((sys (plist-get composed :system)))
+        (expect sys :not :to-match "Prior base prompt")
+        (expect sys :not :to-match "Prior skill instructions")
+        ;; Parent prompt retained
+        (expect sys :to-match "### Skill: parent-skill\nParent skill instructions")
+        ;; Child prompt retained
+        (expect sys :to-match "### Skill: exclusive-child\nChild exclusive persona"))
+      ;; Tools: prior tool wiped, parent tool and child tool retained
+      (let* ((tools (plist-get composed :tools))
+             (tool-names (mapcar #'gptel-tool-name tools)))
+        (expect (member "tool_prior" tool-names) :to-be nil)
+        (expect (member "tool_parent" tool-names) :to-be-truthy)
+        (expect (member "tool_child" tool-names) :to-be-truthy))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-09
+  ;; --------------------------------------------------------------------------
+  (it "SKL-09: single-pass command interpolation does not re-expand literal $2 inside $1's value"
+    (let* ((template "Pos1: $1, Pos2: $2")
+           (user-args "$2 target-value")
+           (result (macher-agent--interpolate-command-body template user-args)))
+      ;; $1 is "$2", $2 is "target-value"
+      ;; In single-pass, pos1 must remain literal "$2" and not be expanded to "target-value"
+      (expect result :to-equal "Pos1: $2, Pos2: target-value")))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-10
+  ;; --------------------------------------------------------------------------
+  (it "SKL-10: macher-agent--secure-ast-p rejects fset, eval, advice-add, and setq-default"
+    (expect (macher-agent--secure-ast-p '(fset 'foo (lambda () 1))) :to-be nil)
+    (expect (macher-agent--secure-ast-p '(eval '(message "pwn"))) :to-be nil)
+    (expect (macher-agent--secure-ast-p '(advice-add 'find-file :override #'ignore)) :to-be nil)
+    (expect (macher-agent--secure-ast-p '(setq-default fill-column 80)) :to-be nil)
+    ;; Nested inside other forms
+    (expect (macher-agent--secure-ast-p '(progn (let ((x 1)) (eval x)))) :to-be nil)
+    ;; Safe forms are permitted
+    (expect (macher-agent--secure-ast-p '(setq foo 42)) :to-be t)
+    (expect (macher-agent--secure-ast-p '(gptel-make-tool :name "test")) :to-be t)))
 
 (provide 'test-skills)
 ;;; test-skills.el ends here

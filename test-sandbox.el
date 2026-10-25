@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Specification 4: Non-blocking VFS sandbox pipeline and workspace tools
-;; SBX-01, SBX-02, SBX-03, SBX-04, SBX-05
+;; SBX-01, SBX-02, SBX-03, SBX-04, SBX-05, SBX-06, SBX-07, SBX-08
 
 ;;; Code:
 
@@ -62,23 +62,13 @@
 
       ;; Define verification tool helper executing inside strict VFS pipeline
       (cl-flet ((run-cmd-in-sbx (cmd callback)
-                  (macher-agent-with-strict-vfs-pipeline ctx callback
-                    (let* ((out-buf (generate-new-buffer " *sbx-proc-out*"))
-                           (proc (make-process
-                                  :name "sbx-verify"
-                                  :buffer out-buf
-                                  :command (list shell-file-name shell-command-switch cmd)
-                                  :sentinel
-                                  (lambda (p _ev)
-                                    (when (memq (process-status p) '(exit signal))
-                                      (let* ((code (process-exit-status p))
-                                             (output (with-current-buffer out-buf (buffer-string))))
-                                        (when (buffer-live-p out-buf) (kill-buffer out-buf))
-                                        (if (= code 0)
-                                            (funcall done (format "SUCCESS: %s" (string-trim output)))
-                                          (funcall done (format "ERROR: Verification failed (exit %d): %s"
-                                                                code (string-trim output))))))))))
-                      proc))))
+                  (macher-agent-run-in-vfs-sandbox
+                   ctx cmd callback
+                   (lambda (code output)
+                     (if (= code 0)
+                         (format "SUCCESS: %s" (string-trim output))
+                       (format "ERROR: Verification failed (exit %d): %s"
+                               code (string-trim output)))))))
 
         ;; 1. Passing verification command: resolves with success prefix and output
         (let ((pass-result nil))
@@ -184,7 +174,102 @@
       ;; Task 2's callback fires automatically
       (expect t2-acquired :to-be t)
       ;; Clean up Task 2 lock
-      (macher-agent-vfs-release-lock resource task-2))))
+      (macher-agent-vfs-release-lock resource task-2)))
+
+  ;; --------------------------------------------------------------------------
+  ;; SBX-06: Output truncation helper
+  ;; --------------------------------------------------------------------------
+  (it "SBX-06: truncates strings exceeding limits preserving head and tail"
+    ;; Unmodified when within limits
+    (expect (macher-agent--truncate-string "hello world" 100)
+            :to-equal "hello world")
+    (expect (macher-agent--truncate-string "short" 0)
+            :to-equal "short")
+    ;; Truncation preserving head and tail
+    (let* ((text "AAAAABBBBBCCCCCDDDDD")
+           (truncated (macher-agent--truncate-string text 10)))
+      (expect (string-prefix-p "AAAAA" truncated) :to-be t)
+      (expect (string-suffix-p "DDDDD" truncated) :to-be t)
+      (expect truncated :to-match "\\[truncated 10 chars\\]"))
+    ;; Default limit from defcustom
+    (let ((long-str (make-string (+ macher-agent-max-tool-output-chars 100) ?x)))
+      (expect (macher-agent--truncate-string long-str)
+              :to-match "\\[truncated 100 chars\\]")))
+
+  ;; --------------------------------------------------------------------------
+  ;; SBX-07: Asynchronous command execution in VFS sandbox
+  ;; --------------------------------------------------------------------------
+  (it "SBX-07: executes commands asynchronously via macher-agent-run-in-vfs-sandbox with format-fn and cleanup"
+    (macher-agent-test-with-git-workspace (root ctx owner-buf '(("test.txt" . "hello sandbox\n")))
+      ;; Modify file in VFS
+      (macher-agent--update-context-file ctx "test.txt" "hello modified vfs\n")
+
+      ;; 1. Run command with custom format-fn
+      (let ((res-custom nil))
+        (macher-agent-run-in-vfs-sandbox
+         ctx (list "cat" "test.txt")
+         (lambda (res) (setq res-custom res))
+         (lambda (code out) (format "STATUS=%d:%s" code (string-trim out))))
+        (macher-agent-test-wait-until (lambda () res-custom) 5.0)
+        (expect res-custom :to-equal "STATUS=0:hello modified vfs"))
+
+      ;; 2. Run shell command string with default formatting on failure
+      (let ((res-fail nil))
+        (macher-agent-run-in-vfs-sandbox
+         ctx "echo 'sandbox error' >&2 && exit 7"
+         (lambda (res) (setq res-fail res)))
+        (macher-agent-test-wait-until (lambda () res-fail) 5.0)
+        (expect res-fail :to-match "^ERROR (exit 7):")
+        (expect res-fail :to-match "sandbox error"))
+
+      ;; Verify no leaking macher-sandbox-cmd buffers
+      (expect (cl-remove-if-not
+               (lambda (b) (string-match-p "\\*macher-sandbox-cmd\\*" (buffer-name b)))
+               (buffer-list))
+              :to-be nil)))
+
+  ;; --------------------------------------------------------------------------
+  ;; SBX-08: Flexible pipeline invocation signatures
+  ;; --------------------------------------------------------------------------
+  (it "SBX-08: supports 2-argument pipeline invocation and 1-argument/2-argument body-fn"
+    (macher-agent-test-with-git-workspace (root ctx owner-buf '(("code.el" . "(message \"vfs\")\n")))
+      ;; Modify in VFS
+      (macher-agent--update-context-file ctx "code.el" "(message \"vfs-modified\")\n")
+
+      ;; 1. macher-agent-call-with-strict-vfs-pipeline with 2 arguments (resolve-fn body-fn)
+      ;; and 1-argument body-fn (done)
+      (let ((res-2arg-1fn nil))
+        (with-current-buffer owner-buf
+          (macher-agent-call-with-strict-vfs-pipeline
+           (lambda (res) (setq res-2arg-1fn res))
+           (lambda (done)
+             (funcall done "success-2arg-1fn"))))
+        (macher-agent-test-wait-until (lambda () res-2arg-1fn) 5.0)
+        (expect res-2arg-1fn :to-equal "success-2arg-1fn"))
+
+      ;; 2. macher-agent-call-with-strict-vfs-pipeline with 2 arguments (resolve-fn body-fn)
+      ;; and 2-argument body-fn (sandbox-dir done)
+      (let ((res-2arg-2fn nil)
+            (captured-dir nil))
+        (with-current-buffer owner-buf
+          (macher-agent-call-with-strict-vfs-pipeline
+           (lambda (res) (setq res-2arg-2fn res))
+           (lambda (sbx done)
+             (setq captured-dir sbx)
+             (funcall done (format "DIR-OK:%s" (file-directory-p sbx))))))
+        (macher-agent-test-wait-until (lambda () res-2arg-2fn) 5.0)
+        (expect res-2arg-2fn :to-equal "DIR-OK:t")
+        (macher-agent-test-wait-until (lambda () (not (file-exists-p captured-dir))) 5.0)
+        (expect (file-exists-p captured-dir) :to-be nil))
+
+      ;; 3. macher-agent-run-in-vfs-sandbox without ctx (2 arguments: command resolve-fn)
+      (let ((res-run-noctx nil))
+        (with-current-buffer owner-buf
+          (macher-agent-run-in-vfs-sandbox
+           (list "cat" "code.el")
+           (lambda (res) (setq res-run-noctx res))))
+        (macher-agent-test-wait-until (lambda () res-run-noctx) 5.0)
+        (expect res-run-noctx :to-equal "(message \"vfs-modified\")\n")))))
 
 (provide 'test-sandbox)
 ;;; test-sandbox.el ends here
