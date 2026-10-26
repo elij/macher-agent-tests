@@ -32,9 +32,12 @@
       (unwind-protect
           (dolist (file all-files)
             (with-current-buffer out-buf (erase-buffer))
-            (let* ((eval-code
-                   (format "(progn (setq byte-compile-error-on-warn t byte-compile-warnings '(not obsolete docstrings)) (dolist (feat '(gptel macher-agent-core macher-agent-presets macher-agent-tools macher-agent-gptel macher-agent-orchestration macher-agent-api macher-agent-vfs macher-agent-sandbox macher-agent-zero-mem transient)) (require feat nil t)) (unless (fboundp 'macher-agent-workspace-mtime-tracker) (defun macher-agent-workspace-mtime-tracker (&rest _) nil)) (let ((sdir %S)) (when (file-directory-p sdir) (dolist (f (directory-files sdir t \"\\\\.el$\")) (let* ((b (file-name-sans-extension (file-name-nondirectory f))) (h (intern (format \"macher-agent-%%s-tool\" (replace-regexp-in-string \"_\" \"-\" b)))) (u (intern (format \"macher-agent-%%s-tool\" (replace-regexp-in-string \"-\" \"_\" b))))) (eval `(defvar ,h nil)) (eval `(defvar ,u nil)))))))"
-                           (expand-file-name "skills/scripts" root)))
+            (let* ((is-pkg-mod (member file package-modules))
+                   (eval-code
+                    (if is-pkg-mod
+                        "(setq byte-compile-error-on-warn t byte-compile-warnings '(not obsolete docstrings))"
+                      (format "(progn (setq byte-compile-error-on-warn t byte-compile-warnings '(not obsolete docstrings)) (dolist (feat '(gptel macher-agent-core macher-agent-presets macher-agent-tools macher-agent-gptel macher-agent-orchestration macher-agent-api macher-agent-vfs macher-agent-sandbox macher-agent-zero-mem transient)) (require feat nil t)) (unless (fboundp 'macher-agent-workspace-mtime-tracker) (defun macher-agent-workspace-mtime-tracker (&rest _) nil)) (let ((sdir %S)) (when (file-directory-p sdir) (dolist (f (directory-files sdir t \"\\\\.el$\")) (let* ((b (file-name-sans-extension (file-name-nondirectory f))) (h (intern (format \"macher-agent-%%s-tool\" (replace-regexp-in-string \"_\" \"-\" b)))) (u (intern (format \"macher-agent-%%s-tool\" (replace-regexp-in-string \"-\" \"_\" b))))) (eval `(defvar ,h nil)) (eval `(defvar ,u nil)))))))"
+                              (expand-file-name "skills/scripts" root))))
                    (args (list "-Q" "--batch"
                                "-L" (expand-file-name root)
                                "-L" (expand-file-name "macher" root)
@@ -62,14 +65,16 @@
   ;; --------------------------------------------------------------------------
   ;; ARCH-02
   ;; --------------------------------------------------------------------------
-  (it "ARCH-02: verifies four-tier Directed Acyclic Graph without circular or downward requires"
+  (it "ARCH-02: verifies five-tier Directed Acyclic Graph without circular or downward requires"
     (let* ((root (file-name-directory (locate-library "macher-agent")))
            (tier-0 '(macher-agent-core))
            (tier-1 '(macher-agent-presets macher-agent-tools macher-agent-gptel))
            (tier-2 '(macher-agent-orchestration macher-agent))
-           (tier-3 '(macher-agent-macher macher-agent-vfs macher-agent-sandbox macher-agent-zero-mem))
+           (tier-3 '(macher-agent-vfs macher-agent-sandbox macher-agent-zero-mem))
+           (tier-4 '(macher-agent-macher))
            (upper-tiers (append tier-0 tier-1 tier-2))
-           (all-modules (append tier-0 tier-1 '(macher-agent-orchestration macher-agent-api macher-agent) tier-3))
+           (lower-tiers (append tier-3 tier-4))
+           (all-modules (append tier-0 tier-1 '(macher-agent-orchestration macher-agent-api macher-agent) tier-3 tier-4))
            (require-graph (make-hash-table :test 'eq)))
 
       ;; Extract require graph from ASTs of all package modules
@@ -92,11 +97,20 @@
                 (end-of-file nil))))
           (puthash mod (delete-dups reqs) require-graph)))
 
-      ;; Assert: No module in Tiers 0, 1, or 2 requires a Tier 3 plugin
+      ;; Assert: No module in Tiers 0, 1, or 2 requires a Tier 3 or Tier 4 plugin
       (dolist (mod upper-tiers)
         (let ((reqs (gethash mod require-graph)))
           (dolist (r reqs)
-            (expect (memq r tier-3) :to-be nil))))
+            (expect (memq r lower-tiers) :to-be nil))))
+
+      ;; Assert: Tier 4 (macher-agent-macher) is only required by macher-agent-vfs
+      ;; and only requires macher-agent-core internally
+      (dolist (mod all-modules)
+        (let ((reqs (gethash mod require-graph)))
+          (when (memq 'macher-agent-macher reqs)
+            (expect mod :to-equal 'macher-agent-vfs))))
+      (expect (gethash 'macher-agent-macher require-graph)
+              :to-equal '(macher-agent-core))
 
       ;; Assert: Require graph is a Directed Acyclic Graph (no cycles)
       (let ((visited (make-hash-table :test 'eq))
@@ -123,12 +137,6 @@
   (it "ARCH-03: verifies zero internal declare-function forms targeting macher-agent symbols"
     (let* ((root (file-name-directory (locate-library "macher-agent")))
            (files (directory-files root t "^macher-agent\\(-[a-z]+\\)*\\.el$"))
-           (allowed-symbols '(macher-agent-vfs--get-state
-                              macher-agent-vfs--set-state
-                              macher-agent-get-active-fsm
-                              macher-agent-workspace-vfs-buffers
-                              macher-agent-workspace-skills-alist
-                              macher-agent--read-context-file))
            (internal-declares nil))
       (dolist (file files)
         (with-temp-buffer
@@ -142,8 +150,7 @@
                       (when (and (consp fn) (eq (car fn) 'quote))
                         (setq fn (cadr fn)))
                       (when (and (symbolp fn)
-                                 (string-prefix-p "macher-agent-" (symbol-name fn))
-                                 (not (memq fn allowed-symbols)))
+                                 (string-prefix-p "macher-agent-" (symbol-name fn)))
                         (push (list file fn form) internal-declares))))))
             (end-of-file nil))))
       (expect (length internal-declares) :to-equal 0)))
@@ -184,11 +191,26 @@
                     (macher-agent-get-pipeline-steps 'transmission))
             :to-be-truthy)
 
+    ;; Verify VFS steps are present
+    (expect (member #'macher-agent-vfs--merge-payload
+                    (macher-agent-get-pipeline-steps 'payload-merge))
+            :to-be-truthy)
+    (expect (member #'macher-agent-vfs--clone-context-step
+                    (macher-agent-get-pipeline-steps 'context-clone))
+            :to-be-truthy)
+
     ;; Invoke plugin uninstallers
+    (macher-agent-vfs-uninstall)
     (macher-agent-sandbox-uninstall)
     (macher-agent-zero-mem-uninstall)
 
     ;; Verify uninstalled cleanly without leaving dangling functions in pipeline registry
+    (expect (member #'macher-agent-vfs--merge-payload
+                    (macher-agent-get-pipeline-steps 'payload-merge))
+            :to-be nil)
+    (expect (member #'macher-agent-vfs--clone-context-step
+                    (macher-agent-get-pipeline-steps 'context-clone))
+            :to-be nil)
     (expect (member #'macher-agent-ptc--inject-tool
                     (macher-agent-get-pipeline-steps 'preset-composition))
             :to-be nil)
