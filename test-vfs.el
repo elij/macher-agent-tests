@@ -59,13 +59,13 @@
               (funcall (get 'macher-agent-write-buffer-in-workspace-tool 'ptc-function)
                        "*in-memory-scratch*" "staged virtual content" ctx)
 
-              ;; Stored as virtual buffer entry in :vfs-buffers and :contents
-              (expect (gethash "*in-memory-scratch*" (macher-agent-workspace-vfs-buffers ctx))
-                      :to-equal "staged virtual content")
-              (let ((entry (cl-find "*in-memory-scratch*" (macher-agent--get-context-contents ctx)
-                                    :key #'macher-agent-vfs-entry-path :test #'equal)))
-                (expect entry :not :to-be nil)
+              ;; Stored as virtual buffer entry in :vfs-buffers (not :contents)
+              (let ((entry (gethash "*in-memory-scratch*" (macher-agent-workspace-vfs-buffers ctx))))
+                (expect (macher-agent-vfs-entry-p entry) :to-be t)
                 (expect (macher-agent-vfs-entry-curr entry) :to-equal "staged virtual content"))
+              (expect (cl-find "*in-memory-scratch*" (macher-agent--get-context-contents ctx)
+                               :key #'macher-agent-vfs-entry-path :test #'equal)
+                      :to-be nil)
 
               ;; Live buffer has NOT mutated yet
               (expect (with-current-buffer vbuf (buffer-string))
@@ -95,9 +95,6 @@
               ;; 1. Delete virtual buffer entry by passing nil content
               (macher-agent--update-context-file ctx "*temp-vbuf*" nil)
               (expect (gethash "*temp-vbuf*" (macher-agent-workspace-vfs-buffers ctx)) :to-be nil)
-              (expect (cl-find "*temp-vbuf*" (macher-agent--get-context-contents ctx)
-                               :key #'macher-agent-vfs-entry-path :test #'equal)
-                      :to-be nil)
 
               ;; 2. Delete physical file entry by passing nil content
               (macher-agent--update-context-file ctx "tracked.el" nil)
