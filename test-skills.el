@@ -296,7 +296,200 @@
     (expect (macher-agent--secure-ast-p '(progn (let ((x 1)) (eval x)))) :to-be nil)
     ;; Safe forms are permitted
     (expect (macher-agent--secure-ast-p '(setq foo 42)) :to-be t)
-    (expect (macher-agent--secure-ast-p '(gptel-make-tool :name "test")) :to-be t)))
+    (expect (macher-agent--secure-ast-p '(gptel-make-tool :name "test")) :to-be t))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-11
+  ;; --------------------------------------------------------------------------
+  (it "SKL-11: strips gptel and text properties on yank inside macher-agent-mode"
+    (macher-agent-test-with-git-workspace (root _ctx buf)
+      (with-current-buffer buf
+        (setq-local default-directory root)
+        (macher-agent-mode 1)
+        (expect (lookup-key macher-agent-mode-map [remap yank])
+                :to-equal #'macher-agent-yank)
+        (let ((kill-ring (list (propertize "copied response text"
+                                           'gptel 'response
+                                           'gptel-tool t
+                                           'face 'bold)))
+              (kill-ring-yank-pointer nil))
+          (setq kill-ring-yank-pointer kill-ring)
+          (macher-agent-yank)
+          (expect (buffer-string) :to-equal "copied response text")
+          (expect (text-properties-at (point-min)) :to-be nil)
+          (expect (get-text-property (point-min) 'gptel) :to-be nil)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-12
+  ;; --------------------------------------------------------------------------
+  (it "SKL-12: executes mid-turn use_skill switch and done restoration with FSM :data sync, use_skill retention, boot-directive consumption, and zero tool carry-over"
+    (macher-agent-test-with-git-workspace (root ctx buf)
+      (let* ((reader-tool (gptel-make-tool :name "reader_tool" :description "Read" :category "misc"))
+             (coder-tool (gptel-make-tool :name "coder_edit_tool" :description "Edit" :category "misc"))
+             (use-skill-tool macher-agent-use-skill-tool)
+             (known `((orchestrator . (:system "Orchestrator instructions"
+                                       :description "Root orchestrator"
+                                       :tools (,use-skill-tool ,reader-tool)
+                                       :boot-directive "BOOT: Orchestrator init"))
+                      (domain-coder . (:system "Domain coder instructions"
+                                       :description "Non-exclusive coder omitting use_skill"
+                                       :model claude-sonnet
+                                       :tools (,coder-tool)
+                                       :boot-directive "BOOT: Coder activated")))))
+        (with-current-buffer buf
+          (setq-local gptel--known-presets known)
+          (setf (macher-agent-context-skills ctx) known)
+          (macher-agent--sync-gptel-known-presets known)
+          (macher-agent-use-skill 'orchestrator buf)
+
+          ;; Turn 1: initial compilation consumes orchestrator boot directive
+          (let ((st1 (macher-agent--compile-transmission-payload
+                      buf '(orchestrator) '(orchestrator) nil ctx)))
+            (expect (macher-agent-transmission-state-compiled-prompt st1)
+                    :to-match "BOOT: Orchestrator init"))
+
+          ;; Simulate assistant turn in buffer (setting 'gptel 'response text property)
+          (let ((beg (point-max)))
+            (goto-char beg)
+            (insert "I will activate domain-coder now.\n")
+            (put-text-property beg (point-max) 'gptel 'response))
+
+          ;; Bind an active mid-turn FSM with OpenAI-compatible :data payload
+          (let* ((init-data (list :model "gpt-4o"
+                                  :messages (vector (list :role "system" :content "old-sys")
+                                                    (list :role "user" :content "fix code"))
+                                  :tools (vector (list :type "function" :function (list :name "reader_tool")))))
+                 (fsm (gptel-make-fsm
+                       :state 'TOOL
+                       :info (list :buffer buf
+                                   :origin-buffer buf
+                                   :macher-agent-context ctx
+                                   :tools (list use-skill-tool reader-tool)
+                                   :data init-data))))
+            (setq-local macher-agent--active-fsm fsm)
+
+            ;; 1. Activate non-exclusive `domain-coder' mid-turn
+            (let ((res (funcall (get 'macher-agent-use-skill-tool 'ptc-function)
+                                "domain-coder" nil ctx)))
+              (expect res :to-match "Activated skill 'domain-coder'")
+              (expect res :to-match "coder_edit_tool")
+              (expect res :to-match "use_skill"))
+
+            ;; FSM :data was immediately updated for the TRET -> WAIT continuation leg:
+            ;; - system message holds domain-coder + BOOT: Coder activated (despite 'gptel 'response!)
+            ;; - orchestrator system prompt and reader_tool did NOT carry over
+            ;; - use_skill WAS automatically retained so agent can exit
+            (let* ((info (gptel-fsm-info fsm))
+                   (data (plist-get info :data))
+                   (sys-msg (plist-get (aref (plist-get data :messages) 0) :content))
+                   (fsm-tool-names (mapcar #'macher-agent-canonical-tool-name
+                                           (plist-get info :tools))))
+              (expect (plist-get data :model) :to-equal "claude-sonnet")
+              (expect sys-msg :to-match "### Skill: domain-coder\nDomain coder instructions")
+              (expect sys-msg :to-match "BOOT: Coder activated")
+              (expect sys-msg :not :to-match "Orchestrator instructions")
+              (expect (member "coder_edit_tool" fsm-tool-names) :to-be-truthy)
+              (expect (member "use_skill" fsm-tool-names) :to-be-truthy)
+              (expect (member "reader_tool" fsm-tool-names) :to-be nil)
+              (expect (> (length (plist-get data :tools)) 0) :to-be t))
+
+            ;; Scope check allows use_skill & coder_edit_tool, blocks reader_tool
+            (expect (macher-agent--enforce-tool-scope "use_skill" fsm) :to-be nil)
+            (expect (macher-agent--enforce-tool-scope "coder_edit_tool" fsm) :to-be nil)
+            (expect (plist-get (macher-agent--enforce-tool-scope "reader_tool" fsm) :block)
+                    :to-match "not accessible")
+
+            ;; Next turn does NOT re-inject BOOT: Coder activated
+            (let ((st-next (macher-agent--compile-transmission-payload
+                            buf '(domain-coder) '(domain-coder) nil ctx)))
+              (expect (macher-agent-transmission-state-compiled-prompt st-next)
+                      :not :to-match "BOOT: Coder activated"))
+
+            ;; 2. Exit skill via use_skill(done: true)
+            (let ((done-res (funcall (get 'macher-agent-use-skill-tool 'ptc-function)
+                                     "done" t ctx)))
+              (expect done-res :to-match "Restored original presets"))
+
+            (let* ((info (gptel-fsm-info fsm))
+                   (fsm-tool-names (mapcar #'macher-agent-canonical-tool-name
+                                           (plist-get info :tools))))
+              (expect macher-agent-presets :to-equal '(orchestrator))
+              (expect (macher-agent-get-cached-presets buf) :to-be nil)
+              (expect (member "reader_tool" fsm-tool-names) :to-be-truthy)
+              (expect (member "use_skill" fsm-tool-names) :to-be-truthy)
+              (expect (member "coder_edit_tool" fsm-tool-names) :to-be nil)))))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-13
+  ;; --------------------------------------------------------------------------
+  (it "SKL-13: excludes :is-command entries from <available_skills> and rejects commands in use_skill"
+    (macher-agent-test-with-git-workspace (root ctx buf)
+      (let* ((known `((worker-skill . (:system "Worker system"
+                                       :description "Valid worker skill"))
+                      (deploy-cmd . (:system "Deploy $1"
+                                     :description "Slash command"
+                                     :is-command t)))))
+        (with-current-buffer buf
+          (setq-local gptel--known-presets known)
+          (setf (macher-agent-context-skills ctx) known)
+          (let* ((state (make-macher-agent-transmission-state
+                         :target-buffer buf
+                         :context ctx
+                         :known-presets known
+                         :tools (list macher-agent-use-skill-tool)))
+                 (after (macher-agent-pipe--inject-skill-directive state))
+                 (dir-block (car (macher-agent-transmission-state-directives after))))
+            (expect dir-block :to-match "<available_skills>")
+            (expect dir-block :to-match "worker-skill: Valid worker skill")
+            (expect dir-block :not :to-match "deploy-cmd"))
+
+          ;; Calling use_skill on a command or unknown skill raises an error
+          (expect (funcall (get 'macher-agent-use-skill-tool 'ptc-function)
+                           "deploy-cmd" nil ctx)
+                  :to-throw 'error)
+          (expect (funcall (get 'macher-agent-use-skill-tool 'ptc-function)
+                           "nonexistent-skill-xyz" nil ctx)
+                  :to-throw 'error)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SKL-14
+  ;; --------------------------------------------------------------------------
+  (it "SKL-14: detects @command after mode prompt prefix ('### ') without erasing prior turns and ignores @tokens inside code fences"
+    (with-temp-buffer
+      (let* ((orig-buf (current-buffer))
+             (prompt-buf (generate-new-buffer " *skl14-prompt*"))
+             (ctx (macher-agent--make-context :id "skl14-ctx" :project-root "/tmp/mock"))
+             (fsm (gptel-make-fsm :info (list :buffer orig-buf :macher-agent-context ctx)))
+             (known `((review-cmd . (:system "Audit $1 assigned to $2"
+                                     :is-command t))
+                      (decorator . (:system "Should not match inside code fence")))))
+        (unwind-protect
+            (progn
+              (setq-local macher-agent--persistent-context ctx)
+              (setq-local gptel--known-presets known)
+              (setf (macher-agent-context-skills ctx) known)
+              ;; 1. Multi-turn buffer with Markdown prompt prefix "### " before @review-cmd
+              (with-current-buffer prompt-buf
+                (insert "### User turn 1\n")
+                (let ((r-beg (point)))
+                  (insert "Assistant turn 1 response.\n")
+                  (put-text-property r-beg (point) 'gptel 'response))
+                (insert "### @review-cmd src/core.el @alice\n")
+                (macher-agent-sync-prompt-transformer nil fsm)
+                (let ((full-text (buffer-string)))
+                  ;; Prior conversation turns remain intact!
+                  (expect full-text :to-match "Assistant turn 1 response\\.")
+                  ;; Command body interpolated with @alice preserved as $2
+                  (expect full-text :to-match "Audit src/core.el assigned to @alice")))
+
+              ;; 2. @decorator inside fenced code block is NOT stripped
+              (with-current-buffer prompt-buf
+                (erase-buffer)
+                (insert "### Please check:\n```python\n@decorator\ndef f(): pass\n```\n")
+                (macher-agent-sync-prompt-transformer nil fsm)
+                (expect (buffer-string) :to-match "@decorator")))
+          (when (buffer-live-p prompt-buf)
+            (kill-buffer prompt-buf)))))))
 
 (provide 'test-skills)
 ;;; test-skills.el ends here

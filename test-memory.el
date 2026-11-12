@@ -147,7 +147,70 @@
                 (let ((recall (macher-agent-memory-search-zero-mem target-buf "database migrations")))
                   (expect recall :to-match "database migrations")))))
         (when (buffer-live-p target-buf) (kill-buffer target-buf))
-        (when (buffer-live-p wire-buf) (kill-buffer wire-buf))))))
+        (when (buffer-live-p wire-buf) (kill-buffer wire-buf)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; MEM-04: Intact tool-block chunking, region-referenced traces, and 5k-line speed
+  ;; --------------------------------------------------------------------------
+  (it "MEM-04: keeps blank-line tool blocks intact, avoids string duplication on live traces, and incrementally indexes 5000+ lines rapidly"
+    (let ((buf (generate-new-buffer "*test-mem-04-5k*")))
+      (unwind-protect
+          (with-current-buffer buf
+            ;; 1. Insert a fenced tool block containing internal blank lines
+            (insert "User: Inspect authentication service\n\n")
+            (insert "```tool read_file src/auth_service.el\n")
+            (insert "(defun auth-verify-token (tok)\n  (validate-jwt tok))\n\n")
+            (insert "(defun auth-refresh-session (sid)\n  (renew-session sid))\n")
+            (insert "```\n\n")
+
+            ;; 2. Pad buffer past 5,000 lines with realistic multi-line turns
+            (dotimes (i 600)
+              (insert (format "### User turn %d\nInvestigate subsystem-%d and check helper_%d status.\n\n"
+                              i i i))
+              (let ((beg (point)))
+                (insert (format "Assistant turn %d:\nSubsystem-%d verified.\nLine A for turn %d.\nLine B for turn %d.\nLine C for turn %d.\n\n"
+                                i i i i i))
+                (put-text-property beg (point) 'gptel 'response)))
+
+            (expect (>= (count-lines (point-min) (point-max)) 5000) :to-be t)
+
+            ;; 3. Build initial 5,000-line graph
+            (let* ((g1 (macher-agent-zero-mem--get-graph buf))
+                   (traces-ht (macher-agent-zero-mem-graph-traces g1))
+                   (tool-traces nil)
+                   (live-duplicated 0))
+              (maphash
+               (lambda (_id tr)
+                 (when (eq (plist-get (macher-agent-zero-mem-trace-metadata tr) :type) :tool-block)
+                   (push tr tool-traces))
+                 (when (macher-agent-zero-mem-trace--raw-text tr)
+                   (setq live-duplicated (1+ live-duplicated))))
+               traces-ht)
+
+              ;; Tool block with blank lines inside remained a SINGLE :tool-block trace
+              (expect (length tool-traces) :to-equal 1)
+              (let ((tb-text (macher-agent-zero-mem-trace-text (car tool-traces))))
+                (expect tb-text :to-match "auth-verify-token")
+                (expect tb-text :to-match "auth-refresh-session"))
+
+              ;; Live buffer traces hold zero duplicated raw-text strings
+              (expect live-duplicated :to-equal 0)
+
+              ;; 4. Append a new turn at 5,000+ lines and measure incremental sync + retrieval
+              (goto-char (point-max))
+              (insert "### User turn 501\nDeploy needle_quantum_scheduler into production.\n")
+              (let* ((t0 (float-time))
+                     (g2 (macher-agent-zero-mem--get-graph buf))
+                     (hits (macher-agent-zero-mem-retrieve "needle_quantum_scheduler" g2 :top-k 3))
+                     (elapsed-ms (* 1000.0 (- (float-time) t0))))
+                (expect (< elapsed-ms 200.0) :to-be t)
+                (expect (cl-some (lambda (tr)
+                                   (string-match-p "needle_quantum_scheduler"
+                                                   (macher-agent-zero-mem-trace-text tr)))
+                                 hits)
+                        :to-be-truthy))))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))))
 
 (provide 'test-memory)
 ;;; test-memory.el ends here

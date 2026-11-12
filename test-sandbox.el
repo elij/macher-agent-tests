@@ -269,7 +269,24 @@
            (list "cat" "code.el")
            (lambda (res) (setq res-run-noctx res))))
         (macher-agent-test-wait-until (lambda () res-run-noctx) 5.0)
-        (expect res-run-noctx :to-equal "(message \"vfs-modified\")\n")))))
+        (expect res-run-noctx :to-equal "(message \"vfs-modified\")\n"))))
+
+  ;; --------------------------------------------------------------------------
+  ;; SBX-09: Bounded timeout and non-empty signal diagnostics
+  ;; --------------------------------------------------------------------------
+  (it "SBX-09: terminates hung sandbox commands on timeout and reports non-empty diagnostics"
+    (macher-agent-test-with-git-workspace (root ctx owner-buf '(("test.txt" . "ok\n")))
+      (let ((macher-agent-sandbox-command-timeout 0.15)
+            (res-timeout nil))
+        (macher-agent-run-in-vfs-sandbox
+         ctx "sleep 10"
+         (lambda (res) (setq res-timeout res))
+         ;; Even if a custom format-fn returns trimmed output only (like lean.el),
+         ;; timeout/signal termination must still report an explicit ERROR string.
+         (lambda (_code out) (string-trim out)))
+        (macher-agent-test-wait-until (lambda () res-timeout) 5.0
+                                      "Timed-out sandbox process failed to resolve")
+        (expect res-timeout :to-match "^ERROR: Sandbox command timed out")))))
 
 (provide 'test-sandbox)
 ;;; test-sandbox.el ends here

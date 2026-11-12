@@ -98,9 +98,10 @@
 
               ;; 2. Delete physical file entry by passing nil content
               (macher-agent--update-context-file ctx "tracked.el" nil)
-              (let ((p-entry (cl-find (expand-file-name "tracked.el" root) (macher-agent--get-context-contents ctx)
-                                      :key #'macher-agent-vfs-entry-path :test #'file-equal-p)))
+              (let ((p-entry (cl-find "tracked.el" (macher-agent--get-context-contents ctx)
+                                      :key #'macher-agent-vfs-entry-path :test #'equal)))
                 (expect p-entry :not :to-be nil)
+                (expect (macher-agent-vfs-entry-path p-entry) :to-equal "tracked.el")
                 ;; curr content is set to nil so diff represents file deletion
                 (expect (macher-agent-vfs-entry-curr p-entry) :to-be nil)
                 (expect (macher-agent-vfs-entry-modified-p p-entry) :to-be t)))
@@ -129,8 +130,10 @@
           (macher-agent--auto-sync-context ctx))
 
         ;; VFS replaces both orig and curr with new disk content
-        (let ((entry (cl-find (expand-file-name "config.json" root) (macher-agent--get-context-contents ctx)
-                              :key #'macher-agent-vfs-entry-path :test #'file-equal-p)))
+        (let ((entry (cl-find "config.json" (macher-agent--get-context-contents ctx)
+                              :key #'macher-agent-vfs-entry-path :test #'equal)))
+          (expect entry :not :to-be nil)
+          (expect (macher-agent-vfs-entry-path entry) :to-equal "config.json")
           (expect (macher-agent-vfs-entry-orig entry) :to-equal "{\"version\": 3, \"external\": true}")
           (expect (macher-agent-vfs-entry-curr entry) :to-equal "{\"version\": 3, \"external\": true}")
           (expect (macher-agent-vfs-entry-modified-p entry) :to-be nil))
@@ -312,12 +315,12 @@
       (let* ((child1-ctx (macher-agent--clone-context parent-ctx))
              (child2-ctx (macher-agent--clone-context parent-ctx)))
         ;; Initially both child entries are baseline (pending-patch is nil)
-        (let ((c1-entry (cl-find (expand-file-name "shared.txt" root)
+        (let ((c1-entry (cl-find "shared.txt"
                                  (macher-agent--get-context-contents child1-ctx)
-                                 :key #'macher-agent-vfs-entry-path :test #'file-equal-p))
-              (c2-entry (cl-find (expand-file-name "shared.txt" root)
+                                 :key #'macher-agent-vfs-entry-path :test #'equal))
+              (c2-entry (cl-find "shared.txt"
                                  (macher-agent--get-context-contents child2-ctx)
-                                 :key #'macher-agent-vfs-entry-path :test #'file-equal-p)))
+                                 :key #'macher-agent-vfs-entry-path :test #'equal)))
           (expect (macher-agent-vfs-entry-pending-patch c1-entry) :to-be nil)
           (expect (macher-agent-vfs-entry-pending-patch c2-entry) :to-be nil))
 
@@ -425,7 +428,70 @@
             (expect (gethash f3 macher-agent--vfs-lock-queues) :to-be nil))
 
         ;; Cleanup
-        (macher-agent-vfs-release-actor-locks '("actor-2" "actor-3" "actor-4" "actor-5"))))))
+        (macher-agent-vfs-release-actor-locks '("actor-2" "actor-3" "actor-4" "actor-5")))))
+
+  ;; --------------------------------------------------------------------------
+  ;; VFS-13
+  ;; --------------------------------------------------------------------------
+  (it "VFS-13: enforces workspace-relative VFS keys across direct updates, standalone macher tools, and secondary buffers"
+    (macher-agent-test-with-git-workspace (root ctx owner-buf '(("README.md" . "# Initial\n")))
+      ;; 1. Updating with "./" prefix or absolute workspace path normalises to relative key
+      (macher-agent--update-context-file ctx "./src/rel.el" "(provide 'rel)\n")
+      (macher-agent--update-context-file ctx (expand-file-name "nested/abs.el" root) "(provide 'abs)\n")
+      (let ((listed (macher-agent-vfs--workspace-list-files ctx)))
+        (expect (member "src/rel.el" listed) :to-be-truthy)
+        (expect (member "nested/abs.el" listed) :to-be-truthy)
+        (expect (cl-every (lambda (p) (not (file-name-absolute-p p))) listed) :to-be t))
+
+      ;; 2. Wrapped upstream macher tool called standalone (without orphaned macher-context)
+      ;; stores relative path and drops read-only zero-diff entries
+      (let* ((write-tool (gptel-make-tool
+                          :name "test_macher_write"
+                          :description "Write file"
+                          :category "macher"
+                          :async t
+                          :function (lambda (m-ctx cb rel-path text)
+                                      (macher-context--set-new-content-for-file
+                                       (expand-file-name rel-path root) text m-ctx)
+                                      (funcall cb "wrote"))))
+             (read-tool (gptel-make-tool
+                         :name "test_macher_read"
+                         :description "Read file"
+                         :category "macher"
+                         :async t
+                         :function (lambda (m-ctx cb rel-path)
+                                     (let ((pair (macher-context--contents-for-file
+                                                  (expand-file-name rel-path root) m-ctx)))
+                                       (funcall cb (cdr pair))))))
+             (cb-out nil))
+        (macher-agent--wrap-single-tool write-tool)
+        (macher-agent--wrap-single-tool read-tool)
+        (with-current-buffer owner-buf
+          ;; Invoke WITHOUT prepending an upstream macher-context struct
+          (funcall (gptel-tool-function read-tool)
+                   (lambda (r) (setq cb-out r)) "README.md")
+          (expect cb-out :to-equal "# Initial\n")
+          ;; Read-only access must NOT add unmodified README.md into VFS :contents
+          (expect (cl-find "README.md" (macher-agent--get-context-contents ctx)
+                           :key #'macher-agent-vfs-entry-path :test #'equal)
+                  :to-be nil)
+          ;; Write via wrapped macher tool stores canonical relative key
+          (funcall (gptel-tool-function write-tool)
+                   (lambda (r) (setq cb-out r)) "via-proxy/new.el" "(setq ok t)\n")
+          (let ((proxy-entry (cl-find "via-proxy/new.el" (macher-agent--get-context-contents ctx)
+                                      :key #'macher-agent-vfs-entry-path :test #'equal)))
+            (expect proxy-entry :not :to-be nil)
+            (expect (macher-agent-vfs-entry-curr proxy-entry) :to-equal "(setq ok t)\n"))))
+
+      ;; 3. Secondary buffer enabling macher-agent-mode must NOT overwrite primary owner-buf in active-workspaces
+      (let ((sec-buf (generate-new-buffer "*vfs-13-secondary*")))
+        (unwind-protect
+            (with-current-buffer sec-buf
+              (setq-local default-directory root)
+              (macher-agent-mode 1)
+              (expect (gethash root macher-agent-active-workspaces) :to-be ctx))
+          (when (buffer-live-p sec-buf)
+            (kill-buffer sec-buf)))))))
 
 (provide 'test-vfs)
 ;;; test-vfs.el ends here

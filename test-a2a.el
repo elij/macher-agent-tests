@@ -375,7 +375,174 @@
               (expect (plist-get err2 :status) :to-equal 'error)
               (expect (plist-get err1 :error) :to-match "Sub-agent halted before submitting task result")
               (expect (plist-get err2 :error) :to-match "Sub-agent halted before submitting task result")))
-        (when (buffer-live-p subagent-buf) (kill-buffer subagent-buf))))))
+        (when (buffer-live-p subagent-buf) (kill-buffer subagent-buf)))))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-13
+  ;; --------------------------------------------------------------------------
+  (it "A2A-13: transitions TRET directly to DONE on staged submit_task_result without firing extra WAIT request"
+    (macher-agent-test-with-git-workspace (root parent-ctx parent-buf)
+      (let* ((child-buf (macher-agent-add-subagent "*a2a-13-worker*" nil parent-buf nil parent-ctx))
+             (child-ctx (with-current-buffer child-buf macher-agent--persistent-context))
+             (wait-entries 0)
+             (delivered-payload nil)
+             (task-id "task-a2a-13")
+             (fsm (gptel-make-fsm
+                   :state 'TOOL
+                   :table (copy-tree gptel-send--transitions)
+                   :handlers `((WAIT ,(lambda (_f) (setq wait-entries (1+ wait-entries))))
+                               (TRET ,(lambda (f) (gptel--fsm-transition f)))
+                               (DONE ,#'ignore))
+                   :info (list :buffer child-buf
+                               :macher-agent-context child-ctx
+                               :tool-result t))))
+        (unwind-protect
+            (progn
+              (macher-agent-register-task-callback
+               task-id (lambda (msg) (setq delivered-payload msg)))
+              (with-current-buffer child-buf
+                (setq-local macher-agent--is-ephemeral t)
+                (setq-local macher-agent--active-fsm fsm)
+                (macher-agent--push-routing task-id (buffer-name parent-buf) t)
+                ;; Hijack FSM to install TRET -> DONE edge and DONE flush handler
+                (macher-agent--fsm-hijack-transform nil fsm)
+                ;; Call submit_task_result while FSM is in TOOL state
+                (let ((ack (funcall (get 'macher-agent-submit-task-result-tool 'ptc-function)
+                                    "Direct DONE answer" task-id child-ctx)))
+                  (expect ack :to-match "SUCCESS: Result submitted"))
+                ;; Submission is staged; parent has NOT woken yet while worker is still in TOOL
+                (expect macher-agent--staged-submission :not :to-be nil)
+                (expect delivered-payload :to-be nil)
+                ;; Advance TOOL -> TRET -> DONE
+                (gptel--fsm-transition fsm))
+
+              ;; FSM transitioned directly to DONE with zero WAIT entries
+              (expect (gptel-fsm-state fsm) :to-equal 'DONE)
+              (expect wait-entries :to-equal 0)
+              (expect delivered-payload :not :to-be nil)
+              (expect (plist-get (macher-agent-transit-payload-payload delivered-payload) :payload)
+                      :to-equal "Direct DONE answer")
+              ;; Ephemeral worker reaped asynchronously via timer
+              (macher-agent-test-wait-until (lambda () (not (buffer-live-p child-buf))) 2.0)
+              (expect (buffer-live-p child-buf) :to-be nil))
+          (when (buffer-live-p child-buf)
+            (kill-buffer child-buf))))))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-14
+  ;; --------------------------------------------------------------------------
+  (it "A2A-14: preserves :persistent sub-agents spawned via spawn_subagent across delegation and initialises gptel-mode with nil presets"
+    (macher-agent-test-with-git-workspace (root parent-ctx parent-buf)
+      (let* ((spawn-fn (get 'macher-agent-spawn-subagent-tool 'ptc-function))
+             (del-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+             (pers-name (with-current-buffer parent-buf
+                          (funcall spawn-fn "*a2a-14-persistent*" nil parent-ctx)))
+             (pers-buf (get-buffer pers-name))
+             (res-1 nil)
+             (res-2 nil))
+        (unwind-protect
+            (progn
+              (expect (buffer-live-p pers-buf) :to-be t)
+              (expect (macher-agent-session-lifecycle
+                       (macher-agent-context-session
+                        (buffer-local-value 'macher-agent--persistent-context pers-buf)))
+                      :to-equal :persistent)
+
+              ;; 1. Delegate to persistent worker AND a brand-new nil-preset worker
+              (with-current-buffer parent-buf
+                (cl-letf (((symbol-function 'gptel-send)
+                           (lambda ()
+                             (let ((cur (current-buffer))
+                                   (submit-fn (get 'macher-agent-submit-task-result-tool 'ptc-function)))
+                               ;; Both buffers MUST have gptel-mode and prompt transformer installed
+                               (expect (bound-and-true-p gptel-mode) :to-be t)
+                               (expect (memq #'macher-agent-sync-prompt-transformer
+                                             gptel-prompt-transform-functions)
+                                       :to-be-truthy)
+                               (funcall submit-fn
+                                        (format "Done by %s" (buffer-name cur))
+                                        macher-agent--current-task-id
+                                        macher-agent--persistent-context)
+                               (macher-agent--finalize-buffer-turn cur nil)))))
+                  (let ((thunk (funcall del-fn
+                                        (vector (list :buffer_name pers-name
+                                                      :instructions "First task")
+                                                (list :buffer_name "*a2a-14-nil-preset*"
+                                                      :presets nil
+                                                      :instructions "Ephemeral task"))
+                                        parent-ctx)))
+                    (funcall thunk (lambda (r) (setq res-1 r))))
+                  (macher-agent-test-wait-until (lambda () res-1) 2.0)
+                  (expect res-1 :to-match "Done by \\*a2a-14-persistent\\*")
+                  (expect res-1 :to-match "Done by \\*a2a-14-nil-preset\\*")
+
+                  ;; Ephemeral worker is reaped, whereas persistent worker remains live & :idle!
+                  (macher-agent-test-wait-until
+                   (lambda () (not (buffer-live-p (get-buffer "*a2a-14-nil-preset*")))) 2.0)
+                  (expect (buffer-live-p pers-buf) :to-be t)
+                  (with-current-buffer pers-buf
+                    (expect macher-agent--is-ephemeral :to-be nil)
+                    (let ((sess (macher-agent-context-session macher-agent--persistent-context)))
+                      (expect (macher-agent-session-lifecycle sess) :to-equal :persistent)
+                      (expect (macher-agent-session-state sess) :to-equal :idle)))
+
+                  ;; 2. Immediate second delegation to the persistent worker succeeds (not busy!)
+                  (let ((thunk2 (funcall del-fn
+                                         (vector (list :buffer_name pers-name
+                                                       :instructions "Second task"))
+                                         parent-ctx)))
+                    (funcall thunk2 (lambda (r) (setq res-2 r))))
+                  (macher-agent-test-wait-until (lambda () res-2) 2.0)
+                  (expect res-2 :to-equal "Done by *a2a-14-persistent*"))))
+          (when (buffer-live-p pers-buf)
+            (kill-buffer pers-buf))))))
+
+  ;; --------------------------------------------------------------------------
+  ;; A2A-15
+  ;; --------------------------------------------------------------------------
+  (it "A2A-15: purges pending callbacks and unwinds child routing frames when waiting parent aborts"
+    (macher-agent-test-with-git-workspace (root parent-ctx parent-buf)
+      (let* ((del-fn (get 'macher-agent-delegate-tasks-to-subagents-tool 'ptc-function))
+             (aborted-turn-resolved nil)
+             (fresh-turn-resolved nil))
+        (with-current-buffer parent-buf
+          ;; 1. Launch slow delegation (gptel-send leaves child running without submitting)
+          (cl-letf (((symbol-function 'gptel-send) #'ignore))
+            (let ((thunk (funcall del-fn
+                                  (vector (list :buffer_name "*a2a-15-slow-child*"
+                                                :instructions "Long task"))
+                                  parent-ctx)))
+              (funcall thunk (lambda (r) (setq aborted-turn-resolved r)))))
+
+          (let ((slow-child (get-buffer "*a2a-15-slow-child*")))
+            (expect (buffer-live-p slow-child) :to-be t)
+            (expect (> (hash-table-count macher-agent--task-callbacks) 0) :to-be t)
+
+            ;; 2. Parent aborts (ABRT)
+            (let ((parent-fsm (gptel-make-fsm :state 'ABRT
+                                              :info (list :buffer parent-buf
+                                                          :macher-agent-context parent-ctx))))
+              (macher-agent-gptel--trigger-flush parent-fsm))
+
+            ;; Stale task callbacks purged and child routing stack unwound
+            (expect (hash-table-count macher-agent--task-callbacks) :to-equal 0)
+            (expect aborted-turn-resolved :to-be nil)
+            (macher-agent-test-wait-until (lambda () (not (buffer-live-p slow-child))) 2.0)
+
+            ;; 3. Subsequent fresh delegation on parent-buf resolves cleanly with fresh result
+            (cl-letf (((symbol-function 'gptel-send)
+                       (lambda ()
+                         (funcall (get 'macher-agent-submit-task-result-tool 'ptc-function)
+                                  "FRESH_ANSWER"
+                                  macher-agent--current-task-id
+                                  macher-agent--persistent-context))))
+              (let ((thunk2 (funcall del-fn
+                                     (vector (list :buffer_name "*a2a-15-fresh-child*"
+                                                   :instructions "Quick task"))
+                                     parent-ctx)))
+                (funcall thunk2 (lambda (r) (setq fresh-turn-resolved r)))))
+            (macher-agent-test-wait-until (lambda () fresh-turn-resolved) 2.0)
+            (expect fresh-turn-resolved :to-equal "FRESH_ANSWER")))))))
 
 (provide 'test-a2a)
 ;;; test-a2a.el ends here
